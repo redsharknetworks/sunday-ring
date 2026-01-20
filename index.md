@@ -1,5 +1,6 @@
-! [Red Shark Networks Logo]
-(redshark.jpg)
+<p align="center">
+  <img src="redshark.jpg" alt="Red Shark Networks Logo" width="180">
+</p>
 
 # 🦈 Sunday Ring with Red Shark
 **Weekly Threat Intelligence Snapshot – Malaysia**
