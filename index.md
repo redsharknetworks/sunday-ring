@@ -1,3 +1,6 @@
+![Red Shark Networks Logo]
+(redshark.jpg)
+
 # 🦈 Sunday Ring with Red Shark
 **Weekly Threat Intelligence Snapshot – Malaysia**
 
@@ -24,4 +27,4 @@ financial and government sectors in Malaysia.
 
 ## ⚠️ Attribution
 This report is based on **publicly available intelligence from Cisco Talos**
-and is independently analysed by **Red Shark Networks**.
+and is independently analysed by **Red Shark Networks - devnet@redshark.my**.
