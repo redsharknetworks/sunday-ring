@@ -24,4 +24,4 @@ financial and government sectors in Malaysia.
 
 ## ⚠️ Attribution
 This report is based on **publicly available intelligence from Cisco Talos**
-and is curated and analysed by **Red Shark Networks**.
+and is independently analysed by **Red Shark Networks**.
