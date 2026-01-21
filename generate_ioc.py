@@ -9,6 +9,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
+import subprocess
 
 # ---------------- CONFIG ----------------
 TALOS_IOC_URL = "https://raw.githubusercontent.com/Cisco-Talos/IOCs/main/2025/2025-01-IOC.json"
@@ -80,7 +81,7 @@ with open("index.md", "w") as f:
 
 ## 📞 Contact Red Shark Networks
 - 📧 devnet@redshark.my
-- 💬 https://wa.me/60132330646
+- 💬 https://wa.me/60195352325
 
 ---
 
@@ -127,7 +128,7 @@ doc = SimpleDocTemplate(pdf_file, pagesize=A4)
 styles = getSampleStyleSheet()
 story = []
 
-# Logo
+# Add logo if exists
 if os.path.exists("redshark.jpg"):
     story.append(Image("redshark.jpg", width=180, height=60))
 
@@ -154,8 +155,6 @@ doc.build(story)
 print("Markdown, CSV, JSON, PDF & archive generated successfully!")
 
 # ---------------- COMMIT & PUSH ----------------
-import subprocess
-
 def run_cmd(cmd):
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if result.returncode != 0:
@@ -169,9 +168,9 @@ run_cmd("git config --global user.email 'actions@github.com'")
 # Add files
 run_cmd("git add index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/")
 
-# Commit
+# Commit changes
 run_cmd(f'git commit -m "Weekly IOC update {today_str}" || echo "No changes to commit"')
 
-# Push
+# Push to main
 run_cmd("git push")
 print("Changes committed and pushed to main branch successfully!")
