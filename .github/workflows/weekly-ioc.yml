@@ -1,0 +1,44 @@
+name: Sunday Ring Weekly IOC
+
+on:
+  schedule:
+    - cron: "0 1 * * 0"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2 libpango-1.0-0 libpangocairo-1.0-0
+
+      - name: Install Python libraries
+        run: pip install -r requirements.txt
+
+      - name: Download GeoLite DB
+        run: |
+          curl -L -o GeoLite2-Country.mmdb \
+          https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb
+
+      - name: Generate IOC report
+        run: python generate_ioc.py
+
+      - name: Generate PDF report
+        run: python generate_pdf.py
+
+      - name: Commit & push updates
+        run: |
+          git config user.name github-actions
+          git config user.email actions@github.com
+          git add index.md weekly-report.pdf
+          git commit -m "Weekly IOC & PDF update" || exit 0
+          git push
