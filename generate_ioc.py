@@ -6,24 +6,24 @@ import os
 import json
 from uuid import uuid4
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
-# -------------------- CONFIG --------------------
+# ---------------- CONFIG ----------------
 TALOS_IOC_URL = "https://raw.githubusercontent.com/Cisco-Talos/IOCs/main/2025/2025-01-IOC.json"
 GEOIP_DB = "GeoLite2-Country.mmdb"
 MAX_IOCS = 10
 
+# ---------------- DATE ----------------
 today = date.today()
 today_str = today.strftime("%d %B %Y")
 archive_name = today.strftime("%Y-%m-%d")
 
 os.makedirs("archive", exist_ok=True)
 
-# -------------------- FETCH TALOS IOC --------------------
+# ---------------- FETCH IOC ----------------
 response = requests.get(TALOS_IOC_URL, timeout=30)
-response.raise_for_status()
 data = response.json()
 
 reader = geoip2.database.Reader(GEOIP_DB)
@@ -40,9 +40,6 @@ for ioc in data.get("indicators", []):
     if len(malaysia_ips) >= MAX_IOCS:
         break
 
-reader.close()
-
-# -------------------- SEVERITY FUNCTION --------------------
 def severity(score):
     if score <= 3:
         return "Low"
@@ -50,7 +47,7 @@ def severity(score):
         return "Medium"
     return "High"
 
-# -------------------- WRITE MARKDOWN --------------------
+# ---------------- WRITE MARKDOWN ----------------
 with open("index.md", "w") as f:
     f.write(f"""
 <p align="center">
@@ -69,11 +66,10 @@ with open("index.md", "w") as f:
 | # | Indicator | Severity | Action |
 |---|----------|----------|--------|
 """)
-
     for i, ip in enumerate(malaysia_ips, start=1):
         f.write(f"| {i} | {ip} | {severity(i)} | Block / Monitor |\n")
 
-    f.write(f"""
+    f.write("""
 ---
 
 ## 📥 Downloads
@@ -84,7 +80,7 @@ with open("index.md", "w") as f:
 
 ## 📞 Contact Red Shark Networks
 - 📧 devnet@redshark.my
-- 💬 https://wa.me/60132330646
+- 💬 https://wa.me/60XXXXXXXXX
 
 ---
 
@@ -93,30 +89,15 @@ Based on publicly available Cisco Talos intelligence.
 Analysis independently developed by Red Shark Networks.
 """)
 
-# -------------------- WRITE CSV --------------------
+# ---------------- WRITE CSV ----------------
 with open("weekly-ioc.csv", "w", newline="") as csvfile:
     writer = csv.writer(csvfile)
-    writer.writerow([
-        "Date",
-        "Indicator",
-        "Type",
-        "Country",
-        "Severity",
-        "Recommended Action"
-    ])
+    writer.writerow(["Date", "Indicator", "Type", "Country", "Severity", "Recommended Action"])
     for i, ip in enumerate(malaysia_ips, start=1):
-        writer.writerow([
-            today_str,
-            ip,
-            "IP Address",
-            "Malaysia",
-            severity(i),
-            "Block / Monitor"
-        ])
+        writer.writerow([today_str, ip, "IP Address", "Malaysia", severity(i), "Block / Monitor"])
 
-# -------------------- WRITE STIX-LITE JSON --------------------
+# ---------------- WRITE STIX-LITE JSON ----------------
 stix_objects = []
-
 for i, ip in enumerate(malaysia_ips, start=1):
     stix_objects.append({
         "type": "indicator",
@@ -132,21 +113,23 @@ for i, ip in enumerate(malaysia_ips, start=1):
         "description": "Publicly observed malicious infrastructure affecting Malaysia"
     })
 
-stix_bundle = {
-    "type": "bundle",
-    "id": f"bundle--{uuid4()}",
-    "objects": stix_objects
-}
-
+stix_bundle = {"type": "bundle", "id": f"bundle--{uuid4()}", "objects": stix_objects}
 with open("weekly-ioc.json", "w") as jf:
     json.dump(stix_bundle, jf, indent=2)
 
-# -------------------- GENERATE PDF REPORT --------------------
+# ---------------- ARCHIVE ----------------
+with open(f"archive/{archive_name}.md", "w") as a:
+    a.write(open("index.md").read())
+
+# ---------------- GENERATE PDF ----------------
 pdf_file = "weekly-report.pdf"
 doc = SimpleDocTemplate(pdf_file, pagesize=A4)
-
 styles = getSampleStyleSheet()
 story = []
+
+# Logo
+if os.path.exists("redshark.jpg"):
+    story.append(Image("redshark.jpg", width=180, height=60))
 
 story.append(Paragraph("<b>Sunday Ring with Red Shark</b>", styles["Title"]))
 story.append(Paragraph("Weekly Threat Intelligence – Malaysia", styles["Heading2"]))
@@ -163,14 +146,32 @@ table.setStyle(TableStyle([
     ("BACKGROUND", (0,0), (-1,0), colors.grey),
     ("TEXTCOLOR", (0,0), (-1,0), colors.whitesmoke),
     ("GRID", (0,0), (-1,-1), 1, colors.black),
-    ("FONT", (0,0), (-1,0), "Helvetica-Bold"),
+    ("FONT", (0,0), (-1,0), "Helvetica-Bold")
 ]))
-
 story.append(table)
 doc.build(story)
 
-print("Markdown, CSV, STIX JSON & PDF report generated")
+print("Markdown, CSV, JSON, PDF & archive generated successfully!")
 
-# -------------------- ARCHIVE --------------------
-with open(f"archive/{archive_name}.md", "w") as a:
-    a.write(open("index.md").read())
+# ---------------- COMMIT & PUSH ----------------
+import subprocess
+
+def run_cmd(cmd):
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Command failed: {cmd}\n{result.stderr}")
+    return result
+
+# Configure git
+run_cmd("git config --global user.name 'GitHub Actions'")
+run_cmd("git config --global user.email 'actions@github.com'")
+
+# Add files
+run_cmd("git add index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/")
+
+# Commit
+run_cmd(f'git commit -m "Weekly IOC update {today_str}" || echo "No changes to commit"')
+
+# Push
+run_cmd("git push")
+print("Changes committed and pushed to main branch successfully!")
