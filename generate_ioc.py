@@ -20,8 +20,10 @@ MAX_IOCS = 10
 
 # ---------------- HELPERS ----------------
 def severity(score):
-    if score <= 3: return "Low"
-    if score <= 7: return "Medium"
+    if score <= 3:
+        return "Low"
+    if score <= 7:
+        return "Medium"
     return "High"
 
 def run_cmd(cmd):
@@ -35,9 +37,8 @@ def file_exists(path):
         print(f"Required file missing: {path}")
         sys.exit(1)
 
-# ---------------- CHECK FILES ----------------
+# ---------------- CHECK REQUIRED FILES ----------------
 file_exists(GEOIP_DB)
-file_exists(LOGO_FILE)
 
 # ---------------- DATE ----------------
 today = date.today()
@@ -57,12 +58,15 @@ reader = geoip2.database.Reader(GEOIP_DB)
 malaysia_ips = []
 
 for ioc in data.get("indicators", []):
-    if ioc.get("type") != "ip": continue
+    if ioc.get("type") != "ip":
+        continue
     try:
         if reader.country(ioc["indicator"]).country.iso_code == "MY":
             malaysia_ips.append(ioc["indicator"])
-    except: continue
-    if len(malaysia_ips) >= MAX_IOCS: break
+    except:
+        continue
+    if len(malaysia_ips) >= MAX_IOCS:
+        break
 
 reader.close()
 
@@ -75,8 +79,6 @@ with open("index.md", "w") as f:
 
 # 🦈 Sunday Ring with Red Shark
 **Weekly Threat Intelligence Snapshot – Malaysia**
-
-**Red Shark Networks Initiative**: Professional, curated intelligence to empower SOC, CTI, and management teams.
 
 **Week:** {today_str}
 
@@ -106,8 +108,8 @@ with open("index.md", "w") as f:
 ---
 
 ## ⚠️ Disclaimer
-Based on publicly available Cisco Talos intelligence.  
-Analysis independently developed under the Red Shark Networks Initiative.
+Based on publicly available Cisco Talos intelligence.
+Analysis independently developed by Red Shark Networks.
 """)
 
 # ---------------- WRITE CSV ----------------
@@ -117,7 +119,7 @@ with open("weekly-ioc.csv", "w", newline="") as csvfile:
     for i, ip in enumerate(malaysia_ips, start=1):
         writer.writerow([today_str, ip, "IP Address", "Malaysia", severity(i), "Block / Monitor"])
 
-# ---------------- WRITE JSON ----------------
+# ---------------- WRITE STIX-LITE JSON ----------------
 stix_objects = []
 for i, ip in enumerate(malaysia_ips, start=1):
     stix_objects.append({
@@ -148,7 +150,9 @@ doc = SimpleDocTemplate(pdf_file, pagesize=A4)
 styles = getSampleStyleSheet()
 story = []
 
-story.append(Image(LOGO_FILE, width=180, height=60))
+if os.path.exists(LOGO_FILE):
+    story.append(Image(LOGO_FILE, width=180, height=60))
+
 story.append(Paragraph("<b>Sunday Ring with Red Shark</b>", styles["Title"]))
 story.append(Paragraph("Weekly Threat Intelligence – Malaysia", styles["Heading2"]))
 story.append(Spacer(1, 12))
