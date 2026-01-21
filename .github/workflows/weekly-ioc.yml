@@ -2,8 +2,8 @@ name: Weekly IOC Pipeline
 
 on:
   schedule:
-    - cron: "0 3 * * 0"  # Sunday 03:00 UTC
-  workflow_dispatch:
+    - cron: "0 3 * * 0"  # Every Sunday 03:00 UTC
+  workflow_dispatch:      # Allow manual runs
 
 jobs:
   weekly-ioc:
@@ -20,13 +20,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: List repo files (debug)
-        run: ls -lh
-
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install requests geoip2 reportlab
+
+      - name: List repo files (debug)
+        run: ls -lh
 
       - name: Run IOC generator
         run: python generate_ioc.py
