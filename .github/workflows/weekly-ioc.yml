@@ -1,42 +1,42 @@
 name: Weekly IOC Pipeline
 
-# Trigger: every Sunday at 03:00 UTC or manually
 on:
   schedule:
-    - cron: "0 3 * * 0"
-  workflow_dispatch:
+    - cron: "0 3 * * 0"  # Every Sunday at 03:00 UTC
+  workflow_dispatch:      # Allows manual trigger anytime
 
 jobs:
-  generate-weekly-ioc:
+  weekly-ioc:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout the repo with credentials to allow push
+      # 1️⃣ Checkout repo with credentials so git push works
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
           persist-credentials: true
 
-      # Step 2: Setup Python environment
-      - name: Setup Python 3.11
+      # 2️⃣ Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
-      # Step 3: Install required Python packages
+      # 3️⃣ Install dependencies safely
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests geoip2 reportlab
 
-      # Step 4: Debug: List repo files to ensure required files exist
+      # 4️⃣ Debug: list files to confirm GeoIP DB & logo exist
       - name: List repository files
         run: ls -lh
 
-      # Step 5: Run the Python script to generate index.md, CSV, PDF, JSON, archive, and push changes
+      # 5️⃣ Run the Python script to generate Markdown, CSV, JSON, PDF, archive, and commit changes
       - name: Run IOC generator
         run: python generate_ioc.py
 
-      # Step 6: Confirm generated files
-      - name: Verify generated files
-        run: ls -lh index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/
+      # 6️⃣ Confirm generated files exist
+      - name: Verify outputs
+        run: |
+          ls -lh index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/
