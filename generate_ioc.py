@@ -1,8 +1,8 @@
+import os
 import requests
 import geoip2.database
 from datetime import date, datetime
 import csv
-import os
 import json
 from uuid import uuid4
 from reportlab.lib.pagesizes import A4
@@ -10,22 +10,38 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 import subprocess
+import sys
 
 # ---------------- CONFIG ----------------
 TALOS_IOC_URL = "https://raw.githubusercontent.com/Cisco-Talos/IOCs/main/2025/2025-01-IOC.json"
 GEOIP_DB = "GeoLite2-Country.mmdb"
 MAX_IOCS = 10
+LOGO_FILE = "redshark.jpg"
 
-# ---------------- DATE ----------------
 today = date.today()
 today_str = today.strftime("%d %B %Y")
 archive_name = today.strftime("%Y-%m-%d")
 
 os.makedirs("archive", exist_ok=True)
 
+# ---------------- VERIFY REQUIRED FILES ----------------
+missing_files = []
+for file in [GEOIP_DB, LOGO_FILE]:
+    if not os.path.exists(file):
+        missing_files.append(file)
+
+if missing_files:
+    print(f"ERROR: Missing required files: {', '.join(missing_files)}")
+    sys.exit(1)
+
 # ---------------- FETCH IOC ----------------
-response = requests.get(TALOS_IOC_URL, timeout=30)
-data = response.json()
+try:
+    response = requests.get(TALOS_IOC_URL, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+except Exception as e:
+    print(f"ERROR: Failed to fetch IOC data: {e}")
+    sys.exit(1)
 
 reader = geoip2.database.Reader(GEOIP_DB)
 malaysia_ips = []
@@ -52,7 +68,7 @@ def severity(score):
 with open("index.md", "w") as f:
     f.write(f"""
 <p align="center">
-  <img src="redshark.jpg" width="180">
+  <img src="{LOGO_FILE}" width="180">
 </p>
 
 # 🦈 Sunday Ring with Red Shark
@@ -81,7 +97,7 @@ with open("index.md", "w") as f:
 
 ## 📞 Contact Red Shark Networks
 - 📧 devnet@redshark.my
-- 💬 https://wa.me/60195352325
+- 💬 https://wa.me/60132330646
 
 ---
 
@@ -128,9 +144,8 @@ doc = SimpleDocTemplate(pdf_file, pagesize=A4)
 styles = getSampleStyleSheet()
 story = []
 
-# Add logo if exists
-if os.path.exists("redshark.jpg"):
-    story.append(Image("redshark.jpg", width=180, height=60))
+if os.path.exists(LOGO_FILE):
+    story.append(Image(LOGO_FILE, width=180, height=60))
 
 story.append(Paragraph("<b>Sunday Ring with Red Shark</b>", styles["Title"]))
 story.append(Paragraph("Weekly Threat Intelligence – Malaysia", styles["Heading2"]))
@@ -158,19 +173,12 @@ print("Markdown, CSV, JSON, PDF & archive generated successfully!")
 def run_cmd(cmd):
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"Command failed: {cmd}\n{result.stderr}")
+        print(f"WARNING: Command failed: {cmd}\n{result.stderr}")
     return result
 
-# Configure git
 run_cmd("git config --global user.name 'GitHub Actions'")
 run_cmd("git config --global user.email 'actions@github.com'")
-
-# Add files
 run_cmd("git add index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/")
-
-# Commit changes
 run_cmd(f'git commit -m "Weekly IOC update {today_str}" || echo "No changes to commit"')
-
-# Push to main
 run_cmd("git push")
 print("Changes committed and pushed to main branch successfully!")
