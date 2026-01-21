@@ -1,10 +1,8 @@
 import requests
 import geoip2.database
-from datetime import date, datetime
+from datetime import date
 import csv
 import os
-import json
-from uuid import uuid4
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib.styles import getSampleStyleSheet
@@ -103,7 +101,7 @@ with open("index.md", "w") as f:
 
 ## 📞 Contact Red Shark Networks
 - 📧 devnet@redshark.my
-- 💬 https://wa.me/60132153352
+- 💬 https://wa.me/60132330646
 
 ---
 
@@ -118,27 +116,6 @@ with open("weekly-ioc.csv", "w", newline="") as csvfile:
     writer.writerow(["Date", "Indicator", "Type", "Country", "Severity", "Recommended Action"])
     for i, ip in enumerate(malaysia_ips, start=1):
         writer.writerow([today_str, ip, "IP Address", "Malaysia", severity(i), "Block / Monitor"])
-
-# ---------------- WRITE STIX-LITE JSON ----------------
-stix_objects = []
-for i, ip in enumerate(malaysia_ips, start=1):
-    stix_objects.append({
-        "type": "indicator",
-        "spec_version": "2.1",
-        "id": f"indicator--{uuid4()}",
-        "created": datetime.utcnow().isoformat() + "Z",
-        "modified": datetime.utcnow().isoformat() + "Z",
-        "name": f"Malicious IP {ip}",
-        "indicator_types": ["malicious-activity"],
-        "pattern": f"[ipv4-addr:value = '{ip}']",
-        "confidence": 50 + (i * 5),
-        "labels": ["redshark", "malaysia"],
-        "description": "Publicly observed malicious infrastructure affecting Malaysia"
-    })
-
-stix_bundle = {"type": "bundle", "id": f"bundle--{uuid4()}", "objects": stix_objects}
-with open("weekly-ioc.json", "w") as jf:
-    json.dump(stix_bundle, jf, indent=2)
 
 # ---------------- ARCHIVE ----------------
 with open(f"archive/{archive_name}.md", "w") as a:
@@ -173,13 +150,13 @@ table.setStyle(TableStyle([
 story.append(table)
 doc.build(story)
 
-print("Markdown, CSV, JSON, PDF & archive generated successfully!")
+print("Markdown, CSV, PDF & archive generated successfully!")
 
 # ---------------- COMMIT & PUSH ----------------
 run_cmd("git config --global user.name 'GitHub Actions'")
 run_cmd("git config --global user.email 'actions@github.com'")
 
-run_cmd("git add index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/")
+run_cmd("git add index.md weekly-report.pdf weekly-ioc.csv archive/")
 
 run_cmd(f'git commit -m "Weekly IOC update {today_str}" || echo "No changes to commit"')
 
