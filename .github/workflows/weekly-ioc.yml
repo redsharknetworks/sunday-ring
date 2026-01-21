@@ -1,44 +1,42 @@
-name: Sunday Ring Weekly IOC
+name: Weekly IOC Pipeline
 
+# Schedule: every Sunday at 03:00 UTC
 on:
   schedule:
-    - cron: "0 1 * * 0"
-  workflow_dispatch:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:  # allows manual run from GitHub UI
 
 jobs:
-  build:
+  weekly-ioc:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      # 1️⃣ Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - uses: actions/setup-python@v5
+      # 2️⃣ Setup Python
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Install system dependencies
+      # 3️⃣ Install dependencies (including ReportLab)
+      - name: Install Python dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcairo2 libpango-1.0-0 libpangocairo-1.0-0
+          pip install --upgrade pip
+          pip install requests geoip2 reportlab
 
-      - name: Install Python libraries
-        run: pip install -r requirements.txt
-
-      - name: Download GeoLite DB
+      # 4️⃣ Run IOC generator script
+      - name: Generate Weekly Intelligence
         run: |
-          curl -L -o GeoLite2-Country.mmdb \
-          https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb
+          python generate_ioc.py
 
-      - name: Generate IOC report
-        run: python generate_ioc.py
-
-      - name: Generate PDF report
-        run: python generate_pdf.py
-
+      # 5️⃣ Commit and push generated files
       - name: Commit & push updates
         run: |
-          git config user.name github-actions
-          git config user.email actions@github.com
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
           git add index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/
-          git commit -m "Weekly IOC & PDF update" || exit 0
+          git commit -m "Weekly IOC update $(date +'%Y-%m-%d')" || echo "No changes to commit"
           git push
