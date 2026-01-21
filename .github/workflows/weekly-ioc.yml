@@ -1,19 +1,21 @@
 name: Weekly IOC Pipeline
 
-# Schedule: every Sunday at 03:00 UTC
+# Trigger: every Sunday at 03:00 UTC + manual run
 on:
   schedule:
     - cron: "0 3 * * 0"
-  workflow_dispatch:  # allows manual run from GitHub UI
+  workflow_dispatch:
 
 jobs:
   weekly-ioc:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout the repository
+      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          persist-credentials: true  # Required to allow push
 
       # 2️⃣ Setup Python
       - name: Setup Python 3.11
@@ -21,22 +23,18 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 3️⃣ Install dependencies (including ReportLab)
+      # 3️⃣ Install dependencies
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
           pip install requests geoip2 reportlab
 
-      # 4️⃣ Run IOC generator script
+      # 4️⃣ Run the generator script
       - name: Generate Weekly Intelligence
         run: |
           python generate_ioc.py
 
-      # 5️⃣ Commit and push generated files
-      - name: Commit & push updates
+      # 5️⃣ Optional: Verify files exist
+      - name: Check generated files
         run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          git add index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/
-          git commit -m "Weekly IOC update $(date +'%Y-%m-%d')" || echo "No changes to commit"
-          git push
+          ls -lh index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/
