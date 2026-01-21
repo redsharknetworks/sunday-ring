@@ -18,7 +18,7 @@ GEOIP_DB = "GeoLite2-Country.mmdb"
 LOGO_FILE = "redshark.jpg"
 MAX_IOCS = 10
 
-# ---------------- HELPERS ----------------
+# ---------------- HELPER FUNCTIONS ----------------
 def severity(score):
     if score <= 3:
         return "Low"
@@ -103,7 +103,7 @@ with open("index.md", "w") as f:
 
 ## 📞 Contact Red Shark Networks
 - 📧 devnet@redshark.my
-- 💬 https://wa.me/60132330646
+- 💬 https://wa.me/60132153352
 
 ---
 
@@ -178,7 +178,10 @@ print("Markdown, CSV, JSON, PDF & archive generated successfully!")
 # ---------------- COMMIT & PUSH ----------------
 run_cmd("git config --global user.name 'GitHub Actions'")
 run_cmd("git config --global user.email 'actions@github.com'")
+
 run_cmd("git add index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/")
+
 run_cmd(f'git commit -m "Weekly IOC update {today_str}" || echo "No changes to commit"')
+
 run_cmd("git push")
 print("Changes committed and pushed successfully!")
