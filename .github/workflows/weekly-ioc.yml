@@ -1,40 +1,36 @@
 name: Weekly IOC Pipeline
 
-# Trigger: every Sunday at 03:00 UTC + manual run
 on:
   schedule:
-    - cron: "0 3 * * 0"
-  workflow_dispatch:
+    - cron: "0 3 * * 0"  # Every Sunday 03:00 UTC
+  workflow_dispatch:      # Allows manual trigger
 
 jobs:
   weekly-ioc:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          persist-credentials: true  # Required to allow push
+          persist-credentials: true  # Required to allow git push
 
-      # 2️⃣ Setup Python
-      - name: Setup Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      # 3️⃣ Install dependencies
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
           pip install requests geoip2 reportlab
 
-      # 4️⃣ Run the generator script
-      - name: Generate Weekly Intelligence
+      - name: Verify required files exist
         run: |
-          python generate_ioc.py
+          ls -lh GeoLite2-Country.mmdb redshark.jpg || (echo "Required files missing!" && exit 1)
 
-      # 5️⃣ Optional: Verify files exist
-      - name: Check generated files
-        run: |
-          ls -lh index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/
+      - name: Run IOC generator
+        run: python generate_ioc.py
+
+      - name: List generated files
+        run: ls -lh index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/
