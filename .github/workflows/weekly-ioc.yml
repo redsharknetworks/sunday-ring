@@ -1,3 +1,10 @@
+name: Weekly IOC Pipeline
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"  # Every Sunday 03:00 UTC
+  workflow_dispatch:      # Allow manual runs
+
 jobs:
   weekly-ioc:
     runs-on: ubuntu-latest
@@ -8,20 +15,18 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-dev python3-pip libjpeg-dev zlib1g-dev libfreetype6-dev
-
       - name: Setup Python 3.11
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install requests geoip2 reportlab pillow
+          pip install requests geoip2 reportlab
+
+      - name: List repo files (debug)
+        run: ls -lh
 
       - name: Run IOC generator
         run: python generate_ioc.py
