@@ -39,6 +39,6 @@ jobs:
         run: |
           git config user.name github-actions
           git config user.email actions@github.com
-          git add index.md weekly-report.pdf
+          git add index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/
           git commit -m "Weekly IOC & PDF update" || exit 0
           git push
