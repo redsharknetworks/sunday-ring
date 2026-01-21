@@ -3,7 +3,7 @@ name: Weekly IOC Pipeline
 on:
   schedule:
     - cron: "0 3 * * 0"  # Every Sunday 03:00 UTC
-  workflow_dispatch:      # Manual trigger possible
+  workflow_dispatch:      # Allow manual run anytime
 
 jobs:
   weekly-ioc:
