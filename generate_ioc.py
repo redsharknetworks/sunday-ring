@@ -80,7 +80,7 @@ with open("index.md", "w") as f:
 
 ## 📞 Contact Red Shark Networks
 - 📧 devnet@redshark.my
-- 💬 https://wa.me/60XXXXXXXXX
+- 💬 https://wa.me/60132330646
 
 ---
 
