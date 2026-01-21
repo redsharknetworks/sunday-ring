@@ -2,8 +2,8 @@ name: Weekly IOC Pipeline
 
 on:
   schedule:
-    - cron: "0 3 * * 0"  # Every Sunday 03:00 UTC
-  workflow_dispatch:      # Allows manual trigger
+    - cron: "0 3 * * 0"  # Sunday 03:00 UTC
+  workflow_dispatch:
 
 jobs:
   weekly-ioc:
@@ -13,24 +13,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          persist-credentials: true  # Required to allow git push
+          persist-credentials: true
 
-      - name: Setup Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Install Python dependencies
+      - name: List repo files (debug)
+        run: ls -lh
+
+      - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install requests geoip2 reportlab
 
-      - name: Verify required files exist
-        run: |
-          ls -lh GeoLite2-Country.mmdb redshark.jpg || (echo "Required files missing!" && exit 1)
-
       - name: Run IOC generator
         run: python generate_ioc.py
-
-      - name: List generated files
-        run: ls -lh index.md weekly-report.pdf weekly-ioc.csv weekly-ioc.json archive/
