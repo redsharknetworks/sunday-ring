@@ -13,16 +13,18 @@ from reportlab.lib import colors
 import subprocess
 import sys
 import geoip2.errors
+import time
 
 # ---------------- CONFIG ----------------
 TALOS_IOC_URL = "https://raw.githubusercontent.com/Cisco-Talos/IOCs/main/2025/2025-01-IOC.json"
 GEOIP_DB = "GeoLite2-Country.mmdb"
 LOGO_FILE = "redshark.jpg"
 MAX_IOCS = 10
+GITHUB_REPO = "Cisco-Talos/IOCs"  # owner/repo
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # optional, helps avoid rate limits
 
-# ---------------- HELPER FUNCTIONS ----------------
+# ---------------- HELPERS ----------------
 def severity(score):
-    # score may be a numeric score or ranking position; keep simple mapping
     if score <= 3:
         return "Low"
     if score <= 7:
@@ -34,6 +36,29 @@ def run_cmd(cmd):
     if result.returncode != 0:
         print(f"Command failed: {cmd}\n{result.stderr}")
     return result
+
+def requests_get(url, **kwargs):
+    headers = kwargs.pop("headers", {})
+    if GITHUB_TOKEN:
+        headers.update({"Authorization": f"token {GITHUB_TOKEN}"})
+    return requests.get(url, headers=headers, timeout=30, **kwargs)
+
+def fetch_with_retries(url, retries=3, backoff=1):
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests_get(url)
+            r.raise_for_status()
+            return r
+        except requests.exceptions.HTTPError as e:
+            # For 404 return the response so caller can inspect status_code
+            if e.response is not None and e.response.status_code == 404:
+                return e.response
+            last_exc = e
+        except requests.exceptions.RequestException as e:
+            last_exc = e
+        time.sleep(backoff * attempt)
+    raise last_exc
 
 # ---------------- CHECK FOR OPTIONAL FILES ----------------
 geoip_available = os.path.exists(GEOIP_DB)
@@ -50,17 +75,83 @@ archive_name = today.strftime("%Y-%m-%d")
 os.makedirs("archive", exist_ok=True)
 
 # ---------------- FETCH IOC ----------------
+def find_ioc_in_year(year_folder):
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{year_folder}"
+    try:
+        r = fetch_with_retries(api_url)
+        if r.status_code != 200:
+            return None
+        items = r.json()
+        # pick first file that looks like YYYY-MM-IOC.json or contains 'ioc' and '.json'
+        for it in items:
+            name = it.get("name", "").lower()
+            if name.endswith(".json") and ("ioc" in name or "-" in name or name.startswith(year_folder)):
+                return it.get("download_url")
+    except Exception:
+        return None
+    return None
+
+data = None
 try:
-    response = requests.get(TALOS_IOC_URL, timeout=30)
-    response.raise_for_status()
-    data = response.json()
+    # Try configured static URL first
+    r = fetch_with_retries(TALOS_IOC_URL)
+    if r.status_code == 200:
+        try:
+            data = r.json()
+        except ValueError as e:
+            print(f"Error parsing IOC JSON from configured URL: {e}")
+            sys.exit(1)
+    elif r.status_code == 404:
+        # Try to auto-discover
+        year = None
+        try:
+            # attempt to get year segment from configured URL (assumes .../<year>/...)
+            parts = TALOS_IOC_URL.rstrip("/").split("/")
+            if len(parts) >= 2:
+                year = parts[-2] if parts[-2].isdigit() and len(parts[-2]) == 4 else None
+        except Exception:
+            year = None
+
+        download_url = None
+        if year:
+            download_url = find_ioc_in_year(year)
+
+        if not download_url:
+            # list top-level contents and try year folders
+            api_root = f"https://api.github.com/repos/{GITHUB_REPO}/contents"
+            r_root = fetch_with_retries(api_root)
+            if r_root.status_code == 200:
+                items = r_root.json()
+                year_folders = [it["name"] for it in items if it.get("type") == "dir" and it["name"].isdigit() and len(it["name"]) == 4]
+                # prefer newest year first
+                for yf in sorted(year_folders, reverse=True):
+                    download_url = find_ioc_in_year(yf)
+                    if download_url:
+                        break
+
+        if not download_url:
+            print(f"Could not locate IOC JSON in {GITHUB_REPO} (checked configured URL and repo contents).")
+            sys.exit(1)
+
+        # fetch discovered file
+        r2 = fetch_with_retries(download_url)
+        if r2.status_code == 200:
+            try:
+                data = r2.json()
+            except ValueError as e:
+                print(f"Error parsing discovered IOC JSON: {e}")
+                sys.exit(1)
+        else:
+            print(f"Failed to download discovered IOC JSON: HTTP {r2.status_code}")
+            sys.exit(1)
+    else:
+        print(f"Unexpected HTTP status when fetching configured URL: {r.status_code}")
+        sys.exit(1)
 except requests.exceptions.RequestException as e:
     print(f"Error fetching IOC data (HTTP): {e}")
     sys.exit(1)
-except ValueError as e:
-    print(f"Error parsing IOC JSON: {e}")
-    sys.exit(1)
 
+# ---------------- GEOIP READER ----------------
 reader = None
 if geoip_available:
     try:
@@ -71,24 +162,21 @@ if geoip_available:
 
 malaysia_ips = []
 
-for ioc in data.get("indicators", []):
+for ioc in (data.get("indicators", []) if isinstance(data, dict) else []):
     if ioc.get("type") != "ip":
         continue
     ip = ioc.get("indicator") or ioc.get("value") or None
     if not ip:
         continue
 
-    # If we have GeoIP reader, attempt to filter for Malaysia; otherwise accept first MAX_IOCS
     if reader:
         try:
             rec = reader.country(ip)
             if rec and getattr(rec.country, "iso_code", None) == "MY":
                 malaysia_ips.append(ip)
         except geoip2.errors.AddressNotFoundError:
-            # not in DB, skip
             continue
         except Exception:
-            # any parsing/lookup error, skip this indicator
             continue
     else:
         malaysia_ips.append(ip)
@@ -104,8 +192,6 @@ if reader:
 
 if not malaysia_ips:
     print("No Malaysia-related IPs found. Exiting.")
-    # Optionally we could continue and produce empty outputs; for now keep behavior but exit
-    # If you prefer to output empty artifacts, comment out the next line.
     sys.exit(0)
 
 # ---------------- WRITE MARKDOWN ----------------
@@ -187,5 +273,3 @@ except Exception as e:
     print(f"Error building PDF: {e}")
 
 print("Markdown, CSV, JSON, PDF & archive generated successfully!")
-
-# Note: We no longer commit artifacts back to the repository from CI. The workflow will upload generated files as build artifacts.
