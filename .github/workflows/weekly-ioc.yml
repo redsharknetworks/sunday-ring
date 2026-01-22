@@ -30,3 +30,11 @@ jobs:
 
       - name: Run IOC generator
         run: python generate_ioc.py
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "devnet@redshark.my"
+          git config --local user.name "Red Shark Developer"
+          git add .
+          git commit -m "Update IOC reports" || echo "No changes to commit"
+          git push
