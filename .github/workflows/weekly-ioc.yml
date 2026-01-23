@@ -2,8 +2,8 @@ name: Weekly IOC Pipeline
 
 on:
   schedule:
-    - cron: "0 3 * * 0"  # Every Sunday 03:00 UTC
-  workflow_dispatch:      # Allow manual runs
+    - cron: "0 3 * * 0"   # Sunday 03:00 UTC
+  workflow_dispatch:
 
 jobs:
   weekly-ioc:
@@ -15,46 +15,43 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Setup Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install requests geoip2 reportlab
 
-      - name: List repo files (debug)
-        run: ls -lh
-
       - name: Run IOC generator
         run: python generate_ioc.py
 
-      - name: Check output files
+      - name: Validate output files
         run: |
-          echo "Checking for generated files:"
-          ls -lh
-          if [ -f "index.md" ]; then
-            echo "index.md exists"
-          else
-            echo "index.md does not exist"
-          fi
-          if [ -f "weekly-ioc.csv" ]; then
-            echo "weekly-ioc.csv exists"
-          else
-            echo "weekly-ioc.csv does not exist"
-          fi
-          if [ -f "weekly-report.pdf" ]; then
-            echo "weekly-report.pdf exists"
-          else
-            echo "weekly-report.pdf does not exist"
-          fi
+          set -e
+          for f in index.md weekly-ioc.csv weekly-ioc.json weekly-report.pdf; do
+            if [ ! -f "$f" ]; then
+              echo "❌ Missing file: $f"
+              exit 1
+            fi
+            echo "✅ Found $f"
+          done
 
       - name: Commit and push changes
         run: |
-          git config --local user.email "your-email@example.com"  # Replace with your email
-          git config --local user.name "Your Name"  # Replace with your name
+          set -e
+
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+
           git add .
-          git commit -m "Update IOC reports" || echo "No changes to commit"
+
+          if git diff --cached --quiet; then
+            echo "❌ ERROR: No changes detected, failing workflow"
+            exit 1
+          fi
+
+          git commit -m "Weekly IOC report update"
           git push
