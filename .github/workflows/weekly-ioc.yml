@@ -29,25 +29,18 @@ jobs:
           MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
         run: |
           set -e
-          echo "Downloading GeoLite2 Country DB..."
-          curl -sSL \
-            "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz" \
+          curl -sSL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz" \
             | tar -xz --strip-components=1 --wildcards '*GeoLite2-Country.mmdb'
-
-          if [ ! -f GeoLite2-Country.mmdb ]; then
-            echo "❌ GeoIP DB download failed"
-            exit 1
-          fi
-
-          echo "✅ GeoIP DB downloaded"
+          [ -f GeoLite2-Country.mmdb ] || (echo "❌ GeoIP DB missing" && exit 1)
+          touch .nojekyll  # disable Jekyll for Pages
 
       - name: Run IOC generator
         run: python generate_ioc.py
 
-      - name: Validate output files
+      - name: Validate output
         run: |
           set -e
-          for f in index.md weekly-ioc.csv weekly-ioc.json weekly-report.pdf; do
+          for f in index.html weekly-ioc.csv weekly-ioc.json weekly-report.pdf; do
             [ -f "$f" ] || (echo "❌ Missing $f" && exit 1)
             echo "✅ Found $f"
           done
@@ -57,13 +50,10 @@ jobs:
           set -e
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-
-          git add .
-
+          git add index.html weekly-ioc.csv weekly-ioc.json weekly-report.pdf .nojekyll
           if git diff --cached --quiet; then
-            echo "❌ No changes detected – failing"
-            exit 1
+            echo "❌ No changes detected – exiting"
+            exit 0
           fi
-
           git commit -m "Weekly IOC report (Malaysia, GeoIP verified)"
           git push
