@@ -12,8 +12,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-        with:
-          persist-credentials: true
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -23,7 +21,25 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install requests geoip2 reportlab
+          pip install requests geoip2 reportlab python-dateutil
+
+      # 🔐 Secure GeoIP download
+      - name: Download GeoLite2 Country DB
+        env:
+          MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
+        run: |
+          set -e
+          echo "Downloading GeoLite2 Country DB..."
+          curl -sSL \
+            "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz" \
+            | tar -xz --strip-components=1 --wildcards '*GeoLite2-Country.mmdb'
+
+          if [ ! -f GeoLite2-Country.mmdb ]; then
+            echo "❌ GeoIP DB download failed"
+            exit 1
+          fi
+
+          echo "✅ GeoIP DB downloaded"
 
       - name: Run IOC generator
         run: python generate_ioc.py
@@ -32,26 +48,22 @@ jobs:
         run: |
           set -e
           for f in index.md weekly-ioc.csv weekly-ioc.json weekly-report.pdf; do
-            if [ ! -f "$f" ]; then
-              echo "❌ Missing file: $f"
-              exit 1
-            fi
+            [ -f "$f" ] || (echo "❌ Missing $f" && exit 1)
             echo "✅ Found $f"
           done
 
       - name: Commit and push changes
         run: |
           set -e
-
-          git config --local user.email "actions@github.com"
-          git config --local user.name "GitHub Actions"
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
 
           git add .
 
           if git diff --cached --quiet; then
-            echo "❌ ERROR: No changes detected, failing workflow"
+            echo "❌ No changes detected – failing"
             exit 1
           fi
 
-          git commit -m "Weekly IOC report update"
+          git commit -m "Weekly IOC report (Malaysia, GeoIP verified)"
           git push
