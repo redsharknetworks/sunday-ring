@@ -1,0 +1,2 @@
+ip,country,asn,isp,score,sources
+1.2.3.4,MY,12345,DummyISP,50,Talos
