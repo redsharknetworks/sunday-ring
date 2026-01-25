@@ -1,0 +1,1 @@
+// Dummy table.js - search tables placeholder

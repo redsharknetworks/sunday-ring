@@ -1,1 +1,1 @@
-
+// Dummy charts.js - heatmap chart placeholder
