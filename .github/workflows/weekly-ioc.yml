@@ -1,59 +1,71 @@
-name: Weekly IOC Pipeline
+name: Weekly IOC – Malaysia
 
 on:
-  schedule:
-    - cron: "0 3 * * 0"   # Sunday 03:00 UTC
   workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * 1"   # every Monday 02:00 UTC
 
 jobs:
-  weekly-ioc:
+  build:
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    env:
+      MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install requests geoip2 reportlab python-dateutil
+          python -m pip install --upgrade pip
+          pip install \
+            requests \
+            geoip2 \
+            python-dateutil \
+            reportlab
 
-      # 🔐 Secure GeoIP download
+      # ---------------- GEOIP FIXED DOWNLOAD ----------------
       - name: Download GeoLite2 Country DB
-        env:
-          MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
         run: |
-          set -e
-          curl -sSL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz" \
-            | tar -xz --strip-components=1 --wildcards '*GeoLite2-Country.mmdb'
-          [ -f GeoLite2-Country.mmdb ] || (echo "❌ GeoIP DB missing" && exit 1)
-          touch .nojekyll  # disable Jekyll for Pages
+          set -euo pipefail
 
-      - name: Run IOC generator
-        run: python generate_ioc.py
-
-      - name: Validate output
-        run: |
-          set -e
-          for f in index.html weekly-ioc.csv weekly-ioc.json weekly-report.pdf; do
-            [ -f "$f" ] || (echo "❌ Missing $f" && exit 1)
-            echo "✅ Found $f"
-          done
-
-      - name: Commit and push changes
-        run: |
-          set -e
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add index.html weekly-ioc.csv weekly-ioc.json weekly-report.pdf .nojekyll
-          if git diff --cached --quiet; then
-            echo "❌ No changes detected – exiting"
-            exit 0
+          if [ -z "${MAXMIND_LICENSE_KEY}" ]; then
+            echo "❌ MAXMIND_LICENSE_KEY is not set"
+            exit 1
           fi
-          git commit -m "Weekly IOC report (Malaysia, GeoIP verified)"
-          git push
+
+          echo "⬇️ Downloading GeoLite2 Country DB..."
+          curl -fL \
+            "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz" \
+            -o GeoLite2-Country.tar.gz
+
+          echo "📦 Extracting..."
+          tar -xzf GeoLite2-Country.tar.gz
+
+          echo "📁 Moving MMDB..."
+          mv GeoLite2-Country_*/GeoLite2-Country.mmdb .
+
+          echo "✅ GeoIP DB ready"
+          ls -lh GeoLite2-Country.mmdb
+
+      # ---------------- RUN YOUR SCRIPT ----------------
+      - name: Run IOC pipeline
+        run: |
+          python3 generate_ioc.py.py
+
+      # ---------------- OPTIONAL ARTIFACT UPLOAD ----------------
+      - name: Upload outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-ioc-output
+          path: |
+            index.html
+            weekly-ioc.csv
+            weekly-ioc.json
+            weekly-report.pdf
