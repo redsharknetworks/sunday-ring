@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SUNDAY RING with RED SHARK</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <style>
+        :root {
+            --bg-dark: #0b1220;
+            --bg-card: #111a2e;
+            --red-accent: #d62828;
+            --blue-accent: #1e3a8a;
+            --text-main: #e5e7eb;
+            --text-muted: #9ca3af;
+            --border-soft: rgba(255, 255, 255, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background: radial-gradient(circle at top, #121c34, var(--bg-dark));
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        /* ---------- Header ---------- */
+        header {
+            width: 100%;
+            max-width: 1100px;
+            padding: 40px 20px 20px;
+            text-align: center;
+        }
+
+        .logo {
+            width: 140px;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            font-size: 2.4rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+
+        h1 span {
+            color: var(--red-accent);
+        }
+
+        .subtitle {
+            font-size: 1.1rem;
+            color: var(--text-muted);
+            margin-bottom: 40px;
+        }
+
+        /* ---------- Main Content ---------- */
+        main {
+            width: 100%;
+            max-width: 1100px;
+            padding: 0 20px 60px;
+        }
+
+        .card {
+            background: linear-gradient(180deg, var(--bg-card), #0e1628);
+            border: 1px solid var(--border-soft);
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+        }
+
+        .card h2 {
+            font-size: 1.6rem;
+            margin-bottom: 20px;
+            color: #ffffff;
+            border-left: 5px solid var(--red-accent);
+            padding-left: 15px;
+        }
+
+        ul {
+            list-style: none;
+        }
+
+        li {
+            padding: 14px 0;
+            border-bottom: 1px solid var(--border-soft);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        li:last-child {
+            border-bottom: none;
+        }
+
+        li::before {
+            content: "▸";
+            color: var(--red-accent);
+            font-size: 1.2rem;
+        }
+
+        /* ---------- Footer ---------- */
+        footer {
+            margin-top: auto;
+            width: 100%;
+            border-top: 1px solid var(--border-soft);
+            padding: 20px;
+            text-align: center;
+            background: rgba(0, 0, 0, 0.25);
+        }
+
+        footer a {
+            color: var(--red-accent);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        /* ---------- Responsive ---------- */
+        @media (max-width: 600px) {
+            h1 {
+                font-size: 1.9rem;
+            }
+
+            .card {
+                padding: 22px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <img src="redshark-logo.jpg" alt="Red Shark Logo" class="logo">
+
+        <h1>SUNDAY RING with <span>RED SHARK</span></h1>
+        <p class="subtitle">
+            Weekly Threat Intelligence Snapshot – Malaysia
+        </p>
+    </header>
+
+    <main>
+        <section class="card">
+            <h2>Latest Intelligence Updates</h2>
+
+            <ul>
+                <li>Malicious IP Address</li>
+                <li>PDF & CSV Reports</li>
+                <li>Historical Archive</li>
+            </ul>
+        </section>
+    </main>
+
+    <footer>
+        VISIT US:
+        <a href="https://sunday-ring.redshark.my" target="_blank">
+            https://sunday-ring.redshark.my
+        </a>
+    </footer>
+
+</body>
+</html>
