@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: redshark-threat-intel
+    runtime: docker
+    repo: https://github.com/redsharknetworks/redshark-threat-intel-platform
+    branch: main
+    plan: starter
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: redshark-db
+          property: connectionString
+      - key: OTX_API_KEY
+        sync: false
+      - key: MAXMIND_DB
+        value: /app/GeoLite2-Country.mmdb
+
+databases:
+  - name: redshark-db
+    plan: starter
