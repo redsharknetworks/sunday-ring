@@ -1,34 +1,16 @@
-name: Weekly IOC report
+name: Weekly Report
+
 on:
   schedule:
-    - cron: '0 2 * * 1'  # Monday 02:00 UTC
-  workflow_dispatch:
+    - cron: "0 2 * * 1"
 
 jobs:
-  build:
+  report:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-      - name: Install deps
-        run: pip install -r requirements.txt
-      - name: Fetch IOCs
-        env:
-          TALOS_FEED_URL: ${{ secrets.TALOS_FEED_URL }}
-        run: python src/fetch_talos.py
-      - name: Enrich GeoIP
-        env:
-          MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
-        run: |
-          # download GeoLite2 .mmdb using license key if needed
-          python src/enrich_geoip.py
-      - name: Generate reports
-        run: python src/generate_reports.py
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: weekly-reports
-          path: exports/
+    - uses: actions/checkout@v3
+    - name: Install dependencies
+      run: pip install -r backend/requirements.txt
+    - name: Generate report
+      run: python backend/app/services/reporting.py
