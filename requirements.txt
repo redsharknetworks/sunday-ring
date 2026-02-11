@@ -1,3 +1,9 @@
+fastapi
+uvicorn
 requests
 python-dotenv
 geoip2
+apscheduler
+pandas
+reportlab
+
