@@ -1,15 +1,6 @@
-# Python
-__pycache__/
-*.pyc
+# Threat intel secrets
+threat-intel/.env
+threat-intel/threatintel.db
+threat-intel/reports_output/
+threat-intel/GeoLite2-*.mmdb
 
-# Environment
-.env
-
-# Databases
-threatintel.db
-
-# Reports
-reports_output/*
-
-# MaxMind DB
-GeoLite2-*.mmdb
