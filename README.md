@@ -12,7 +12,7 @@ malicious IPs targeting Malaysia using MaxMind GeoIP.
 ## Setup
 1. Clone repo
 ```bash
-git clone https://github.com/yourusername/otx-malaysia-threat-intel.git
+git clone https://github.com/redsharknetworks/otx-malaysia-threat-intel.git
 cd otx-malaysia-threat-intel
 pip install -r requirements.txt
 cp .env.example .env
