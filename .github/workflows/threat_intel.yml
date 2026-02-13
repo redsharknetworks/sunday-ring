@@ -1,34 +1,33 @@
 name: Threat Intel Ingestion
+
 on:
   schedule:
-    - cron: "*/30 * * * *"  # every 30 minutes
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-          
 
-      - name: Install dependencies 
-        working-directory: threat 
-        run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: pip install -r threat/requirements.txt
 
       - name: Download MaxMind DB
         run: |
-            curl -L -o threat/maxmind.tar.gz "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${{ secrets.MAXMIND_LICENSE_KEY }}&suffix=tar.gz"
-            tar -xzf threat/maxmind.tar.gz -C threat/ --strip-components=1
-        env:
-          MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
-
+          curl -L -o maxmind.tar.gz "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${{ secrets.MAXMIND_LICENSE_KEY }}&suffix=tar.gz"
+          tar -xzf maxmind.tar.gz --strip-components=1
+          mv GeoLite2-Country.mmdb threat/
+        
       - name: Run ingestion
         run: python threat/src/main.py
         env:
           OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
-          MAXMIND_DB: threat/GeoLite2-Country.mmdb
