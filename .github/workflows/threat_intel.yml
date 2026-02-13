@@ -17,18 +17,18 @@ jobs:
           
 
       - name: Install dependencies 
-        working-directory: threat_intel 
+        working-directory: threat 
         run: pip install -r requirements.txt
 
       - name: Download MaxMind DB
         run: |
-            curl -L -o threat_intel/maxmind.tar.gz "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${{ secrets.MAXMIND_LICENSE_KEY }}&suffix=tar.gz"
-            tar -xzf threat_intel/maxmind.tar.gz -C threat_intel/ --strip-components=1
+            curl -L -o threat/maxmind.tar.gz "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${{ secrets.MAXMIND_LICENSE_KEY }}&suffix=tar.gz"
+            tar -xzf threat/maxmind.tar.gz -C threat/ --strip-components=1
         env:
           MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
 
       - name: Run ingestion
-        run: python threat_intel/src/main.py
+        run: python threat/src/main.py
         env:
           OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
-          MAXMIND_DB: threat_intel/GeoLite2-Country.mmdb
+          MAXMIND_DB: threat/GeoLite2-Country.mmdb
