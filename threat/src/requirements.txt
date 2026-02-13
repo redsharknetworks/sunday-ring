@@ -1,0 +1,11 @@
+flask
+fastapi
+uvicorn
+requests
+python-dotenv
+geoip2
+gunicorn
+apscheduler
+pandas
+reportlab
+
