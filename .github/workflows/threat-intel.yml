@@ -22,8 +22,8 @@ jobs:
 
       - name: Download MaxMind DB
         run: |
-          curl -L -o threat-intel/GeoLite2-Country.mmdb "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${{ secrets.MAXMIND_LICENSE_KEY }}&suffix=tar.gz"
-          tar -xzf threat-intel/GeoLite2-Country.mmdb.tar.gz -C threat-intel/
+        curl -L -o threat-intel/maxmind.tar.gz "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${{ secrets.MAXMIND_LICENSE_KEY }}&suffix=tar.gz"
+        tar -xzf threat-intel/maxmind.tar.gz -C threat-intel/ --strip-components=1
         env:
           MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
 
