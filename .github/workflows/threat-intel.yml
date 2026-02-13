@@ -16,18 +16,18 @@ jobs:
           python-version: "3.10"
           
 
-      - name: Install dependencies
-        working-directory: threat-intel
-        run: pip install -r requirements.txt
-        
-      - name: Debug repo structure
+      - name: Install Python dependencies
         run: |
-            echo "PWD:"
-            pwd
-            echo "FILES:"
-            ls -la
-            echo "RECURSIVE:"
-            ls -R
+            python -m pip install --upgrade pip
+            pip install \
+            fastapi \
+            uvicorn \
+            requests \
+            python-dotenv \
+            geoip2 \
+            apscheduler \
+            pandas \
+            reportlab
 
       - name: Download MaxMind DB
         run: |
