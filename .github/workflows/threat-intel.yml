@@ -19,6 +19,15 @@ jobs:
       - name: Install dependencies
         working-directory: threat-intel
         run: pip install -r requirements.txt
+        
+      - name: Debug repo structure
+        run: |
+            echo "PWD:"
+            pwd
+            echo "FILES:"
+            ls -la
+            echo "RECURSIVE:"
+            ls -R
 
       - name: Download MaxMind DB
         run: |
