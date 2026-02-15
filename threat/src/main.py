@@ -173,7 +173,7 @@ def dashboard_html():
     </head>
     <body>
         <div class="header">
-            <img src="https://raw.githubusercontent.com/redsharknetworks/main/redshark.jpg" class="logo" />
+            <img src="https://https://github.com/redsharknetworks/sunday-ring/redshark.jpeg" class="logo" />
             <h1>Malaysia Threat Intel Dashboard</h1>
         </div>
         <div class="email">Contact: darkgrid@redshark.my</div>
