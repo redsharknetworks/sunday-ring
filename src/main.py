@@ -68,17 +68,18 @@ def fetch_otx_pulses(limit=100):
         return []
 
     headers = {"X-OTX-API-KEY": OTX_API_KEY, "Accept": "application/json"}
-    url = "https://otx.alienvault.com/api/v1/pulses/indicators"
+    url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
     params = {"limit": limit}
 
     try:
         response = requests.get(url, headers=headers, params=params, timeout=10)
-        print("HTTP Status:", response.status_code)
-        print("Response Text:", response.text[:200])  # print first 200 chars
         response.raise_for_status()
-        return response.json().get("results", [])
+        data = response.json()
+        # Pulses are usually under 'results' key
+        return data.get("results", [])
     except Exception as e:
         print("OTX Fetch Error:", e)
+        print("Response Status:", getattr(e.response, 'status_code', None))
         return []
 
 def compute_malaysia_score(pulse):
