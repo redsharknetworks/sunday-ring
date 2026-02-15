@@ -111,7 +111,7 @@ def save_threats(pulses):
 
     for pulse in pulses:
         score = compute_malaysia_score(pulse)
-        if score < 5:
+        if score < 3:
             continue  # ignore low-score pulses
 
         indicators = pulse.get("indicators") or []
