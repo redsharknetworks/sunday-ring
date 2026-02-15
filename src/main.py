@@ -12,12 +12,11 @@ app = Flask(__name__)
 # Environment / Config
 # --------------------------
 OTX_API_KEY = os.environ.get("OTX_API_KEY")
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "M@ttdemon2026")  # set in Render or locally
+if not OTX_API_KEY:
+    raise RuntimeError("OTX_API_KEY environment variable is required!")
 
-# --------------------------
-# Local relative SQLite path
-# --------------------------
-DATABASE_FILE = "threat_intel.db"  # relative path, works locally or free Render
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "M@ttdemon2026")
+DATABASE_FILE = "threat_intel.db"
 
 # --------------------------
 # Malaysia Targeting Rules
@@ -40,7 +39,7 @@ def init_db():
     conn.execute("""
         CREATE TABLE IF NOT EXISTS malaysia_targeted_threats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            indicator TEXT,
+            indicator TEXT UNIQUE,
             indicator_type TEXT,
             pulse_name TEXT,
             pulse_description TEXT,
@@ -60,13 +59,9 @@ def get_db_connection():
     return conn
 
 # --------------------------
-# OTX Fetch & Scoring
+# Fetch Pulses from OTX
 # --------------------------
 def fetch_otx_pulses(limit=100):
-    if not OTX_API_KEY:
-        print("Error: OTX_API_KEY is not set!")
-        return []
-
     headers = {"X-OTX-API-KEY": OTX_API_KEY, "Accept": "application/json"}
     url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
     params = {"limit": limit}
@@ -75,29 +70,41 @@ def fetch_otx_pulses(limit=100):
         response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
-        # Pulses are usually under 'results' key
-        return data.get("results", [])
+        pulses = data.get("results", [])
+        print(f"Fetched {len(pulses)} pulses from OTX")
+        return pulses
+    except requests.HTTPError as e:
+        print(f"OTX Fetch Error: {e} | Status: {getattr(e.response, 'status_code', None)}")
+        if hasattr(e.response, "text"):
+            print("Response Text:", e.response.text[:200])
+        return []
     except Exception as e:
         print("OTX Fetch Error:", e)
-        print("Response Status:", getattr(e.response, 'status_code', None))
         return []
 
+# --------------------------
+# Compute Malaysia Score
+# --------------------------
 def compute_malaysia_score(pulse):
     score = 0
-    text = (pulse.get("name","") + pulse.get("description","")).lower()
+    text = (pulse.get("name", "") + " " + pulse.get("description", "")).lower()
 
     # Keyword matches
     for kw in MALAYSIA_KEYWORDS:
         if kw in text:
             score += THREAT_SCORES["keyword"]
 
-    # Domain indicators ending with .my
-    for ind in pulse.get("indicators", []):
+    # Indicators ending with .my
+    indicators = pulse.get("indicators") or []
+    for ind in indicators:
         if ind.get("type") == "domain" and ind.get("indicator", "").endswith(".my"):
             score += THREAT_SCORES["my_domain"]
 
     return score
 
+# --------------------------
+# Save Threats to DB
+# --------------------------
 def save_threats(pulses):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -107,7 +114,8 @@ def save_threats(pulses):
         if score < 5:
             continue  # ignore low-score pulses
 
-        for ind in pulse.get("indicators", []):
+        indicators = pulse.get("indicators") or []
+        for ind in indicators:
             cursor.execute("""
                 INSERT OR IGNORE INTO malaysia_targeted_threats
                 (indicator, indicator_type, pulse_name, pulse_description, pulse_author, pulse_created, threat_score)
@@ -124,6 +132,7 @@ def save_threats(pulses):
 
     conn.commit()
     conn.close()
+    print("Threats saved to database.")
 
 # --------------------------
 # Update Endpoint
@@ -150,9 +159,7 @@ def dashboard_api():
         LIMIT 50
     """).fetchall()
     conn.close()
-
-    data = [dict(row) for row in rows]
-    return jsonify(data)
+    return jsonify([dict(row) for row in rows])
 
 # --------------------------
 # Dashboard HTML
