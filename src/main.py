@@ -12,12 +12,12 @@ app = Flask(__name__)
 # Environment / Config
 # --------------------------
 OTX_API_KEY = os.environ.get("OTX_API_KEY")
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "M@ttdemon2026")  # set in Render
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "M@ttdemon2026")  # set in Render or locally
 
-# Use Render persistent disk or local fallback
-DB_DIR = "/data"
-os.makedirs(DB_DIR, exist_ok=True)
-DATABASE_FILE = os.path.join(DB_DIR, "threat_intel.db")
+# --------------------------
+# Local relative SQLite path
+# --------------------------
+DATABASE_FILE = "threat_intel.db"  # relative path, works locally or free Render
 
 # --------------------------
 # Malaysia Targeting Rules
@@ -28,8 +28,8 @@ MALAYSIA_KEYWORDS = [
 ]
 
 THREAT_SCORES = {
-    "keyword": 3,      # score per keyword match
-    "my_domain": 4     # score if domain ends with .my
+    "keyword": 3,
+    "my_domain": 4
 }
 
 # --------------------------
