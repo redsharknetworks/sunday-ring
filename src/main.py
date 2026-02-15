@@ -182,7 +182,7 @@ def dashboard_html():
     </head>
     <body>
         <div class="header">
-            <img src="{{ url_for('static', filename='redshark.png') }}" class="logo" />
+            <img src="https://raw.githubusercontent.com/redsharknetworks/sunday-ring/main/redshark.png" class="logo" />
             <h1>Malaysia Threat Intel Dashboard</h1>
         </div>
         <div class="email">Contact: darkgrid@redshark.my</div>
