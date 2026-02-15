@@ -4,13 +4,17 @@ import requests
 from flask import Flask, jsonify, request, render_template_string
 
 # --------------------------
-# Environment / Config
+# Flask App
 # --------------------------
 app = Flask(__name__)
 
+# --------------------------
+# Environment / Config
+# --------------------------
 OTX_API_KEY = os.environ.get("OTX_API_KEY")
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "M@ttdemon2026")  # replace with secure value
-DATABASE_FILE = "threat_intel.db"
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "M@ttdemon2026")  # set in Render
+# Use Render persistent disk for SQLite
+DATABASE_FILE = "/data/threat_intel.db"
 
 # --------------------------
 # Malaysia Targeting Rules
@@ -173,7 +177,7 @@ def dashboard_html():
     </head>
     <body>
         <div class="header">
-            <img src="https://https://github.com/redsharknetworks/sunday-ring/redshark.jpeg" class="logo" />
+            <img src="https://raw.githubusercontent.com/redsharknetwork/main/redshark.jpeg" class="logo" />
             <h1>Malaysia Threat Intel Dashboard</h1>
         </div>
         <div class="email">Contact: darkgrid@redshark.my</div>
@@ -199,7 +203,7 @@ def dashboard_html():
     </html>
     """
     return render_template_string(html, rows=rows)
-  
+
 # --------------------------
 # Run App
 # --------------------------
