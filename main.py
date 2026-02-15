@@ -67,7 +67,7 @@ def fetch_otx_pulses(limit=100):
         return []
 
     headers = {"X-OTX-API-KEY": OTX_API_KEY, "Accept": "application/json"}
-    url = "https://otx.alienvault.com/api/v2/pulses/subscribed"
+    url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
     params = {"limit": limit}
 
     try:
