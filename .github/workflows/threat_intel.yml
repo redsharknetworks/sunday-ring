@@ -28,6 +28,6 @@ jobs:
           mv GeoLite2-Country.mmdb threat/
         
       - name: Run ingestion
-        run: python threat/src/main.py
+        run: python src/main.py
         env:
           OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
