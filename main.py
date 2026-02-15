@@ -13,8 +13,11 @@ app = Flask(__name__)
 # --------------------------
 OTX_API_KEY = os.environ.get("OTX_API_KEY")
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "M@ttdemon2026")  # set in Render
-# Use Render persistent disk for SQLite
-DATABASE_FILE = "/data/threat_intel.db"
+
+# Use Render persistent disk or local fallback
+DB_DIR = "/data"
+os.makedirs(DB_DIR, exist_ok=True)
+DATABASE_FILE = os.path.join(DB_DIR, "threat_intel.db")
 
 # --------------------------
 # Malaysia Targeting Rules
@@ -79,12 +82,12 @@ def compute_malaysia_score(pulse):
     score = 0
     text = (pulse.get("name","") + pulse.get("description","")).lower()
 
-    # keyword matches
+    # Keyword matches
     for kw in MALAYSIA_KEYWORDS:
         if kw in text:
             score += THREAT_SCORES["keyword"]
 
-    # domain indicators ending with .my
+    # Domain indicators ending with .my
     for ind in pulse.get("indicators", []):
         if ind.get("type") == "domain" and ind.get("indicator", "").endswith(".my"):
             score += THREAT_SCORES["my_domain"]
@@ -177,7 +180,7 @@ def dashboard_html():
     </head>
     <body>
         <div class="header">
-            <img src="https://raw.githubusercontent.com/redsharknetwork/main/redshark.jpeg" class="logo" />
+            <img src="https://raw.githubusercontent.com/redsharknetworks/main/redshark.jpeg" class="logo" />
             <h1>Malaysia Threat Intel Dashboard</h1>
         </div>
         <div class="email">Contact: darkgrid@redshark.my</div>
