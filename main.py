@@ -64,18 +64,19 @@ def get_db_connection():
 # --------------------------
 def fetch_otx_pulses(limit=100):
     if not OTX_API_KEY:
+        print("Error: OTX_API_KEY is not set!")
         return []
 
     headers = {"X-OTX-API-KEY": OTX_API_KEY, "Accept": "application/json"}
-    url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
+    url = "https://otx.alienvault.com/api/v1/pulses/indicators"
     params = {"limit": limit}
 
     try:
         response = requests.get(url, headers=headers, params=params, timeout=10)
+        print("HTTP Status:", response.status_code)
+        print("Response Text:", response.text[:200])  # print first 200 chars
         response.raise_for_status()
-        data = response.json()
-        # Each pulse contains 'indicators' list
-        return data.get("results", [])
+        return response.json().get("results", [])
     except Exception as e:
         print("OTX Fetch Error:", e)
         return []
