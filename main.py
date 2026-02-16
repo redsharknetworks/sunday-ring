@@ -4,9 +4,7 @@ import sqlite3
 import requests
 import io
 import csv
-from datetime import datetime
 from flask import Flask, jsonify, send_file, render_template_string, request
-import geoip2.database
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib import colors, pagesizes
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -26,14 +24,13 @@ if not OTX_API_KEY:
     raise RuntimeError("OTX_API_KEY environment variable is required!")
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
-DB_FILE = "threat_intel.db"
-GEOIP_DB = "GeoLite2-Country.mmdb"
-LOGO_FILE = "static/redshark_logo.png"
-OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
+DB_FILE = os.environ.get("DB_FILE", "threat_intel.db")
+LOGO_FILE = os.environ.get("LOGO_FILE", "static/redshark_logo.png")
 
 REPORT_TITLE = "Sunday Ring With Red Shark – Malaysian Cyber Threat Landscape"
 DASHBOARD_TITLE = "Real-Time Malaysia Threat Intelligence Dashboard"
 EXECUTIVE_HEADLINE = "Threat Campaigns Impacting the Malaysian Digital Ecosystem"
+CONTACT_EMAIL = "darkgrid@redshark.my"
 
 # -----------------------------
 # Database Setup
@@ -62,16 +59,6 @@ def get_db_connection():
 init_db()
 
 # -----------------------------
-# GeoIP Lookup
-# -----------------------------
-def geoip_country(ip):
-    try:
-        with geoip2.database.Reader(GEOIP_DB) as reader:
-            return reader.country(ip).country.iso_code
-    except:
-        return None
-
-# -----------------------------
 # Classification Logic
 # -----------------------------
 def classify_pulse(indicators):
@@ -82,13 +69,6 @@ def classify_pulse(indicators):
     for ind in indicators:
         ind_type = ind.get("type")
         value = ind.get("indicator")
-
-        if ind_type in ["IPv4", "IPv6"]:
-            country = geoip_country(value)
-            if country == "MY":
-                has_source_my = True
-            elif country:
-                has_source_other = True
 
         if ind_type == "domain" and value.endswith(".my"):
             has_target_my = True
@@ -111,7 +91,7 @@ def fetch_otx(limit=100):
     headers = {"X-OTX-API-KEY": OTX_API_KEY}
     params = {"limit": limit}
     try:
-        r = requests.get(OTX_URL, headers=headers, params=params, timeout=15)
+        r = requests.get("https://otx.alienvault.com/api/v1/pulses/subscribed", headers=headers, params=params, timeout=15)
         r.raise_for_status()
         return r.json().get("results", [])
     except Exception as e:
@@ -126,6 +106,7 @@ def ingest():
     conn = get_db_connection()
     c = conn.cursor()
     total_indicators = 0
+
     for pulse in pulses:
         classification = classify_pulse(pulse.get("indicators", []))
         for ind in pulse.get("indicators", []):
@@ -135,11 +116,12 @@ def ingest():
             """, (
                 ind.get("indicator"),
                 ind.get("type"),
-                ind.get("name") if "name" in ind else pulse.get("name"),
+                pulse.get("name"),
                 classification,
                 pulse.get("created")
             ))
             total_indicators += 1
+
     conn.commit()
     conn.close()
     print(f"Ingested {len(pulses)} pulses with {total_indicators} indicators.")
@@ -151,14 +133,14 @@ def ingest():
 def update_endpoint():
     key = request.args.get("key")
     if key != ADMIN_KEY:
-        return {"error": "Unauthorized"}, 403
+        return jsonify({"error": "Unauthorized"}), 403
     ingest()
-    return {"status": "updated", "message": "OTX pulses ingested successfully"}
+    return jsonify({"status": "updated", "message": "OTX pulses ingested successfully"})
 
 # -----------------------------
-# PDF Report
+# Generate PDF
 # -----------------------------
-def generate_pdf():
+def generate_pdf(limit=100):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=pagesizes.A4, rightMargin=30, leftMargin=30)
     elements = []
@@ -169,7 +151,8 @@ def generate_pdf():
         elements.append(Image(LOGO_FILE, width=2*inch, height=1*inch))
         elements.append(Spacer(1, 12))
 
-    # Centered Title
+    # Centered multi-line title
+    title_text = "Sunday Ring With Red Shark<br/>(Malaysian Cyber Threat Landscape)"
     title_style = ParagraphStyle(
         "Title",
         parent=styles["Heading1"],
@@ -177,40 +160,47 @@ def generate_pdf():
         spaceAfter=12,
         textColor=colors.darkred
     )
-    elements.append(Paragraph(REPORT_TITLE, title_style))
+    elements.append(Paragraph(title_text, title_style))
     elements.append(Spacer(1, 8))
 
     # Executive Headline
     headline_style = ParagraphStyle(
         "Headline",
         parent=styles["Heading2"],
-        textColor=colors.black,
         alignment=TA_CENTER,
         spaceAfter=12
     )
     elements.append(Paragraph(EXECUTIVE_HEADLINE, headline_style))
     elements.append(Spacer(1, 12))
 
-    # Table Data
+    # Fetch latest indicators from DB
     conn = get_db_connection()
     rows = conn.execute("""
         SELECT indicator, type, pulse_name, classification, created
         FROM indicators
         ORDER BY created DESC
-        LIMIT 100
-    """).fetchall()
+        LIMIT ?
+    """, (limit,)).fetchall()
     conn.close()
 
+    # Table data with wrapped pulse names
     table_data = [["Indicator", "Type", "Pulse Name", "Classification", "Created"]]
     paragraph_style = ParagraphStyle('table', fontSize=9, leading=11)
 
     for row in rows:
         pulse_name_paragraph = Paragraph(row["pulse_name"], paragraph_style)
-        table_data.append([row["indicator"], row["type"], pulse_name_paragraph, row["classification"], row["created"]])
+        table_data.append([
+            row["indicator"],
+            row["type"],
+            pulse_name_paragraph,
+            row["classification"],
+            row["created"]
+        ])
 
-    col_widths = [2*inch, 0.8*inch, 3*inch, 1.2*inch, 1.5*inch]
+    col_widths = [2*inch, 1*inch, 3*inch, 1.2*inch, 1.5*inch]
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
 
+    # Table style
     style = TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.red),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
@@ -220,34 +210,40 @@ def generate_pdf():
     ])
 
     # Color-code rows by classification
+    color_map = {
+        "TARGET_MY": colors.lightcoral,
+        "SOURCE_MY": colors.orange,
+        "BOTH": colors.darkred,
+        "SOURCE_OTHER": colors.lightblue,
+        "UNCLASSIFIED": colors.lightgrey
+    }
+    text_map = {
+        "BOTH": colors.whitesmoke
+    }
+
     for i, row in enumerate(rows, start=1):
         cls = row["classification"]
-        if cls == "TARGET_MY":
-            style.add('BACKGROUND', (0,i), (-1,i), colors.lightcoral)
-        elif cls == "SOURCE_MY":
-            style.add('BACKGROUND', (0,i), (-1,i), colors.orange)
-        elif cls == "BOTH":
-            style.add('BACKGROUND', (0,i), (-1,i), colors.darkred)
-            style.add('TEXTCOLOR', (0,i), (-1,i), colors.whitesmoke)
-        elif cls == "SOURCE_OTHER":
-            style.add('BACKGROUND', (0,i), (-1,i), colors.lightblue)
-        elif cls == "UNCLASSIFIED":
-            style.add('BACKGROUND', (0,i), (-1,i), colors.lightgrey)
+        bg = color_map.get(cls, colors.lightgrey)
+        style.add('BACKGROUND', (0,i), (-1,i), bg)
+        if cls in text_map:
+            style.add('TEXTCOLOR', (0,i), (-1,i), text_map[cls])
 
     table.setStyle(style)
     elements.append(table)
-    elements.append(Spacer(1, 24))
-    # Contact visible above buttons in dashboard and in PDF footer
-    elements.append(Paragraph("Contact: darkgrid@redshark.my", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # Contact Info Footer
+    elements.append(Paragraph(f"Contact: {CONTACT_EMAIL}", styles["Normal"]))
+
     doc.build(elements)
     buffer.seek(0)
     return buffer
 
 # -----------------------------
-# Dashboard HTML
+# Dashboard
 # -----------------------------
 @app.route("/")
-def dashboard_html():
+def dashboard():
     conn = get_db_connection()
     rows = conn.execute("""
         SELECT indicator, type, pulse_name, classification, created
@@ -278,7 +274,8 @@ def dashboard_html():
             .header { display: flex; align-items: center; gap: 15px; }
             img.logo { height: 60px; }
             .headline h3 { color: #ff4d4d; margin-top: 5px; margin-bottom: 15px; font-weight: bold; }
-            .email { margin-top: 5px; font-size: 0.9em; color: #aaa; }
+            .email { margin-bottom: 12px; font-size: 0.9em; color: #aaa; }
+            .buttons { margin-bottom: 20px; }
             .buttons a { 
                 background-color: #222; color: #eee; padding: 8px 12px; text-decoration: none; 
                 margin-right: 10px; border-radius: 4px;
@@ -295,7 +292,7 @@ def dashboard_html():
             <h3>{{ executive_headline }}</h3>
         </div>
 
-        <div class="email">Contact: darkgrid@redshark.my</div>
+        <div class="email">Contact: {{ contact_email }}</div>
 
         <div class="buttons">
             <a href="/report/json" target="_blank">Download JSON</a>
@@ -327,7 +324,8 @@ def dashboard_html():
     """
     return render_template_string(html, rows=rows, color_map=color_map,
                                   dashboard_title=DASHBOARD_TITLE,
-                                  executive_headline=EXECUTIVE_HEADLINE)
+                                  executive_headline=EXECUTIVE_HEADLINE,
+                                  contact_email=CONTACT_EMAIL)
 
 # -----------------------------
 # Reports
@@ -375,14 +373,14 @@ def report_csv():
     )
 
 # -----------------------------
-# Main Entry
+# CLI Support & Run
 # -----------------------------
 if __name__ == "__main__":
     init_db()
-    if len(sys.argv) > 1 and sys.argv[1] == "ingest":
-        ingest()
-        sys.exit(0)
+    if len(sys.argv) > 1:
+        if sys.argv[1] in ["ingest", "--update"]:
+            ingest()
+            sys.exit(0)
 
-    port = int(os.environ.get("PORT", 5000))  # Use Render's PORT
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
