@@ -256,6 +256,11 @@ def dashboard_html():
             img.logo {{ height: 60px; }}
             .headline h3 {{ color: #ff4d4d; margin-top: 5px; margin-bottom: 15px; font-weight: bold; }}
             .email {{ margin-top: 5px; font-size: 0.9em; color: #aaa; }}
+            .buttons a {{ 
+                background-color: #222; color: #eee; padding: 8px 12px; text-decoration: none; 
+                margin-right: 10px; border-radius: 4px;
+            }}
+            .buttons a:hover {{ background-color: #333; }}
         </style>
     </head>
     <body>
@@ -267,6 +272,13 @@ def dashboard_html():
             <h3>Threat Campaigns Impacting the Malaysian Digital Ecosystem</h3>
         </div>
         <div class="email">Contact: darkgrid@redshark.my</div>
+
+        <div class="buttons">
+            <a href="/report/json" target="_blank">Download JSON</a>
+            <a href="/report/csv" target="_blank">Download CSV</a>
+            <a href="/report/pdf" target="_blank">Download PDF</a>
+        </div>
+
         <table>
             <tr>
                 <th>Indicator</th>
