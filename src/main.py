@@ -30,6 +30,9 @@ GEOIP_DB = "GeoLite2-Country.mmdb"
 LOGO_FILE = "static/redshark_logo.png"
 OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
 
+REPORT_TITLE = "Sunday Ring With Red Shark – Malaysian Cyber Threat Landscape"
+DASHBOARD_TITLE = "Real-Time Malaysia Threat Intelligence Dashboard"
+
 # -----------------------------
 # Database Setup
 # -----------------------------
@@ -154,10 +157,7 @@ def generate_pdf():
         elements.append(Spacer(1, 12))
 
     # Title
-    elements.append(Paragraph(
-        "Sunday Ring With Red Shark - Top 10 Malaysia Weekly Threat Report",
-        styles["Heading1"]
-    ))
+    elements.append(Paragraph(REPORT_TITLE, styles["Heading1"]))
     elements.append(Spacer(1, 8))
 
     # Executive Headline
@@ -215,14 +215,13 @@ def generate_pdf():
     table.setStyle(style)
     elements.append(table)
     elements.append(Spacer(1, 24))
-
     elements.append(Paragraph("Contact: darkgrid@redshark.my", styles["Normal"]))
     doc.build(elements)
     buffer.seek(0)
     return buffer
 
 # -----------------------------
-# Routes
+# Dashboard HTML
 # -----------------------------
 @app.route("/")
 def dashboard_html():
@@ -235,35 +234,34 @@ def dashboard_html():
     """).fetchall()
     conn.close()
 
-    # Color mapping
     color_map = {
-        "TARGET_MY": "#f08080",      # light coral
-        "SOURCE_MY": "#ffa500",      # orange
-        "BOTH": "#8b0000",           # dark red
-        "SOURCE_OTHER": "#add8e6",   # light blue
-        "UNCLASSIFIED": "#d3d3d3"    # light gray
+        "TARGET_MY": "#f08080",
+        "SOURCE_MY": "#ffa500",
+        "BOTH": "#8b0000",
+        "SOURCE_OTHER": "#add8e6",
+        "UNCLASSIFIED": "#d3d3d3"
     }
 
-    html = """
+    html = f"""
     <html>
     <head>
-        <title>Malaysia Threat Intel Dashboard</title>
+        <title>{DASHBOARD_TITLE}</title>
         <style>
-            body { font-family: Arial, sans-serif; background-color: #111; color: #eee; }
-            table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-            th, td { border: 1px solid #555; padding: 8px; text-align: left; }
-            th { background-color: #222; }
-            tr:nth-child(even) { background-color: #1a1a1a; }
-            .header { display: flex; align-items: center; gap: 15px; }
-            img.logo { height: 60px; }
-            .headline h3 { color: #ff4d4d; margin-top: 5px; margin-bottom: 15px; font-weight: bold; }
-            .email { margin-top: 5px; font-size: 0.9em; color: #aaa; }
+            body {{ font-family: Arial, sans-serif; background-color: #111; color: #eee; }}
+            table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
+            th, td {{ border: 1px solid #555; padding: 8px; text-align: left; }}
+            th {{ background-color: #222; }}
+            tr:nth-child(even) {{ background-color: #1a1a1a; }}
+            .header {{ display: flex; align-items: center; gap: 15px; }}
+            img.logo {{ height: 60px; }}
+            .headline h3 {{ color: #ff4d4d; margin-top: 5px; margin-bottom: 15px; font-weight: bold; }}
+            .email {{ margin-top: 5px; font-size: 0.9em; color: #aaa; }}
         </style>
     </head>
     <body>
         <div class="header">
             <img src="/static/redshark_logo.png" class="logo" />
-            <h1>Malaysia Threat Intel Dashboard</h1>
+            <h1>{DASHBOARD_TITLE}</h1>
         </div>
         <div class="headline">
             <h3>Threat Campaigns Impacting the Malaysian Digital Ecosystem</h3>
@@ -293,10 +291,13 @@ def dashboard_html():
     """
     return render_template_string(html, rows=rows, color_map=color_map)
 
+# -----------------------------
+# Reports
+# -----------------------------
 @app.route("/report/pdf")
 def report_pdf():
     buffer = generate_pdf()
-    return send_file(buffer, mimetype="application/pdf", as_attachment=True, download_name="weekly_threat_report.pdf")
+    return send_file(buffer, mimetype="application/pdf", as_attachment=True, download_name="malaysia_threat_report.pdf")
 
 @app.route("/report/json")
 def report_json():
@@ -332,7 +333,7 @@ def report_csv():
         io.BytesIO(output.getvalue().encode()),
         mimetype="text/csv",
         as_attachment=True,
-        download_name="weekly_threat_report.csv"
+        download_name="malaysia_threat_report.csv"
     )
 
 # -----------------------------
