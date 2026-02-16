@@ -111,7 +111,7 @@ def save_threats(pulses):
 
     for pulse in pulses:
         score = compute_malaysia_score(pulse)
-        if score < 1:
+        if score < 0:
             continue  # ignore low-score pulses
 
         indicators = pulse.get("indicators") or []
@@ -235,5 +235,6 @@ if __name__ == "__main__":
     else:
         port = int(os.environ.get("PORT", 5000))
         app.run(host="0.0.0.0", port=port)
+
 
 
