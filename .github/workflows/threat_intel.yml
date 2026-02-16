@@ -34,16 +34,6 @@ jobs:
           pip install -r requirements.txt
 
       # --------------------------
-      # Download MaxMind Database
-      # --------------------------
-      - name: Download MaxMind DB
-        run: |
-          curl -L -o maxmind.tar.gz "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${{ secrets.MAXMIND_LICENSE_KEY }}&suffix=tar.gz"
-          tar -xzf maxmind.tar.gz
-          MMDB_PATH=$(find . -name "GeoLite2-Country.mmdb")
-          mv "$MMDB_PATH" GeoLite2-Country.mmdb
-
-      # --------------------------
       # Run Ingestion Mode
       # --------------------------
       - name: Run ingestion
