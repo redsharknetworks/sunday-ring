@@ -29,3 +29,12 @@ jobs:
         run: |
           echo "Calling weekly report endpoint..."
           curl -X GET "${{ secrets.RENDER_APP_URL }}/report/weekly?key=${{ secrets.ADMIN_KEY }}"
+     
+      # 5. Commit generated reports
+      - name: Commit Weekly Reports
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git add weekly_reports/
+          git commit -m "Add weekly threat report" || echo "No changes"
+          git push origin main
