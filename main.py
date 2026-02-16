@@ -183,24 +183,24 @@ def generate_pdf(limit=100):
     """, (limit,)).fetchall()
     conn.close()
 
-    # Table data with wrapped pulse names
+    # Table data with wrapped cells
     table_data = [["Indicator", "Type", "Pulse Name", "Classification", "Created"]]
     paragraph_style = ParagraphStyle('table', fontSize=9, leading=11)
 
     for row in rows:
+        indicator_paragraph = Paragraph(row["indicator"], paragraph_style)
         pulse_name_paragraph = Paragraph(row["pulse_name"], paragraph_style)
         table_data.append([
-            row["indicator"],
+            indicator_paragraph,
             row["type"],
             pulse_name_paragraph,
             row["classification"],
             row["created"]
         ])
 
-    col_widths = [2*inch, 1*inch, 3*inch, 1.2*inch, 1.5*inch]
+    col_widths = [2.5*inch, 0.8*inch, 4*inch, 1*inch, 1.2*inch]
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
 
-    # Table style
     style = TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.red),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
@@ -240,15 +240,20 @@ def generate_pdf(limit=100):
     return buffer
 
 # -----------------------------
-# Dashboard
+# Dashboard with Sorting
 # -----------------------------
 @app.route("/")
 def dashboard():
+    sort_column = request.args.get("sort", "created")
+    sort_order = request.args.get("order", "desc").lower()
+    if sort_order not in ["asc", "desc"]:
+        sort_order = "desc"
+
     conn = get_db_connection()
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT indicator, type, pulse_name, classification, created
         FROM indicators
-        ORDER BY created DESC
+        ORDER BY {sort_column} {sort_order.upper()}
         LIMIT 50
     """).fetchall()
     conn.close()
@@ -269,7 +274,7 @@ def dashboard():
             body { font-family: Arial, sans-serif; background-color: #111; color: #eee; }
             table { border-collapse: collapse; width: 100%; margin-top: 20px; }
             th, td { border: 1px solid #555; padding: 8px; text-align: left; }
-            th { background-color: #222; }
+            th { background-color: #222; cursor: pointer; }
             tr:nth-child(even) { background-color: #1a1a1a; }
             .header { display: flex; align-items: center; gap: 15px; }
             img.logo { height: 60px; }
@@ -282,6 +287,16 @@ def dashboard():
             }
             .buttons a:hover { background-color: #333; }
         </style>
+        <script>
+            function sortTable(column) {
+                const url = new URL(window.location.href);
+                let currentOrder = url.searchParams.get("order");
+                currentOrder = currentOrder === "asc" ? "desc" : "asc";
+                url.searchParams.set("sort", column);
+                url.searchParams.set("order", currentOrder);
+                window.location.href = url.href;
+            }
+        </script>
     </head>
     <body>
         <div class="header">
@@ -302,11 +317,11 @@ def dashboard():
 
         <table>
             <tr>
-                <th>Indicator</th>
-                <th>Type</th>
-                <th>Pulse Name</th>
-                <th>Classification</th>
-                <th>Created</th>
+                <th onclick="sortTable('indicator')">Indicator</th>
+                <th onclick="sortTable('type')">Type</th>
+                <th onclick="sortTable('pulse_name')">Pulse Name</th>
+                <th onclick="sortTable('classification')">Classification</th>
+                <th onclick="sortTable('created')">Created</th>
             </tr>
             {% for row in rows %}
             <tr style="background-color: {{ color_map.get(row['classification'], '#d3d3d3') }}">
