@@ -5,7 +5,7 @@ import requests
 import io
 import csv
 from datetime import datetime
-from flask import Flask, jsonify, send_file, render_template_string
+from flask import Flask, jsonify, send_file, render_template_string, request
 import geoip2.database
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib import colors, pagesizes
@@ -145,7 +145,7 @@ def ingest():
     print(f"Ingested {len(pulses)} pulses with {total_indicators} indicators.")
 
 # -----------------------------
-# /update Endpoint (HTTP trigger)
+# /update Endpoint
 # -----------------------------
 @app.route("/update")
 def update_endpoint():
@@ -237,6 +237,7 @@ def generate_pdf():
     table.setStyle(style)
     elements.append(table)
     elements.append(Spacer(1, 24))
+    # Contact visible above buttons in dashboard and in PDF footer
     elements.append(Paragraph("Contact: darkgrid@redshark.my", styles["Normal"]))
     doc.build(elements)
     buffer.seek(0)
@@ -293,6 +294,7 @@ def dashboard_html():
         <div class="headline">
             <h3>{{ executive_headline }}</h3>
         </div>
+
         <div class="email">Contact: darkgrid@redshark.my</div>
 
         <div class="buttons">
