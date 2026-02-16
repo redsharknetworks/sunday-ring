@@ -9,27 +9,28 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Imag
 from reportlab.lib import colors, pagesizes
 from reportlab.lib.styles import getSampleStyleSheet
 import urllib.request
-import geoip2.database
 
-# --------------------------
+# ==========================================================
 # Flask App
-# --------------------------
+# ==========================================================
 app = Flask(__name__)
 
-# --------------------------
-# Environment / Config
-# --------------------------
+# ==========================================================
+# Configuration
+# ==========================================================
 OTX_API_KEY = os.environ.get("OTX_API_KEY")
 if not OTX_API_KEY:
     raise RuntimeError("OTX_API_KEY environment variable is required!")
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY")
 DATABASE_FILE = "threat_intel.db"
-GEOIP_DB = "GeoLite2-Country.mmdb"  # Static MaxMind DB in repo
 
-# --------------------------
+REPORT_TITLE = "Sunday Ring With Red Shark - Top 10 Malaysia Weekly Threat Intelligence Report"
+CONTACT_EMAIL = "darkgrid@redshark.my"
+
+# ==========================================================
 # Malaysia Targeting Rules
-# --------------------------
+# ==========================================================
 MALAYSIA_KEYWORDS = [
     "malaysia", "maybank", "cimb", "bank negara",
     "petronas", ".my", "gov.my", "edu.my"
@@ -40,9 +41,9 @@ THREAT_SCORES = {
     "my_domain": 4
 }
 
-# --------------------------
+# ==========================================================
 # Database Setup
-# --------------------------
+# ==========================================================
 def init_db():
     conn = sqlite3.connect(DATABASE_FILE)
     conn.execute("""
@@ -62,55 +63,64 @@ def init_db():
 
 init_db()
 
-def get_db_connection():
+def get_db():
     conn = sqlite3.connect(DATABASE_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 
-# --------------------------
-# Fetch OTX Pulses
-# --------------------------
+# ==========================================================
+# OTX Fetch
+# ==========================================================
 def fetch_otx_pulses(limit=100):
-    headers = {"X-OTX-API-KEY": OTX_API_KEY, "Accept": "application/json"}
+    headers = {
+        "X-OTX-API-KEY": OTX_API_KEY,
+        "Accept": "application/json"
+    }
     url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
-    params = {"limit": limit}
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        response.raise_for_status()
-        return response.json().get("results", [])
+        r = requests.get(url, headers=headers, params={"limit": limit}, timeout=15)
+        r.raise_for_status()
+        return r.json().get("results", [])
     except Exception as e:
         print("OTX Fetch Error:", e)
         return []
 
-# --------------------------
-# Compute Malaysia Score
-# --------------------------
+# ==========================================================
+# Threat Scoring
+# ==========================================================
 def compute_malaysia_score(pulse):
     score = 0
     text = (pulse.get("name", "") + " " + pulse.get("description", "")).lower()
+
     for kw in MALAYSIA_KEYWORDS:
         if kw in text:
             score += THREAT_SCORES["keyword"]
+
     for ind in pulse.get("indicators") or []:
         if ind.get("type") == "domain" and ind.get("indicator", "").endswith(".my"):
             score += THREAT_SCORES["my_domain"]
+
     return score
 
-# --------------------------
+# ==========================================================
 # Save Threats
-# --------------------------
+# ==========================================================
 def save_threats(pulses):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db()
+    cur = conn.cursor()
+
     for pulse in pulses:
         score = compute_malaysia_score(pulse)
         if score < 1:
             continue
+
         for ind in pulse.get("indicators") or []:
             indicator = ind.get("indicator") or "N/A"
-            cursor.execute("""
+
+            cur.execute("""
                 INSERT OR IGNORE INTO malaysia_targeted_threats
-                (indicator, indicator_type, pulse_name, pulse_description, pulse_author, pulse_created, threat_score)
+                (indicator, indicator_type, pulse_name, pulse_description,
+                 pulse_author, pulse_created, threat_score)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 indicator,
@@ -121,41 +131,31 @@ def save_threats(pulses):
                 pulse.get("created"),
                 score
             ))
+
     conn.commit()
     conn.close()
 
-# --------------------------
+# ==========================================================
 # Update Endpoint
-# --------------------------
+# ==========================================================
 @app.route("/update")
-def update_threats():
+def update():
     key = request.args.get("key")
     if ADMIN_KEY and key != ADMIN_KEY:
         return {"error": "Unauthorized"}, 403
+
     pulses = fetch_otx_pulses(limit=200)
     save_threats(pulses)
-    return {"status": "updated", "total_pulses_fetched": len(pulses)}
 
-# --------------------------
-# Dashboard API
-# --------------------------
-@app.route("/api/dashboard")
-def dashboard_api():
-    conn = get_db_connection()
-    rows = conn.execute("""
-        SELECT * FROM malaysia_targeted_threats
-        ORDER BY threat_score DESC, pulse_created DESC
-        LIMIT 50
-    """).fetchall()
-    conn.close()
-    return jsonify([dict(row) for row in rows])
+    return {"status": "updated", "pulses_fetched": len(pulses)}
 
-# --------------------------
-# Weekly Top 10 Threats
-# --------------------------
+# ==========================================================
+# Weekly Top 10
+# ==========================================================
 def get_weekly_top10():
-    conn = get_db_connection()
+    conn = get_db()
     one_week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+
     rows = conn.execute("""
         SELECT indicator, indicator_type, threat_score, pulse_name
         FROM malaysia_targeted_threats
@@ -163,124 +163,157 @@ def get_weekly_top10():
         ORDER BY threat_score DESC
         LIMIT 100
     """, (one_week_ago,)).fetchall()
+
     conn.close()
+
     result = {"ips": [], "domains": [], "hashes": []}
-    for row in rows:
-        r = dict(row)
-        t = r["indicator_type"]
+
+    for r in rows:
+        row = dict(r)
+        t = row["indicator_type"]
+
         if t in ["IPv4", "IPv6"]:
-            result["ips"].append(r)
+            result["ips"].append(row)
         elif t == "domain":
-            result["domains"].append(r)
+            result["domains"].append(row)
         elif "FileHash" in t:
-            result["hashes"].append(r)
-    result["ips"] = result["ips"][:10]
-    result["domains"] = result["domains"][:10]
-    result["hashes"] = result["hashes"][:10]
+            result["hashes"].append(row)
+
+    for k in result:
+        result[k] = result[k][:10]
+
     return result
 
-# --------------------------
+# ==========================================================
 # JSON Report
-# --------------------------
+# ==========================================================
 @app.route("/report/json")
 def report_json():
     return jsonify({
-        "title": "Sunday Ring With Red Shark - Top 10 Malaysia Weekly Threat Report",
+        "title": REPORT_TITLE,
+        "generated": datetime.utcnow().isoformat(),
         "report": get_weekly_top10()
     })
 
-# --------------------------
+# ==========================================================
 # CSV Report
-# --------------------------
+# ==========================================================
 @app.route("/report/csv")
 def report_csv():
     data = get_weekly_top10()
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Sunday Ring With Red Shark - Top 10 Malaysia Weekly Threat Report"])
+
+    writer.writerow([REPORT_TITLE])
+    writer.writerow(["Generated", datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")])
     writer.writerow([])
     writer.writerow(["Category", "Indicator", "Threat Score", "Pulse Name"])
+
     for category, items in data.items():
         for item in items:
             writer.writerow([
-                category,
+                category.upper(),
                 item["indicator"],
                 item["threat_score"],
                 item["pulse_name"]
             ])
+
     output.seek(0)
+
     return send_file(
         io.BytesIO(output.getvalue().encode()),
         mimetype="text/csv",
         as_attachment=True,
-        download_name="weekly_threat_report.csv"
+        download_name="RedShark_Weekly_Threat_Report.csv"
     )
 
-# --------------------------
-# PDF Report with RedShark Logo
-# --------------------------
+# ==========================================================
+# Executive PDF Report
+# ==========================================================
 @app.route("/report/pdf")
 def report_pdf():
     data = get_weekly_top10()
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=pagesizes.A4)
+
+    doc = SimpleDocTemplate(buffer, pagesize=pagesizes.A4,
+                            rightMargin=30, leftMargin=30,
+                            topMargin=40, bottomMargin=40)
+
     elements = []
     styles = getSampleStyleSheet()
 
-    # RedShark Logo
+    # Logo
     logo_url = "https://raw.githubusercontent.com/redsharknetworks/sunday-ring/main/redshark.png"
     logo_file = io.BytesIO(urllib.request.urlopen(logo_url).read())
-    logo_img = Image(logo_file, width=120, height=60)
-    elements.append(logo_img)
-    elements.append(Spacer(1, 12))
+    logo = Image(logo_file, width=150, height=75)
+
+    elements.append(logo)
+    elements.append(Spacer(1, 20))
 
     # Title
+    elements.append(Paragraph(f"<b>{REPORT_TITLE}</b>", styles["Heading1"]))
+    elements.append(Spacer(1, 10))
     elements.append(Paragraph(
-        "Sunday Ring With Red Shark - Top 10 Malaysia Weekly Threat Report",
-        styles["Heading1"]
+        f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
+        styles["Normal"]
     ))
-    elements.append(Spacer(1, 12))
+    elements.append(Spacer(1, 20))
 
     # Table
-    table_data = [["Category", "Indicator", "Threat Score", "Pulse Name"]]
+    table_data = [["Category", "Indicator", "Score", "Pulse Name"]]
+
     for category, items in data.items():
         for item in items:
             table_data.append([
-                category,
+                category.upper(),
                 item["indicator"],
                 str(item["threat_score"]),
-                item["pulse_name"]
+                Paragraph(item["pulse_name"], styles["Normal"])
             ])
 
-    table = Table(table_data, hAlign='LEFT')
-    table.setStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.grey),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-        ('GRID', (0,0), (-1,-1), 1, colors.black),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-    ])
-    elements.append(table)
-    elements.append(Spacer(1, 24))
+    table = Table(
+        table_data,
+        colWidths=[80, 140, 60, 220],
+        repeatRows=1
+    )
 
-    # Footer contact info
-    elements.append(Paragraph("Contact: darkgrid@redshark.my", styles["Normal"]))
+    table.setStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#990000")),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.grey),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1),
+         [colors.whitesmoke, colors.lightgrey])
+    ])
+
+    elements.append(table)
+    elements.append(Spacer(1, 30))
+
+    # Footer
+    elements.append(Paragraph(
+        f"<b>RedShark Cyber Intelligence Division</b><br/>"
+        f"Contact: {CONTACT_EMAIL}<br/>"
+        "Where Cyber Threats Fear to Swim",
+        styles["Normal"]
+    ))
 
     doc.build(elements)
     buffer.seek(0)
+
     return send_file(
         buffer,
         mimetype="application/pdf",
         as_attachment=True,
-        download_name="weekly_threat_report.pdf"
+        download_name="Sunday_Ring_RedShark_Weekly_Report.pdf"
     )
 
-# --------------------------
-# Dashboard HTML
-# --------------------------
+# ==========================================================
+# Dashboard
+# ==========================================================
 @app.route("/")
-def dashboard_html():
-    conn = get_db_connection()
+def dashboard():
+    conn = get_db()
     rows = conn.execute("""
         SELECT * FROM malaysia_targeted_threats
         ORDER BY threat_score DESC, pulse_created DESC
@@ -288,65 +321,56 @@ def dashboard_html():
     """).fetchall()
     conn.close()
 
-    html = """
+    return render_template_string("""
     <html>
     <head>
-        <title>Malaysia Threat Intel Dashboard</title>
+        <title>RedShark Malaysia Threat Dashboard</title>
         <style>
-            body { font-family: Arial, sans-serif; background-color: #111; color: #eee; }
-            table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-            th, td { border: 1px solid #555; padding: 8px; text-align: left; }
-            th { background-color: #222; }
-            tr:nth-child(even) { background-color: #1a1a1a; }
-            .header { display: flex; align-items: center; gap: 15px; }
-            img.logo { height: 60px; }
-            .email { margin-top: 5px; font-size: 0.9em; color: #aaa; }
-            .buttons { margin-top: 15px; }
-            .buttons a { 
-                background-color: #222; color: #eee; padding: 8px 12px; text-decoration: none; 
-                margin-right: 10px; border-radius: 4px;
-            }
-            .buttons a:hover { background-color: #333; }
+            body { font-family: Arial; background:#111; color:#eee; }
+            table { width:100%; border-collapse: collapse; margin-top:20px; }
+            th, td { padding:8px; border:1px solid #444; }
+            th { background:#990000; color:white; }
+            tr:nth-child(even) { background:#1a1a1a; }
+            .header { display:flex; align-items:center; gap:15px; }
+            img { height:60px; }
+            .btn a { padding:8px 12px; background:#990000; color:white;
+                     text-decoration:none; margin-right:10px; }
         </style>
     </head>
     <body>
         <div class="header">
-            <img src="https://raw.githubusercontent.com/redsharknetworks/sunday-ring/main/redshark.png" class="logo" />
-            <h1>Malaysia Threat Intel Dashboard</h1>
+            <img src="https://raw.githubusercontent.com/redsharknetworks/sunday-ring/main/redshark.png">
+            <h1>Malaysia Threat Intelligence Dashboard</h1>
         </div>
-        <div class="email">Contact: darkgrid@redshark.my</div>
-
-        <div class="buttons">
-            <a href="/report/json" target="_blank">Download JSON</a>
-            <a href="/report/csv" target="_blank">Download CSV</a>
-            <a href="/report/pdf" target="_blank">Download PDF</a>
+        <p>Contact: {{email}}</p>
+        <div class="btn">
+            <a href="/report/json">JSON</a>
+            <a href="/report/csv">CSV</a>
+            <a href="/report/pdf">PDF</a>
         </div>
-
         <table>
             <tr>
                 <th>Indicator</th>
                 <th>Type</th>
-                <th>Pulse Name</th>
-                <th>Threat Score</th>
+                <th>Pulse</th>
+                <th>Score</th>
             </tr>
-            {% for row in rows %}
+            {% for r in rows %}
             <tr>
-                <td>{{ row['indicator'] }}</td>
-                <td>{{ row['indicator_type'] }}</td>
-                <td>{{ row['pulse_name'] }}</td>
-                <td>{{ row['threat_score'] }}</td>
+                <td>{{r['indicator']}}</td>
+                <td>{{r['indicator_type']}}</td>
+                <td>{{r['pulse_name']}}</td>
+                <td>{{r['threat_score']}}</td>
             </tr>
             {% endfor %}
         </table>
-        <p>Total Showing: {{ rows|length }}</p>
     </body>
     </html>
-    """
-    return render_template_string(html, rows=rows)
+    """, rows=rows, email=CONTACT_EMAIL)
 
-# --------------------------
-# Run App
-# --------------------------
+# ==========================================================
+# Run
+# ==========================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
