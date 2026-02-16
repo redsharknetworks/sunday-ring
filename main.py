@@ -46,7 +46,8 @@ def init_db():
             type TEXT,
             pulse_name TEXT,
             classification TEXT,
-            created TEXT
+            created TEXT,
+            UNIQUE(indicator, pulse_name)
         )
     """)
     conn.commit()
@@ -62,30 +63,20 @@ init_db()
 # -----------------------------
 # Classification Logic
 # -----------------------------
-def classify_pulse(indicators):
-    has_target_my = False
-    has_source_my = False
-    has_source_other = False
+def classify_pulse(pulse):
+    indicators = pulse.get("indicators", [])
+    targeted_countries = [c.lower() for c in pulse.get("targeted_countries", [])]
 
-    for ind in indicators:
-        ind_type = ind.get("type")
-        value = ind.get("indicator", "")
-        source = ind.get("source", "").lower()  # optional, depends on OTX data
+    has_target_my = any(ind.get("type") == "domain" and ind.get("indicator", "").endswith(".my") for ind in indicators)
+    has_targeted_my = "my" in targeted_countries
 
-        if ind_type == "domain" and value.endswith(".my"):
-            has_target_my = True
-        if source == "my":
-            has_source_my = True
-        elif source:
-            has_source_other = True
-
-    if has_target_my and has_source_my:
+    if has_target_my and has_targeted_my:
         return "BOTH"
     elif has_target_my:
         return "TARGET_MY"
-    elif has_source_my:
+    elif has_targeted_my:
         return "SOURCE_MY"
-    elif has_source_other:
+    elif indicators:
         return "SOURCE_OTHER"
     else:
         return "UNCLASSIFIED"
@@ -115,19 +106,22 @@ def ingest():
     total_indicators = 0
 
     for pulse in pulses:
-        classification = classify_pulse(pulse.get("indicators", []))
+        classification = classify_pulse(pulse)
         for ind in pulse.get("indicators", []):
-            c.execute("""
-                INSERT INTO indicators (indicator, type, pulse_name, classification, created)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                ind.get("indicator"),
-                ind.get("type"),
-                pulse.get("name"),
-                classification,
-                pulse.get("created")
-            ))
-            total_indicators += 1
+            try:
+                c.execute("""
+                    INSERT OR IGNORE INTO indicators (indicator, type, pulse_name, classification, created)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    ind.get("indicator"),
+                    ind.get("type"),
+                    pulse.get("name"),
+                    classification,
+                    pulse.get("created")
+                ))
+                total_indicators += 1
+            except Exception as e:
+                print("DB Insert Error:", e)
 
     conn.commit()
     conn.close()
@@ -145,23 +139,43 @@ def update_endpoint():
     return jsonify({"status": "updated", "message": "OTX pulses ingested successfully"})
 
 # -----------------------------
-# Generate PDF (Landscape)
+# Generate PDF (Landscape, Wrapped, Margins)
 # -----------------------------
 def generate_pdf(limit=100):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    
+    page_width, page_height = landscape(A4)
+    margin = 0.5 * inch
+    usable_width = page_width - 2 * margin
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        leftMargin=margin,
+        rightMargin=margin,
+        topMargin=margin,
+        bottomMargin=margin
+    )
+
     elements = []
     styles = getSampleStyleSheet()
 
     # Logo
     if os.path.exists(LOGO_FILE):
-        elements.append(Image(LOGO_FILE, width=2*inch, height=1*inch))
-        elements.append(Spacer(1, 12))
+        try:
+            img = Image(LOGO_FILE)
+            max_width, max_height = 2*inch, 1*inch
+            img.drawWidth = min(img.imageWidth, max_width)
+            img.drawHeight = min(img.imageHeight, max_height)
+            elements.append(img)
+            elements.append(Spacer(1, 12))
+        except Exception as e:
+            print("Logo error:", e)
 
     # Title
-    title_text = "Sunday Ring With Red Shark<br/>(Malaysian Cyber Threat Landscape)"
-    title_style = ParagraphStyle("Title", parent=styles["Heading1"], alignment=TA_CENTER, spaceAfter=12, textColor=colors.darkred)
-    elements.append(Paragraph(title_text, title_style))
+    title_style = ParagraphStyle("Title", parent=styles["Heading1"], alignment=TA_CENTER,
+                                 spaceAfter=12, textColor=colors.darkred)
+    elements.append(Paragraph("Sunday Ring With Red Shark<br/>(Malaysian Cyber Threat Landscape)", title_style))
     elements.append(Spacer(1, 8))
 
     # Headline
@@ -169,7 +183,7 @@ def generate_pdf(limit=100):
     elements.append(Paragraph(EXECUTIVE_HEADLINE, headline_style))
     elements.append(Spacer(1, 12))
 
-    # Fetch latest indicators
+    # Fetch indicators
     conn = get_db_connection()
     rows = conn.execute("""
         SELECT indicator, type, pulse_name, classification, created
@@ -181,27 +195,34 @@ def generate_pdf(limit=100):
 
     # Table data
     table_data = [["Indicator", "Type", "Pulse Name", "Classification", "Created"]]
-    paragraph_style = ParagraphStyle('table', fontSize=9, leading=11)
+    cell_style = ParagraphStyle('cell', fontSize=9, leading=11, wordWrap='CJK')
 
     for row in rows:
         table_data.append([
-            Paragraph(row["indicator"], paragraph_style),
-            row["type"],
-            Paragraph(row["pulse_name"], paragraph_style),
-            row["classification"],
-            row["created"]
+            Paragraph(row["indicator"], cell_style),
+            Paragraph(row["type"], cell_style),
+            Paragraph(row["pulse_name"], cell_style),
+            Paragraph(row["classification"], cell_style),
+            Paragraph(row["created"], cell_style)
         ])
 
-    # Adjust column widths for landscape
-    col_widths = [4*inch, 1*inch, 5*inch, 1.2*inch, 1.5*inch]
+    # Dynamic column widths
+    col_ratios = [0.25, 0.1, 0.35, 0.15, 0.15]
+    col_widths = [usable_width * r for r in col_ratios]
+
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
 
+    # Table style
     style = TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.red),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
         ('ALIGN', (0,0), (-1,-1), 'LEFT'),
         ('VALIGN', (0,0), (-1,-1), 'TOP'),
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+        ('LEFTPADDING', (0,0), (-1,-1), 4),
+        ('RIGHTPADDING', (0,0), (-1,-1), 4),
+        ('TOPPADDING', (0,0), (-1,-1), 2),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
     ])
 
     color_map = {
@@ -221,6 +242,8 @@ def generate_pdf(limit=100):
             style.add('TEXTCOLOR', (0,i), (-1,i), text_map[cls])
 
     table.setStyle(style)
+
+    elements.append(Spacer(1, 12))
     elements.append(table)
     elements.append(Spacer(1, 12))
     elements.append(Paragraph(f"Contact: {CONTACT_EMAIL}", styles["Normal"]))
@@ -239,7 +262,6 @@ def dashboard():
     if sort_order not in ["asc", "desc"]:
         sort_order = "desc"
 
-    # Validate sort_column
     allowed_sort = ["indicator", "type", "pulse_name", "classification", "created"]
     if sort_column not in allowed_sort:
         sort_column = "created"
@@ -298,15 +320,12 @@ def dashboard():
         <div class="headline">
             <h3>{{ executive_headline }}</h3>
         </div>
-
         <div class="email">Contact: {{ contact_email }}</div>
-
         <div class="buttons">
             <a href="/report/json" target="_blank">Download JSON</a>
             <a href="/report/csv" target="_blank">Download CSV</a>
             <a href="/report/pdf" target="_blank">Download PDF</a>
         </div>
-
         <table>
             <tr>
                 <th onclick="sortTable('indicator')">Indicator</th>
