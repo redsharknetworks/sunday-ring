@@ -3,268 +3,206 @@ import sqlite3
 import requests
 import io
 import csv
-import smtplib
 from datetime import datetime, timedelta
-from email.message import EmailMessage
+from flask import Flask, jsonify, request, render_template_string, send_file, abort
 
-from flask import Flask, jsonify, send_file, render_template_string, request
-
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle
-)
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase import pdfmetrics
+from reportlab.lib.pagesizes import landscape, A4
 
-# --------------------------
-# App Setup
-# --------------------------
+# =====================================================
+# CONFIG
+# =====================================================
 app = Flask(__name__)
-DB_FILE = "threats.db"
 
+DB_FILE = "cti_platform.db"
 OTX_API_KEY = os.environ.get("OTX_API_KEY")
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "admin123")
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "change_this")
 
-EMAIL_USER = os.environ.get("EMAIL_USER")
-EMAIL_PASS = os.environ.get("EMAIL_PASS")
-EMAIL_TO = os.environ.get("EMAIL_TO")
-
-# --------------------------
-# Database
-# --------------------------
-def init_db():
+# =====================================================
+# DATABASE
+# =====================================================
+def get_db():
     conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db()
     c = conn.cursor()
+
+    # Multi-tenant clients
     c.execute("""
-        CREATE TABLE IF NOT EXISTS threats (
-            id TEXT PRIMARY KEY,
-            pulse_name TEXT,
-            indicator TEXT,
-            indicator_type TEXT,
-            created TEXT,
-            classification TEXT
-        )
+    CREATE TABLE IF NOT EXISTS clients (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        api_key TEXT UNIQUE
+    )
     """)
+
+    # Threat intel table
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS threats (
+        id TEXT PRIMARY KEY,
+        client TEXT,
+        pulse_name TEXT,
+        threat_actor TEXT,
+        indicator TEXT,
+        indicator_type TEXT,
+        latitude REAL,
+        longitude REAL,
+        mitre_tactic TEXT,
+        classification TEXT,
+        created TEXT
+    )
+    """)
+
+    # SOC analyst notes
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        threat_id TEXT,
+        analyst TEXT,
+        note TEXT,
+        created TEXT
+    )
+    """)
+
     conn.commit()
     conn.close()
 
 init_db()
 
-# --------------------------
-# Malaysia Classification
-# --------------------------
+# =====================================================
+# INTELLIGENCE LOGIC
+# =====================================================
+def mitre_tag(indicator_type):
+    mapping = {
+        "domain": "Command and Control",
+        "IPv4": "Initial Access",
+        "URL": "Execution",
+        "FileHash-SHA256": "Defense Evasion"
+    }
+    return mapping.get(indicator_type, "Reconnaissance")
+
 def classify_indicator(indicator):
     indicator = indicator.lower()
-
     if ".my" in indicator:
         return "TARGET_MY"
-    if indicator.startswith("103.") or indicator.startswith("175."):
+    if indicator.startswith(("103.","175.","60.")):
         return "SOURCE_MY"
     return "SOURCE_OTHER"
 
-# --------------------------
-# Risk Index
-# --------------------------
-def calculate_risk_index(rows):
-    weights = {
-        "BOTH": 5,
-        "TARGET_MY": 4,
-        "SOURCE_MY": 3,
-        "SOURCE_OTHER": 1
-    }
+def get_geo(ip):
+    try:
+        r = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("lat"), data.get("lon")
+    except:
+        pass
+    return None, None
 
-    score = sum(weights.get(r["classification"], 0) for r in rows)
-
-    if score > 100:
-        level = "CRITICAL"
-    elif score > 50:
-        level = "HIGH"
-    elif score > 20:
-        level = "MODERATE"
-    else:
-        level = "LOW"
-
+def calculate_risk(rows):
+    weights = {"TARGET_MY":4,"SOURCE_MY":3,"SOURCE_OTHER":1}
+    score = sum(weights.get(r["classification"],0) for r in rows)
+    if score>100: level="CRITICAL"
+    elif score>50: level="HIGH"
+    elif score>20: level="MODERATE"
+    else: level="LOW"
     return score, level
 
-# --------------------------
-# Executive Summary
-# --------------------------
-def generate_executive_summary(rows, score, level):
-    total = len(rows)
-    target_my = sum(1 for r in rows if r["classification"] == "TARGET_MY")
-    source_my = sum(1 for r in rows if r["classification"] == "SOURCE_MY")
-
-    return f"""
-    During this reporting period, {total} indicators were identified.
-    {target_my} indicators directly target Malaysian assets.
-    {source_my} originated from Malaysian infrastructure.
-    The Malaysia Cyber Risk Index is {score}, categorized as {level}.
-    Continued monitoring is strongly recommended.
-    """
-
-# --------------------------
-# Cleanup old data
-# --------------------------
 def cleanup_old():
-    cutoff = datetime.utcnow() - timedelta(days=30)
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM threats WHERE created < ?", (cutoff.isoformat(),))
+    cutoff=(datetime.utcnow()-timedelta(days=30)).isoformat()
+    conn=get_db()
+    conn.execute("DELETE FROM threats WHERE created < ?",(cutoff,))
     conn.commit()
     conn.close()
 
-# --------------------------
-# Fetch OTX Data
-# --------------------------
-@app.route("/update")
-def update_data():
-    if request.args.get("key") != ADMIN_KEY:
-        return jsonify({"error": "unauthorized"}), 403
+# =====================================================
+# ADMIN INGEST
+# =====================================================
+@app.route("/admin/update")
+def ingest():
+    if request.args.get("key")!=ADMIN_KEY:
+        abort(403)
 
-    headers = {"X-OTX-API-KEY": OTX_API_KEY}
-    url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
+    headers={"X-OTX-API-KEY":OTX_API_KEY}
+    r=requests.get("https://otx.alienvault.com/api/v1/pulses/subscribed",headers=headers,timeout=15)
+    if r.status_code!=200:
+        return jsonify({"error":"OTX fetch failed"}),500
 
-    r = requests.get(url, headers=headers)
-    if r.status_code != 200:
-        return jsonify({"error": "OTX fetch failed"})
-
-    data = r.json()
-    pulses = data.get("results", [])
-
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-
-    total = 0
+    pulses=r.json().get("results",[])
+    conn=get_db()
+    c=conn.cursor()
+    inserted=0
 
     for pulse in pulses:
-        pulse_name = pulse.get("name")
-        created = pulse.get("created")
+        actor=pulse.get("author_name","Unknown")
+        created=pulse.get("created")
 
-        for ind in pulse.get("indicators", []):
-            indicator = ind.get("indicator")
-            indicator_type = ind.get("type")
-            classification = classify_indicator(indicator)
-
-            try:
-                c.execute("""
-                    INSERT OR IGNORE INTO threats
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    pulse.get("id") + indicator,
-                    pulse_name,
-                    indicator,
-                    indicator_type,
-                    created,
-                    classification
-                ))
-                total += 1
-            except:
-                pass
+        for ind in pulse.get("indicators",[]):
+            indicator=ind.get("indicator")
+            ind_type=ind.get("type")
+            tactic=mitre_tag(ind_type)
+            classification=classify_indicator(indicator)
+            lat,lon=(None,None)
+            if ind_type=="IPv4":
+                lat,lon=get_geo(indicator)
+            threat_id=pulse.get("id")+indicator
+            c.execute("""
+            INSERT OR IGNORE INTO threats
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            """,(
+                threat_id,"default",
+                pulse.get("name"),actor,
+                indicator,ind_type,
+                lat,lon,tactic,
+                classification,created
+            ))
+            inserted+=1
 
     conn.commit()
     conn.close()
-
     cleanup_old()
 
-    return jsonify({"status": "updated", "total": total})
+    return jsonify({"status":"updated","inserted":inserted})
 
-# --------------------------
-# Dashboard
-# --------------------------
-@app.route("/")
-def dashboard():
-    page = int(request.args.get("page", 1))
-    per_page = 50
-    offset = (page - 1) * per_page
+# =====================================================
+# CLIENT PORTAL
+# =====================================================
+@app.route("/portal")
+def portal():
+    api_key=request.args.get("api_key")
+    conn=get_db()
+    client=conn.execute("SELECT * FROM clients WHERE api_key=?",(api_key,)).fetchone()
+    if not client:
+        return "Unauthorized"
 
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
-    c.execute("SELECT * FROM threats ORDER BY created DESC LIMIT ? OFFSET ?", (per_page, offset))
-    rows = c.fetchall()
-
-    c.execute("SELECT classification, COUNT(*) as total FROM threats GROUP BY classification")
-    stats = c.fetchall()
-
+    rows=conn.execute("SELECT * FROM threats ORDER BY created DESC LIMIT 200").fetchall()
+    rows=[dict(r) for r in rows]
     conn.close()
 
-    rows = [dict(r) for r in rows]
-    score, level = calculate_risk_index(rows)
+    score,level=calculate_risk(rows)
 
-    html = """
-    <html>
-    <head>
-    <style>
-    body { background:#0b0f1a; color:#e0e0e0; font-family:Arial; }
-    table { border-collapse: collapse; width:100%; }
-    th { background:#001f4d; color:white; padding:8px; }
-    td { padding:8px; }
-    tr:nth-child(even) { background:#001a33; }
-    h1 { color:orange; }
-    a { color:orange; }
-    </style>
-    </head>
-    <body>
-    <h1>Sunday Ring With Red Shark - Malaysia Threat Dashboard</h1>
-    <h2>Malaysia Risk Index: {{score}} ({{level}})</h2>
+    return render_template_string(PORTAL_TEMPLATE,rows=rows,score=score,level=level)
 
-    <a href="/report/weekly?key={{admin}}">Download Weekly PDF</a> |
-    <a href="/export/csv">CSV</a> |
-    <a href="/export/json">JSON</a>
-
-    <table>
-    <tr>
-        <th>Pulse</th>
-        <th>Indicator</th>
-        <th>Type</th>
-        <th>Classification</th>
-        <th>Date</th>
-    </tr>
-    {% for r in rows %}
-    <tr>
-        <td>{{r.pulse_name}}</td>
-        <td>{{r.indicator}}</td>
-        <td>{{r.indicator_type}}</td>
-        <td>{{r.classification}}</td>
-        <td>{{r.created}}</td>
-    </tr>
-    {% endfor %}
-    </table>
-
-    <br>
-    <a href="/?page={{page-1}}">Prev</a> |
-    <a href="/?page={{page+1}}">Next</a>
-    </body>
-    </html>
-    """
-
-    return render_template_string(html, rows=rows, score=score, level=level, page=page, admin=ADMIN_KEY)
-
-# --------------------------
-# CSV Export
-# --------------------------
+# =====================================================
+# EXPORT CSV
+# =====================================================
 @app.route("/export/csv")
 def export_csv():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT * FROM threats")
-    rows = c.fetchall()
+    conn=get_db()
+    rows=conn.execute("SELECT * FROM threats ORDER BY created DESC").fetchall()
     conn.close()
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["id","pulse_name","indicator","type","created","classification"])
-    writer.writerows(rows)
-
-    output.seek(0)
-
+    output=io.StringIO()
+    writer=csv.writer(output)
+    if rows:
+        writer.writerow(rows[0].keys())
+        for r in rows:
+            writer.writerow(r)
     return send_file(
         io.BytesIO(output.getvalue().encode()),
         mimetype="text/csv",
@@ -272,105 +210,151 @@ def export_csv():
         download_name="malaysia_threats.csv"
     )
 
-# --------------------------
-# JSON Export
-# --------------------------
+# =====================================================
+# EXPORT JSON
+# =====================================================
 @app.route("/export/json")
 def export_json():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT * FROM threats")
-    rows = [dict(r) for r in c.fetchall()]
+    conn=get_db()
+    rows=[dict(r) for r in conn.execute("SELECT * FROM threats ORDER BY created DESC").fetchall()]
     conn.close()
     return jsonify(rows)
 
-# --------------------------
-# Weekly PDF
-# --------------------------
-@app.route("/report/weekly")
-def weekly_report():
-    if request.args.get("key") != ADMIN_KEY:
-        return jsonify({"error":"unauthorized"}), 403
-
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT * FROM threats ORDER BY created DESC")
-    rows = [dict(r) for r in c.fetchall()]
+# =====================================================
+# EXPORT PDF
+# =====================================================
+@app.route("/export/pdf")
+def export_pdf():
+    conn=get_db()
+    rows=[dict(r) for r in conn.execute("SELECT * FROM threats ORDER BY created DESC").fetchall()]
     conn.close()
 
-    score, level = calculate_risk_index(rows)
-    summary = generate_executive_summary(rows, score, level)
+    score,level=calculate_risk(rows)
 
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=landscape(A4),
-        leftMargin=40,
-        rightMargin=40
-    )
+    buffer=io.BytesIO()
+    doc=SimpleDocTemplate(buffer,pagesize=landscape(A4),
+                          leftMargin=40,rightMargin=40)
+    elements=[]
+    styles=getSampleStyleSheet()
+    wrap_style=ParagraphStyle("wrap",fontSize=8,leading=10)
+    elements.append(Paragraph("<b>Malaysia Weekly Threat Intelligence Report</b>",styles["Title"]))
+    elements.append(Spacer(1,10))
+    elements.append(Paragraph(f"Risk Index: {score} ({level})",styles["Normal"]))
+    elements.append(Spacer(1,10))
 
-    styles = getSampleStyleSheet()
-    elements = []
-
-    elements.append(Paragraph("<b>Sunday Ring With Red Shark - Malaysia Weekly Threat Report</b>", styles["Title"]))
-    elements.append(Spacer(1,12))
-    elements.append(Paragraph(summary, styles["Normal"]))
-    elements.append(Spacer(1,12))
-
-    data = [["Pulse","Indicator","Type","Class","Date"]]
-
+    data=[["Actor","Indicator","Type","MITRE","Class","Date"]]
     for r in rows:
         data.append([
-            Paragraph(r["pulse_name"], styles["Normal"]),
-            Paragraph(r["indicator"], styles["Normal"]),
+            Paragraph(r["threat_actor"],wrap_style),
+            Paragraph(r["indicator"],wrap_style),
             r["indicator_type"],
+            r["mitre_tactic"],
             r["classification"],
             r["created"]
         ])
 
-    table = Table(data, repeatRows=1)
+    table=Table(data,repeatRows=1)
     table.setStyle(TableStyle([
         ("BACKGROUND",(0,0),(-1,0),colors.darkblue),
         ("TEXTCOLOR",(0,0),(-1,0),colors.white),
         ("GRID",(0,0),(-1,-1),0.5,colors.grey)
     ]))
-
     elements.append(table)
+    elements.append(Spacer(1,10))
+    elements.append(Paragraph("Disclaimer: Developed and analyzed from public sources by darkgrid@redshark.my",styles["Normal"]))
+
     doc.build(elements)
-
     buffer.seek(0)
+    return send_file(buffer,mimetype="application/pdf",
+                     as_attachment=True,
+                     download_name="malaysia_threat_report.pdf")
 
-    # Send Email if configured
-    if EMAIL_USER and EMAIL_PASS and EMAIL_TO:
-        msg = EmailMessage()
-        msg["Subject"] = "Malaysia Weekly Threat Report"
-        msg["From"] = EMAIL_USER
-        msg["To"] = EMAIL_TO
-        msg.set_content("Attached is the weekly Malaysia threat report.")
+# =====================================================
+# NOTES SYSTEM
+# =====================================================
+@app.route("/notes/add",methods=["POST"])
+def add_note():
+    data=request.json
+    conn=get_db()
+    conn.execute("""
+    INSERT INTO notes (threat_id,analyst,note,created)
+    VALUES (?,?,?,?)
+    """,(data["threat_id"],data["analyst"],data["note"],datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+    return jsonify({"status":"note added"})
 
-        msg.add_attachment(
-            buffer.getvalue(),
-            maintype="application",
-            subtype="pdf",
-            filename="weekly_report.pdf"
-        )
+@app.route("/notes/<threat_id>")
+def get_notes(threat_id):
+    conn=get_db()
+    rows=conn.execute("SELECT * FROM notes WHERE threat_id=? ORDER BY created DESC",(threat_id,)).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(EMAIL_USER, EMAIL_PASS)
-            server.send_message(msg)
+# =====================================================
+# PORTAL TEMPLATE
+# =====================================================
+PORTAL_TEMPLATE="""
+<!DOCTYPE html>
+<html>
+<head>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<style>
+body{background:#0b0f1a;color:#e0e0e0;font-family:Arial;}
+h1{color:orange;}
+table{width:100%;border-collapse:collapse;margin-top:10px;}
+th{background:#001f4d;color:white;cursor:pointer;}
+td,th{padding:6px;border:1px solid #333;}
+tr:nth-child(even){background:#001a33;}
+#map{height:400px;margin-bottom:20px;}
+a{color:orange;margin-right:10px;}
+</style>
+</head>
+<body>
+<h1>Malaysia CTI Portal</h1>
+<h2>Risk Index: {{score}} ({{level}})</h2>
 
-    return send_file(
-        buffer,
-        mimetype="application/pdf",
-        as_attachment=True,
-        download_name="malaysia_weekly_report.pdf"
-    )
+<a href="/export/pdf">Download PDF</a>
+<a href="/export/csv">CSV</a>
+<a href="/export/json">JSON</a>
 
-# --------------------------
-# Run
-# --------------------------
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+<div id="map"></div>
+<script>
+var map=L.map('map').setView([4.2105,101.9758],6);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+var threats={{rows|tojson}};
+threats.forEach(function(t){
+ if(t.latitude && t.longitude){
+   L.marker([t.latitude,t.longitude]).addTo(map)
+   .bindPopup(t.indicator + "<br>" + t.mitre_tactic);
+ }
+});
+</script>
+
+<table>
+<tr><th>Actor</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Class</th></tr>
+{% for r in rows %}
+<tr>
+<td>{{r.threat_actor}}</td>
+<td>{{r.indicator}}</td>
+<td>{{r.indicator_type}}</td>
+<td>{{r.mitre_tactic}}</td>
+<td>{{r.classification}}</td>
+</tr>
+{% endfor %}
+</table>
+
+<p>Total Showing: {{rows|length}}</p>
+<p style="font-size:0.8em;color:#aaa;">Disclaimer: Developed and analyzed from public sources by darkgrid@redshark.my</p>
+
+</body>
+</html>
+"""
+
+# =====================================================
+# START
+# =====================================================
+if __name__=="__main__":
+    port=int(os.environ.get("PORT",10000))
+    app.run(host="0.0.0.0",port=port)
