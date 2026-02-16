@@ -12,6 +12,8 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.pdfgen import canvas
 import matplotlib.pyplot as plt
+import folium
+from folium.plugins import MarkerCluster
 import threading
 
 # ================= CONFIG =================
@@ -42,15 +44,6 @@ def init_db():
         longitude REAL,
         mitre_tactic TEXT,
         classification TEXT,
-        created TEXT
-    )
-    """)
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS notes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        threat_id TEXT,
-        analyst TEXT,
-        note TEXT,
         created TEXT
     )
     """)
@@ -155,9 +148,36 @@ def ingest_otx():
 # ================= DASHBOARD =================
 @app.route("/")
 def dashboard():
+    page=int(request.args.get("page",1))
+    sort_column=request.args.get("sort","created")
+    sort_order=request.args.get("order","desc").lower()
+    if sort_order not in ["asc","desc"]:
+        sort_order="desc"
+    allowed=["indicator","indicator_type","mitre_tactic","classification","created"]
+    if sort_column not in allowed:
+        sort_column="created"
+
+    limit=50
+    offset=(page-1)*limit
+
     conn=get_db()
-    rows=[dict(r) for r in conn.execute("SELECT * FROM threats ORDER BY created DESC LIMIT 50").fetchall()]
+    total_count=conn.execute("SELECT COUNT(*) as c FROM threats").fetchone()["c"]
+    rows=[dict(r) for r in conn.execute(f"SELECT * FROM threats ORDER BY {sort_column} {sort_order} LIMIT {limit} OFFSET {offset}").fetchall()]
+
+    # ================== Malaysia GeoIP heatmap with clustering ==================
+    map_obj = folium.Map(location=[4.2105,101.9758], zoom_start=5)
+    marker_cluster = MarkerCluster().add_to(map_obj)
+    for r in rows:
+        if r["latitude"] and r["longitude"]:
+            folium.CircleMarker(
+                location=[r["latitude"], r["longitude"]],
+                radius=4,
+                color="red" if r["classification"]=="TARGET_MY" else "blue",
+                fill=True
+            ).add_to(marker_cluster)
+    map_html = map_obj._repr_html_()
     conn.close()
+
     score,level=calculate_risk(rows)
 
     # Trend chart last 30 days
@@ -174,7 +194,11 @@ def dashboard():
         except:
             continue
 
-    return render_template_string(DASHBOARD_TEMPLATE,rows=rows,score=score,level=level,trend=trend)
+    total_pages=(total_count+limit-1)//limit
+
+    return render_template_string(DASHBOARD_TEMPLATE,rows=rows,score=score,level=level,trend=trend,
+                                  page=page,total_pages=total_pages,sort_column=sort_column,sort_order=sort_order,
+                                  map_html=map_html,total_count=total_count)
 
 # ================= EXPORT =================
 @app.route("/export/csv")
@@ -260,7 +284,7 @@ def write_pdf(rows,path):
         dates.append(str(d))
         counts.append(sum(1 for r in rows if r["created"].startswith(str(d))))
     plt.figure(figsize=(8,2))
-    plt.plot(dates[::-1],counts[::-1],marker='o',color='crimson')
+    plt.plot(dates[::-1],counts[::-1],marker='o',color='orange')
     plt.xticks(rotation=45)
     plt.tight_layout()
     img_path=os.path.join(REPORTS_DIR,"trend.png")
@@ -280,7 +304,6 @@ def write_pdf(rows,path):
         chunk=rows[i:i+page_size]
         data=[["Indicator","Type","MITRE","Class","Date"]]
         for idx,r in enumerate(chunk):
-            bgcolor=colors.white if idx%2==0 else colors.lightgrey
             data.append([
                 Paragraph(r["indicator"],wrap_style),
                 r["indicator_type"],
@@ -290,15 +313,15 @@ def write_pdf(rows,path):
             ])
         table=Table(data,repeatRows=1)
         table.setStyle(TableStyle([
-            ("BACKGROUND",(0,0),(-1,0),colors.darkblue),
+            ("BACKGROUND",(0,0),(-1,0),colors.crimson),
             ("TEXTCOLOR",(0,0),(-1,0),colors.white),
             ("GRID",(0,0),(-1,-1),0.5,colors.grey),
-            ("BACKGROUND",(0,1),(-1,-1),colors.white)
         ]))
-        # Alternate row shading
         for row_idx in range(1,len(data)):
             if row_idx%2==0:
                 table.setStyle(TableStyle([("BACKGROUND",(0,row_idx),(-1,row_idx),colors.lightgrey)]))
+            else:
+                table.setStyle(TableStyle([("BACKGROUND",(0,row_idx),(-1,row_idx),colors.white)]))
         elements.append(table)
         elements.append(Spacer(1,10))
         elements.append(Paragraph("Disclaimer: Developed from public sources by darkgrid@redshark.my",styles["Normal"]))
@@ -320,91 +343,6 @@ def generate_weekly_reports():
     write_csv(rows,os.path.join(REPORTS_DIR,f"weekly_{date_str}.csv"))
     write_json(rows,os.path.join(REPORTS_DIR,f"weekly_{date_str}.json"))
     write_pdf(rows,os.path.join(REPORTS_DIR,f"weekly_{date_str}.pdf"))
-
-# ================= NOTES SYSTEM =================
-@app.route("/notes/add",methods=["POST"])
-def add_note():
-    data=request.json
-    conn=get_db()
-    conn.execute("""
-    INSERT INTO notes (threat_id,analyst,note,created)
-    VALUES (?,?,?,?)
-    """,(data["threat_id"],data["analyst"],data["note"],datetime.utcnow().isoformat()))
-    conn.commit()
-    conn.close()
-    return jsonify({"status":"note added"})
-
-@app.route("/notes/<threat_id>")
-def get_notes(threat_id):
-    conn=get_db()
-    rows=conn.execute("SELECT * FROM notes WHERE threat_id=? ORDER BY created DESC",(threat_id,)).fetchall()
-    conn.close()
-    return jsonify([dict(r) for r in rows])
-
-# ================= DASHBOARD TEMPLATE =================
-DASHBOARD_TEMPLATE="""
-<!DOCTYPE html>
-<html>
-<head>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-<style>
-body{background:#0b0f1a;color:#e0e0e0;font-family:Arial;}
-h1{color:crimson;}
-table{width:100%;border-collapse:collapse;margin-top:10px;}
-th{background:#001f4d;color:white;cursor:pointer;}
-td,th{padding:6px;border:1px solid #333;}
-tr:nth-child(even){background:#001a33;}
-#map{height:400px;margin-bottom:20px;}
-a{color:crimson;margin-right:10px;}
-</style>
-</head>
-<body>
-<h1>REDSHARK.MY CTI Dashboard</h1>
-<h2>Risk Index: {{score}} ({{level}})</h2>
-
-<a href="/export/pdf">Download PDF</a>
-<a href="/export/csv">CSV</a>
-<a href="/export/json">JSON</a>
-
-<canvas id="trendChart" width="600" height="150"></canvas>
-<div id="map"></div>
-<script>
-var trend={{trend|tojson}};
-var labels=Object.keys(trend).sort();
-var data=labels.map(l=>trend[l]);
-var ctx=document.getElementById('trendChart').getContext('2d');
-new Chart(ctx,{type:'line',data:{labels:labels,datasets:[{label:'Threats per day',data:data,borderColor:'crimson',fill:false}]},options:{responsive:true}});
-var map=L.map('map').setView([4.2105,101.9758],6);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-var threats={{rows|tojson}};
-threats.forEach(function(t){
- if(t.latitude && t.longitude){
-   L.marker([t.latitude,t.longitude]).addTo(map)
-   .bindPopup(t.indicator + "<br>" + t.mitre_tactic);
- }
-});
-</script>
-
-<table>
-<tr><th>Indicator</th><th>Type</th><th>MITRE</th><th>Class</th><th>Date</th></tr>
-{% for r in rows %}
-<tr>
-<td>{{r.indicator}}</td>
-<td>{{r.indicator_type}}</td>
-<td>{{r.mitre_tactic}}</td>
-<td>{{r.classification}}</td>
-<td>{{r.created}}</td>
-</tr>
-{% endfor %}
-</table>
-
-<p>Total Showing: {{rows|length}}</p>
-<p style="font-size:0.8em;color:#aaa;">Disclaimer: Developed from public sources by darkgrid@redshark.my</p>
-</body>
-</html>
-"""
 
 # ================= WEEKLY SCHEDULER =================
 def weekly_scheduler_precise():
@@ -431,8 +369,91 @@ def weekly_scheduler_precise():
 threading.Thread(target=weekly_scheduler_precise, daemon=True).start()
 
 # ================= FIRST RUN INGESTION =================
-if ingest_otx()==0:
-    print("No initial data, dashboard will populate after next ingestion.")
+print("[Startup] Performing initial data ingestion...")
+inserted = ingest_otx()
+print(f"[Startup] Inserted {inserted} indicators from OTX.")
+
+# ================= DASHBOARD TEMPLATE =================
+DASHBOARD_TEMPLATE = """
+<html>
+<head>
+<title>REDSHARK.MY Threat Dashboard</title>
+<style>
+body{font-family:Arial,sans-serif;background-color:#111;color:#eee;}
+table{border-collapse:collapse;width:100%;margin-top:20px;}
+th,td{border:1px solid #555;padding:8px;text-align:left;}
+th{background-color:#001F3F;cursor:pointer;color:white;}
+tr:nth-child(even){background-color:#1a1a1a;}
+.header{display:flex;align-items:center;gap:15px;}
+.headline h3{color:#ff4d4d;margin-top:5px;margin-bottom:15px;font-weight:bold;}
+.buttons{margin-bottom:20px;}
+.buttons a{background-color:#001F3F;color:#eee;padding:8px 12px;text-decoration:none;margin-right:10px;border-radius:4px;}
+.buttons a:hover{background-color:#003366;}
+</style>
+<script>
+function sortTable(column){
+    const url = new URL(window.location.href);
+    let currentOrder = url.searchParams.get("order");
+    currentOrder = currentOrder === "asc" ? "desc" : "asc";
+    url.searchParams.set("sort", column);
+    url.searchParams.set("order", currentOrder);
+    window.location.href=url.href;
+}
+function changePage(page){
+    const url=new URL(window.location.href);
+    url.searchParams.set("page",page);
+    window.location.href=url.href;
+}
+</script>
+</head>
+<body>
+<h1>REDSHARK.MY Threat Dashboard</h1>
+<div class="buttons">
+<a href="/export/json" target="_blank">Download JSON</a>
+<a href="/export/csv" target="_blank">Download CSV</a>
+<a href="/export/pdf" target="_blank">Download PDF</a>
+</div>
+<div style="width:100%;height:400px;">{{ map_html|safe }}</div>
+<h3>Trend Last 30 Days</h3>
+<canvas id="trend" width="800" height="200"></canvas>
+<table>
+<tr>
+<th onclick="sortTable('indicator')">Indicator</th>
+<th onclick="sortTable('indicator_type')">Type</th>
+<th onclick="sortTable('mitre_tactic')">MITRE</th>
+<th onclick="sortTable('classification')">Classification</th>
+<th onclick="sortTable('created')">Created</th>
+</tr>
+{% for row in rows %}
+<tr style="background-color:{% if loop.index0 %2 ==0 %}#222{% else %}#1a1a1a{% endif %}">
+<td>{{ row['indicator'] }}</td>
+<td>{{ row['indicator_type'] }}</td>
+<td>{{ row['mitre_tactic'] }}</td>
+<td>{{ row['classification'] }}</td>
+<td>{{ row['created'] }}</td>
+</tr>
+{% endfor %}
+</table>
+<p>Showing {{ rows|length }} of {{ total_count }} indicators</p>
+<div>
+{% if page>1 %}
+<button onclick="changePage({{ page-1 }})">Previous</button>
+{% endif %}
+Page {{ page }} of {{ total_pages }}
+{% if page<total_pages %}
+<button onclick="changePage({{ page+1 }})">Next</button>
+{% endif %}
+</div>
+<p style="margin-top:20px;font-size:0.8em;color:#999;">Disclaimer: Developed from public sources by darkgrid@redshark.my</p>
+<script>
+const ctx = document.getElementById('trend').getContext('2d');
+const data = {{ trend|tojson }};
+new Chart(ctx,{type:'line',data:{labels:Object.keys(data),datasets:[{label:'Indicators',data:Object.values(data),borderColor:'crimson',fill:false}]},options:{scales:{x:{ticks:{maxRotation:90,minRotation:45}}}}});
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</body>
+</html>
+"""
 
 # ================= START =================
 if __name__=="__main__":
