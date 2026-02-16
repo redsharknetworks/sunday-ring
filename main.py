@@ -32,6 +32,7 @@ OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
 
 REPORT_TITLE = "Sunday Ring With Red Shark – Malaysian Cyber Threat Landscape"
 DASHBOARD_TITLE = "Real-Time Malaysia Threat Intelligence Dashboard"
+EXECUTIVE_HEADLINE = "Threat Campaigns Impacting the Malaysian Digital Ecosystem"
 
 # -----------------------------
 # Database Setup
@@ -167,10 +168,7 @@ def generate_pdf():
         textColor=colors.darkred,
         spaceAfter=12
     )
-    elements.append(Paragraph(
-        "Threat Campaigns Impacting the Malaysian Digital Ecosystem",
-        headline_style
-    ))
+    elements.append(Paragraph(EXECUTIVE_HEADLINE, headline_style))
     elements.append(Spacer(1, 12))
 
     # Table Data
@@ -242,34 +240,34 @@ def dashboard_html():
         "UNCLASSIFIED": "#d3d3d3"
     }
 
-    html = f"""
+    html = """
     <html>
     <head>
-        <title>{DASHBOARD_TITLE}</title>
+        <title>{{ dashboard_title }}</title>
         <style>
-            body {{ font-family: Arial, sans-serif; background-color: #111; color: #eee; }}
-            table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
-            th, td {{ border: 1px solid #555; padding: 8px; text-align: left; }}
-            th {{ background-color: #222; }}
-            tr:nth-child(even) {{ background-color: #1a1a1a; }}
-            .header {{ display: flex; align-items: center; gap: 15px; }}
-            img.logo {{ height: 60px; }}
-            .headline h3 {{ color: #ff4d4d; margin-top: 5px; margin-bottom: 15px; font-weight: bold; }}
-            .email {{ margin-top: 5px; font-size: 0.9em; color: #aaa; }}
-            .buttons a {{ 
+            body { font-family: Arial, sans-serif; background-color: #111; color: #eee; }
+            table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+            th, td { border: 1px solid #555; padding: 8px; text-align: left; }
+            th { background-color: #222; }
+            tr:nth-child(even) { background-color: #1a1a1a; }
+            .header { display: flex; align-items: center; gap: 15px; }
+            img.logo { height: 60px; }
+            .headline h3 { color: #ff4d4d; margin-top: 5px; margin-bottom: 15px; font-weight: bold; }
+            .email { margin-top: 5px; font-size: 0.9em; color: #aaa; }
+            .buttons a { 
                 background-color: #222; color: #eee; padding: 8px 12px; text-decoration: none; 
                 margin-right: 10px; border-radius: 4px;
-            }}
-            .buttons a:hover {{ background-color: #333; }}
+            }
+            .buttons a:hover { background-color: #333; }
         </style>
     </head>
     <body>
         <div class="header">
             <img src="/static/redshark_logo.png" class="logo" />
-            <h1>{DASHBOARD_TITLE}</h1>
+            <h1>{{ dashboard_title }}</h1>
         </div>
         <div class="headline">
-            <h3>Threat Campaigns Impacting the Malaysian Digital Ecosystem</h3>
+            <h3>{{ executive_headline }}</h3>
         </div>
         <div class="email">Contact: darkgrid@redshark.my</div>
 
@@ -301,7 +299,9 @@ def dashboard_html():
     </body>
     </html>
     """
-    return render_template_string(html, rows=rows, color_map=color_map)
+    return render_template_string(html, rows=rows, color_map=color_map,
+                                  dashboard_title=DASHBOARD_TITLE,
+                                  executive_headline=EXECUTIVE_HEADLINE)
 
 # -----------------------------
 # Reports
