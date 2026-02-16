@@ -8,4 +8,5 @@ gunicorn
 apscheduler
 pandas
 reportlab
+matplotlib
 
