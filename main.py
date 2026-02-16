@@ -9,6 +9,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Imag
 from reportlab.lib import colors, pagesizes
 from reportlab.lib.styles import getSampleStyleSheet
 import urllib.request
+import geoip2.database
 
 # --------------------------
 # Flask App
@@ -24,6 +25,7 @@ if not OTX_API_KEY:
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY")
 DATABASE_FILE = "threat_intel.db"
+GEOIP_DB = "GeoLite2-Country.mmdb"  # Static MaxMind DB in repo
 
 # --------------------------
 # Malaysia Targeting Rules
@@ -105,12 +107,13 @@ def save_threats(pulses):
         if score < 1:
             continue
         for ind in pulse.get("indicators") or []:
+            indicator = ind.get("indicator") or "N/A"
             cursor.execute("""
                 INSERT OR IGNORE INTO malaysia_targeted_threats
                 (indicator, indicator_type, pulse_name, pulse_description, pulse_author, pulse_created, threat_score)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
-                ind.get("indicator"),
+                indicator,
                 ind.get("type"),
                 pulse.get("name"),
                 pulse.get("description"),
@@ -239,10 +242,15 @@ def report_pdf():
     elements.append(Spacer(1, 12))
 
     # Table
-    table_data = [["Category", "Indicator", "Threat Score"]]
+    table_data = [["Category", "Indicator", "Threat Score", "Pulse Name"]]
     for category, items in data.items():
         for item in items:
-            table_data.append([category, item["indicator"], str(item["threat_score"])])
+            table_data.append([
+                category,
+                item["indicator"],
+                str(item["threat_score"]),
+                item["pulse_name"]
+            ])
 
     table = Table(table_data, hAlign='LEFT')
     table.setStyle([
