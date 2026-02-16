@@ -8,40 +8,37 @@ import time
 from datetime import datetime
 
 from flask import Flask, jsonify, send_file, render_template_string, request
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4, landscape
 
-# -------------------------------------------------
+# -----------------------------
 # Flask App
-# -------------------------------------------------
-app = Flask(__name__, static_folder="static")
+# -----------------------------
+app = Flask(__name__)
 
-# -------------------------------------------------
+# -----------------------------
 # Configuration
-# -------------------------------------------------
+# -----------------------------
 OTX_API_KEY = os.environ.get("OTX_API_KEY")
 if not OTX_API_KEY:
     raise RuntimeError("OTX_API_KEY environment variable is required!")
 
 DB_FILE = os.environ.get("DB_FILE", "threat_intel.db")
-LOGO_FILE = os.environ.get("LOGO_FILE", "static/redshark_logo.png")
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
 
-REPORT_TITLE = "Sunday Ring With Red Shark – Malaysian Cyber Threat Landscape"
+REPORT_TITLE = "Malaysian Cyber Threat Landscape Report"
 DASHBOARD_TITLE = "Real-Time Malaysia Threat Intelligence Dashboard"
 EXECUTIVE_HEADLINE = "Threat Campaigns Impacting the Malaysian Digital Ecosystem"
-CONTACT_EMAIL = "darkgrid@redshark.my"
+DISCLAIMER = "Developed and analyzed by darkgrid@redshark.my from public sources."
 
-# -------------------------------------------------
+# -----------------------------
 # Database Setup
-# -------------------------------------------------
+# -----------------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-
     c.execute("""
         CREATE TABLE IF NOT EXISTS indicators (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,14 +50,12 @@ def init_db():
             UNIQUE(indicator, pulse_name)
         )
     """)
-
     c.execute("""
         CREATE TABLE IF NOT EXISTS metadata (
             key TEXT PRIMARY KEY,
             value TEXT
         )
     """)
-
     conn.commit()
     conn.close()
 
@@ -71,9 +66,9 @@ def get_db_connection():
 
 init_db()
 
-# -------------------------------------------------
+# -----------------------------
 # Classification Logic
-# -------------------------------------------------
+# -----------------------------
 def classify_pulse(pulse):
     indicators = pulse.get("indicators", [])
     targeted_countries = [c.lower() for c in pulse.get("targeted_countries", [])]
@@ -82,7 +77,6 @@ def classify_pulse(pulse):
         ind.get("type") == "domain" and ind.get("indicator", "").endswith(".my")
         for ind in indicators
     )
-
     has_targeted_my = "my" in targeted_countries
 
     if has_target_my and has_targeted_my:
@@ -96,22 +90,16 @@ def classify_pulse(pulse):
     else:
         return "UNCLASSIFIED"
 
-# -------------------------------------------------
-# Risk Scoring
-# -------------------------------------------------
+# -----------------------------
+# Risk Score
+# -----------------------------
 def calculate_risk_score(classification):
-    score_map = {
-        "BOTH": 5,
-        "TARGET_MY": 4,
-        "SOURCE_MY": 3,
-        "SOURCE_OTHER": 2,
-        "UNCLASSIFIED": 1
-    }
+    score_map = {"BOTH":5, "TARGET_MY":4, "SOURCE_MY":3, "SOURCE_OTHER":2, "UNCLASSIFIED":1}
     return score_map.get(classification, 1)
 
-# -------------------------------------------------
+# -----------------------------
 # Fetch OTX Pulses
-# -------------------------------------------------
+# -----------------------------
 def fetch_otx(limit=200):
     headers = {"X-OTX-API-KEY": OTX_API_KEY}
     try:
@@ -127,9 +115,9 @@ def fetch_otx(limit=200):
         print("OTX Fetch Error:", e)
         return []
 
-# -------------------------------------------------
-# Ingest (Malaysia Only + Auto Clean)
-# -------------------------------------------------
+# -----------------------------
+# Ingest Pulses
+# -----------------------------
 def ingest():
     pulses = fetch_otx()
     conn = get_db_connection()
@@ -137,8 +125,6 @@ def ingest():
 
     for pulse in pulses:
         classification = classify_pulse(pulse)
-
-        # Malaysia-only filter
         if classification not in ["TARGET_MY", "SOURCE_MY", "BOTH"]:
             continue
 
@@ -156,62 +142,41 @@ def ingest():
             ))
 
     # Keep only last 30 days
-    c.execute("""
-        DELETE FROM indicators
-        WHERE created < datetime('now', '-30 days')
-    """)
-
+    c.execute("DELETE FROM indicators WHERE created < datetime('now','-30 days')")
     conn.commit()
     conn.close()
     print("Ingestion completed.")
 
-# -------------------------------------------------
+# -----------------------------
 # Smart 30-Minute Ingestion
-# -------------------------------------------------
+# -----------------------------
 def smart_ingest():
     conn = get_db_connection()
-    row = conn.execute(
-        "SELECT value FROM metadata WHERE key='last_ingest'"
-    ).fetchone()
-
+    row = conn.execute("SELECT value FROM metadata WHERE key='last_ingest'").fetchone()
     now = int(time.time())
-    should_ingest = True
     last_ingest_time = None
 
     if row:
         last_ingest_time = int(row["value"])
         if now - last_ingest_time < 1800:
-            should_ingest = False
+            conn.close()
+            return last_ingest_time
 
-    if should_ingest:
-        ingest()
-        conn.execute(
-            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
-            ("last_ingest", str(now))
-        )
-        conn.commit()
-        last_ingest_time = now
-
+    ingest()
+    conn.execute("INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)", ("last_ingest", str(now)))
+    conn.commit()
     conn.close()
-    return last_ingest_time
+    return now
 
-# -------------------------------------------------
+# -----------------------------
 # Dashboard
-# -------------------------------------------------
+# -----------------------------
 @app.route("/")
 def dashboard():
     last_ingest_time = smart_ingest()
 
     conn = get_db_connection()
-
-    # Classification counts
-    counts = conn.execute("""
-        SELECT classification, COUNT(*) as total
-        FROM indicators
-        GROUP BY classification
-    """).fetchall()
-
-    # Top 10 campaigns
+    counts = conn.execute("SELECT classification, COUNT(*) as total FROM indicators GROUP BY classification").fetchall()
     top_campaigns = conn.execute("""
         SELECT pulse_name, classification, COUNT(*) as total
         FROM indicators
@@ -219,39 +184,30 @@ def dashboard():
         ORDER BY total DESC
         LIMIT 10
     """).fetchall()
-
-    # Main table
-    rows = conn.execute("""
-        SELECT indicator, type, pulse_name, classification, created
+    sort_column = request.args.get("sort", "created")
+    sort_order = request.args.get("order","desc").lower()
+    if sort_order not in ["asc","desc"]:
+        sort_order="desc"
+    allowed_sort = ["indicator","type","pulse_name","classification","created"]
+    if sort_column not in allowed_sort:
+        sort_column="created"
+    rows = conn.execute(f"""
+        SELECT indicator,type,pulse_name,classification,created
         FROM indicators
-        ORDER BY created DESC
+        ORDER BY {sort_column} {sort_order.upper()}
         LIMIT 50
     """).fetchall()
-
     conn.close()
 
-    # Risk index
     overall_risk = 0
     total_indicators = 0
     for row in counts:
-        score = calculate_risk_score(row["classification"])
-        overall_risk += score * row["total"]
+        overall_risk += calculate_risk_score(row["classification"]) * row["total"]
         total_indicators += row["total"]
+    overall_risk_index = round(overall_risk/total_indicators,2) if total_indicators else 0
+    last_updated = datetime.utcfromtimestamp(last_ingest_time).strftime("%Y-%m-%d %H:%M:%S UTC") if last_ingest_time else "Never"
 
-    overall_risk_index = round(overall_risk / total_indicators, 2) if total_indicators else 0
-
-    last_updated = (
-        datetime.utcfromtimestamp(last_ingest_time).strftime("%Y-%m-%d %H:%M:%S UTC")
-        if last_ingest_time else "Never"
-    )
-
-    color_map = {
-        "TARGET_MY": "#f08080",
-        "SOURCE_MY": "#ffa500",
-        "BOTH": "#8b0000",
-        "SOURCE_OTHER": "#add8e6",
-        "UNCLASSIFIED": "#d3d3d3"
-    }
+    color_map = {"TARGET_MY":"#001f4d","SOURCE_MY":"#003366","BOTH":"#000080","SOURCE_OTHER":"#004080","UNCLASSIFIED":"#001a33"}
 
     html = """
     <html>
@@ -261,38 +217,39 @@ def dashboard():
             body { font-family: Arial; background:#111; color:#eee; }
             table { border-collapse: collapse; width:100%; margin-top:10px; }
             th, td { border:1px solid #555; padding:8px; }
-            th { background:#222; }
-            .panel { background:#1b1b1b; padding:12px; margin-bottom:15px; border:1px solid #333; }
-            .risk { color:#ff4d4d; font-size:20px; font-weight:bold; }
-            .buttons a { background:#222; color:#eee; padding:6px 12px; text-decoration:none; margin-right:8px; border-radius:4px;}
-            .buttons a:hover { background:#333; }
+            th { background:#001a33; cursor:pointer; }
+            tr:nth-child(even) { background:#001f4d; }
+            .panel { background:#001a33; padding:12px; margin-bottom:15px; border:1px solid #003366; }
+            .risk { color:#4da6ff; font-size:20px; font-weight:bold; }
+            .buttons a { background:#001a33; color:#eee; padding:6px 12px; text-decoration:none; margin-right:8px; border-radius:4px;}
+            .buttons a:hover { background:#003366; }
+            .disclaimer { font-size:0.8em; color:#888; margin-top:15px; }
         </style>
+        <script>
+            function sortTable(column){
+                const url=new URL(window.location.href);
+                let currentOrder=url.searchParams.get("order");
+                currentOrder=currentOrder==="asc"?"desc":"asc";
+                url.searchParams.set("sort",column);
+                url.searchParams.set("order",currentOrder);
+                window.location.href=url.href;
+            }
+        </script>
     </head>
     <body>
-
         <h1>{{ dashboard_title }}</h1>
         <h3>{{ executive_headline }}</h3>
-
         <div class="panel">
             <strong>Malaysia Threat Risk Index:</strong>
             <span class="risk">{{ overall_risk_index }}</span><br>
             Last Updated: {{ last_updated }}
         </div>
-
         <div class="panel">
             <strong>Top 10 Active Campaigns</strong>
             <table>
-                <tr>
-                    <th>Pulse Name</th>
-                    <th>Classification</th>
-                    <th>Indicators</th>
-                </tr>
+                <tr><th>Pulse Name</th><th>Classification</th><th>Indicators</th></tr>
                 {% for c in top_campaigns %}
-                <tr>
-                    <td>{{ c['pulse_name'] }}</td>
-                    <td>{{ c['classification'] }}</td>
-                    <td>{{ c['total'] }}</td>
-                </tr>
+                <tr><td>{{ c['pulse_name'] }}</td><td>{{ c['classification'] }}</td><td>{{ c['total'] }}</td></tr>
                 {% endfor %}
             </table>
         </div>
@@ -301,18 +258,19 @@ def dashboard():
             <a href="/report/json" target="_blank">Download JSON</a>
             <a href="/report/csv" target="_blank">Download CSV</a>
             <a href="/report/pdf" target="_blank">Download PDF</a>
+            <a href="/report/weekly" target="_blank">Download Weekly Report</a>
         </div>
 
         <table>
             <tr>
-                <th>Indicator</th>
-                <th>Type</th>
-                <th>Pulse Name</th>
-                <th>Classification</th>
-                <th>Created</th>
+                <th onclick="sortTable('indicator')">Indicator</th>
+                <th onclick="sortTable('type')">Type</th>
+                <th onclick="sortTable('pulse_name')">Pulse Name</th>
+                <th onclick="sortTable('classification')">Classification</th>
+                <th onclick="sortTable('created')">Created</th>
             </tr>
             {% for row in rows %}
-            <tr style="background-color: {{ color_map.get(row['classification'], '#222') }}">
+            <tr style="background-color: {{ color_map.get(row['classification'],'#001f4d') }}">
                 <td>{{ row['indicator'] }}</td>
                 <td>{{ row['type'] }}</td>
                 <td>{{ row['pulse_name'] }}</td>
@@ -321,7 +279,7 @@ def dashboard():
             </tr>
             {% endfor %}
         </table>
-
+        <div class="disclaimer">{{ disclaimer }}</div>
     </body>
     </html>
     """
@@ -334,159 +292,131 @@ def dashboard():
         executive_headline=EXECUTIVE_HEADLINE,
         overall_risk_index=overall_risk_index,
         last_updated=last_updated,
-        color_map=color_map
+        color_map=color_map,
+        disclaimer=DISCLAIMER
     )
 
-# -------------------------------------------------
+# -----------------------------
 # PDF Report
-# -------------------------------------------------
-@app.route("/report/pdf")
-def report_pdf():
+# -----------------------------
+def generate_pdf(rows, title=REPORT_TITLE):
     buffer = io.BytesIO()
     page_width, page_height = landscape(A4)
-    margin = 0.5 * inch
+    margin = 0.5 * 72
     usable_width = page_width - 2*margin
-
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=landscape(A4),
-        leftMargin=margin,
-        rightMargin=margin,
-        topMargin=margin,
-        bottomMargin=margin
-    )
-
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4),
+                            leftMargin=margin,rightMargin=margin,
+                            topMargin=margin,bottomMargin=margin)
     elements = []
     styles = getSampleStyleSheet()
+    elements.append(Paragraph(title, styles["Heading1"]))
+    elements.append(Spacer(1,12))
 
-    conn = get_db_connection()
-    rows = conn.execute("""
-        SELECT indicator, type, pulse_name, classification, created
-        FROM indicators
-        ORDER BY created DESC
-        LIMIT 100
-    """).fetchall()
-
-    counts = conn.execute("""
-        SELECT classification, COUNT(*) as total
-        FROM indicators
-        GROUP BY classification
-    """).fetchall()
-    conn.close()
-
-    overall_risk = 0
-    total = 0
-    for row in counts:
-        score = calculate_risk_score(row["classification"])
-        overall_risk += score * row["total"]
-        total += row["total"]
-
-    overall_risk_index = round(overall_risk / total, 2) if total else 0
-
-    # Logo
-    if os.path.exists(LOGO_FILE):
-        img = Image(LOGO_FILE)
-        img.drawWidth = min(img.imageWidth, 2*inch)
-        img.drawHeight = min(img.imageHeight, 1*inch)
-        elements.append(img)
-        elements.append(Spacer(1, 12))
-
-    elements.append(Paragraph(REPORT_TITLE, styles["Heading1"]))
-    elements.append(Spacer(1, 12))
-    elements.append(Paragraph(f"<b>Malaysia Threat Risk Index:</b> {overall_risk_index}", styles["Normal"]))
-    elements.append(Spacer(1, 12))
-
-    table_data = [["Indicator", "Type", "Pulse", "Classification", "Created"]]
-    cell_style = ParagraphStyle('cell', fontSize=9, leading=11, wordWrap='CJK')
-
+    table_data = [["Indicator","Type","Pulse","Classification","Created"]]
+    cell_style = ParagraphStyle('cell',fontSize=9,leading=11,wordWrap='CJK')
     for r in rows:
-        table_data.append([
-            Paragraph(r["indicator"], cell_style),
-            Paragraph(r["type"], cell_style),
-            Paragraph(r["pulse_name"], cell_style),
-            Paragraph(r["classification"], cell_style),
-            Paragraph(r["created"], cell_style)
-        ])
+        table_data.append([r["indicator"],r["type"],r["pulse_name"],r["classification"],r["created"]])
 
-    col_ratios = [0.25, 0.1, 0.35, 0.15, 0.15]
-    col_widths = [usable_width * r for r in col_ratios]
-    table = Table(table_data, colWidths=col_widths, repeatRows=1)
-
-    table_style = TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.darkred),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-        ('LEFTPADDING', (0,0), (-1,-1), 4),
-        ('RIGHTPADDING', (0,0), (-1,-1), 4),
-        ('TOPPADDING', (0,0), (-1,-1), 2),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
-    ])
-
-    table.setStyle(table_style)
+    col_ratios=[0.25,0.1,0.35,0.15,0.15]
+    col_widths=[usable_width*r for r in col_ratios]
+    table=Table(table_data,colWidths=col_widths,repeatRows=1)
+    table.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
+        ('GRID',(0,0),(-1,-1),0.5,colors.grey),
+        ('LEFTPADDING',(0,0),(-1,-1),4),
+        ('RIGHTPADDING',(0,0),(-1,-1),4),
+        ('TOPPADDING',(0,0),(-1,-1),2),
+        ('BOTTOMPADDING',(0,0),(-1,-1),2)
+    ]))
     elements.append(table)
-
+    elements.append(Spacer(1,12))
+    elements.append(Paragraph(DISCLAIMER, styles["Normal"]))
     doc.build(elements)
     buffer.seek(0)
+    return buffer
 
-    return send_file(
-        buffer,
-        mimetype="application/pdf",
-        as_attachment=True,
-        download_name="malaysia_threat_report.pdf"
-    )
+@app.route("/report/pdf")
+def report_pdf():
+    conn=get_db_connection()
+    rows=conn.execute("SELECT indicator,type,pulse_name,classification,created FROM indicators ORDER BY created DESC LIMIT 100").fetchall()
+    conn.close()
+    buffer=generate_pdf(rows)
+    return send_file(buffer,mimetype="application/pdf",as_attachment=True,download_name="malaysia_threat_report.pdf")
 
-# -------------------------------------------------
+# -----------------------------
 # JSON Report
-# -------------------------------------------------
+# -----------------------------
 @app.route("/report/json")
 def report_json():
-    conn = get_db_connection()
-    rows = conn.execute("""
-        SELECT indicator, type, pulse_name, classification, created
-        FROM indicators
-        ORDER BY created DESC
-        LIMIT 100
-    """).fetchall()
+    conn=get_db_connection()
+    rows=conn.execute("SELECT indicator,type,pulse_name,classification,created FROM indicators ORDER BY created DESC LIMIT 100").fetchall()
     conn.close()
+    return jsonify([dict(r) for r in rows])
 
-    return jsonify([dict(row) for row in rows])
-
-# -------------------------------------------------
+# -----------------------------
 # CSV Report
-# -------------------------------------------------
+# -----------------------------
 @app.route("/report/csv")
 def report_csv():
-    conn = get_db_connection()
-    rows = conn.execute("""
-        SELECT indicator, type, pulse_name, classification, created
-        FROM indicators
-        ORDER BY created DESC
-        LIMIT 100
-    """).fetchall()
+    conn=get_db_connection()
+    rows=conn.execute("SELECT indicator,type,pulse_name,classification,created FROM indicators ORDER BY created DESC LIMIT 100").fetchall()
+    conn.close()
+    output=io.StringIO()
+    writer=csv.writer(output)
+    writer.writerow(["Indicator","Type","Pulse Name","Classification","Created"])
+    for r in rows:
+        writer.writerow([r["indicator"],r["type"],r["pulse_name"],r["classification"],r["created"]])
+    output.seek(0)
+    return send_file(io.BytesIO(output.getvalue().encode()),mimetype="text/csv",as_attachment=True,download_name="malaysia_threat_report.csv")
+
+# -----------------------------
+# Weekly Report (last 7 days)
+# -----------------------------
+@app.route("/report/weekly")
+def report_weekly():
+    conn=get_db_connection()
+    rows=conn.execute("SELECT indicator,type,pulse_name,classification,created FROM indicators WHERE created>=datetime('now','-7 days') ORDER BY created DESC").fetchall()
     conn.close()
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Indicator", "Type", "Pulse Name", "Classification", "Created"])
-    for row in rows:
-        writer.writerow([row["indicator"], row["type"], row["pulse_name"], row["classification"], row["created"]])
+    os.makedirs("weekly_reports",exist_ok=True)
 
-    output.seek(0)
-    return send_file(
-        io.BytesIO(output.getvalue().encode()),
-        mimetype="text/csv",
-        as_attachment=True,
-        download_name="malaysia_threat_report.csv"
-    )
+    # CSV
+    csv_file="weekly_reports/malaysia_weekly_report.csv"
+    with open(csv_file,"w",newline="",encoding="utf-8") as f:
+        writer=csv.writer(f)
+        writer.writerow(["Indicator","Type","Pulse Name","Classification","Created"])
+        for r in rows:
+            writer.writerow([r["indicator"],r["type"],r["pulse_name"],r["classification"],r["created"]])
 
-# -------------------------------------------------
-# CLI Ingestion Support & Run
-# -------------------------------------------------
-if __name__ == "__main__":
+    # JSON
+    import json
+    json_file="weekly_reports/malaysia_weekly_report.json"
+    with open(json_file,"w",encoding="utf-8") as f:
+        json.dump([dict(r) for r in rows],f,indent=2)
+
+    # PDF
+    pdf_file="weekly_reports/malaysia_weekly_report.pdf"
+    buffer=generate_pdf(rows,title="Malaysian Cyber Threat Weekly Report")
+    with open(pdf_file,"wb") as f:
+        f.write(buffer.getbuffer())
+
+    return jsonify({
+        "status":"success",
+        "csv":csv_file,
+        "json":json_file,
+        "pdf":pdf_file,
+        "total_indicators":len(rows)
+    })
+
+# -----------------------------
+# CLI Support & Run
+# -----------------------------
+if __name__=="__main__":
     init_db()
-    if len(sys.argv) > 1 and sys.argv[1] in ["ingest", "--update"]:
+    if len(sys.argv)>1 and sys.argv[1] in ["ingest","--update"]:
         ingest()
         sys.exit(0)
 
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    port=int(os.environ.get("PORT",5000))
+    app.run(host="0.0.0.0",port=port)
