@@ -10,7 +10,6 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.pagesizes import landscape, A4
-from reportlab.pdfgen import canvas
 import matplotlib.pyplot as plt
 import folium
 from folium.plugins import MarkerCluster
@@ -164,7 +163,7 @@ def dashboard():
     total_count=conn.execute("SELECT COUNT(*) as c FROM threats").fetchone()["c"]
     rows=[dict(r) for r in conn.execute(f"SELECT * FROM threats ORDER BY {sort_column} {sort_order} LIMIT {limit} OFFSET {offset}").fetchall()]
 
-    # ================== Malaysia GeoIP heatmap with clustering ==================
+    # Malaysia GeoIP heatmap
     map_obj = folium.Map(location=[4.2105,101.9758], zoom_start=5)
     marker_cluster = MarkerCluster().add_to(map_obj)
     for r in rows:
@@ -172,7 +171,7 @@ def dashboard():
             folium.CircleMarker(
                 location=[r["latitude"], r["longitude"]],
                 radius=4,
-                color="red" if r["classification"]=="TARGET_MY" else "blue",
+                color="crimson" if r["classification"]=="TARGET_MY" else "darkblue",
                 fill=True
             ).add_to(marker_cluster)
     map_html = map_obj._repr_html_()
@@ -200,6 +199,124 @@ def dashboard():
                                   page=page,total_pages=total_pages,sort_column=sort_column,sort_order=sort_order,
                                   map_html=map_html,total_count=total_count)
 
+# ================= DASHBOARD TEMPLATE =================
+DASHBOARD_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>REDSHARK.MY Threat Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #111; color: #eee; }
+        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+        th, td { border: 1px solid #555; padding: 8px; text-align: left; }
+        th { background-color: darkblue; cursor: pointer; color:#fff; }
+        tr:nth-child(even) { background-color: #ccc; color:#000; }
+        tr:nth-child(odd) { background-color: #fff; color:#000; }
+        .header { display: flex; align-items: center; gap: 15px; }
+        .headline h3 { color: crimson; margin-top: 5px; margin-bottom: 15px; font-weight: bold; }
+        .email { margin-bottom: 12px; font-size: 0.9em; color: #aaa; }
+        .buttons { margin-bottom: 20px; }
+        .buttons a { background-color: #222; color: #eee; padding: 8px 12px; text-decoration: none; margin-right: 10px; border-radius: 4px; }
+        .buttons a:hover { background-color: #333; }
+        .trend-chart { margin-top: 20px; background-color: #1a1a1a; padding: 15px; border-radius: 8px; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        function sortTable(column) {
+            const url = new URL(window.location.href);
+            let currentOrder = url.searchParams.get("order");
+            currentOrder = currentOrder === "asc" ? "desc" : "asc";
+            url.searchParams.set("sort", column);
+            url.searchParams.set("order", currentOrder);
+            window.location.href = url.href;
+        }
+    </script>
+</head>
+<body>
+    <div class="header">
+        <h1>REDSHARK.MY Threat Dashboard</h1>
+    </div>
+    <div class="headline">
+        <h3>Real-Time Threat Intelligence</h3>
+    </div>
+    <div class="email">Contact: darkgrid@redshark.my</div>
+    <div class="buttons">
+        <a href="/export/json" target="_blank">Download JSON</a>
+        <a href="/export/csv" target="_blank">Download CSV</a>
+        <a href="/export/pdf" target="_blank">Download PDF</a>
+    </div>
+
+    <div class="trend-chart">
+        <canvas id="trendChart"></canvas>
+    </div>
+    <script>
+        const trendLabels = {{ trend.keys() | list | tojson }};
+        const trendData = {{ trend.values() | list | tojson }};
+        const ctx = document.getElementById('trendChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: trendLabels,
+                datasets: [{
+                    label: 'Indicators Last 30 Days',
+                    data: trendData,
+                    borderColor: 'orange',
+                    backgroundColor: 'rgba(255,165,0,0.2)',
+                    tension: 0.3
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { display: true, labels: { color: '#fff' } }
+                },
+                scales: {
+                    x: { ticks: { color: '#eee' }, grid: { color: '#333' } },
+                    y: { ticks: { color: '#eee' }, grid: { color: '#333' } }
+                }
+            }
+        });
+    </script>
+
+    <table>
+        <tr>
+            <th onclick="sortTable('indicator')">Indicator</th>
+            <th onclick="sortTable('indicator_type')">Type</th>
+            <th onclick="sortTable('mitre_tactic')">MITRE</th>
+            <th onclick="sortTable('classification')">Class</th>
+            <th onclick="sortTable('created')">Created</th>
+        </tr>
+        {% for row in rows %}
+        <tr>
+            <td>{{ row['indicator'] }}</td>
+            <td>{{ row['indicator_type'] }}</td>
+            <td>{{ row['mitre_tactic'] }}</td>
+            <td>{{ row['classification'] }}</td>
+            <td>{{ row['created'] }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    <p>Total Showing: {{ rows|length }} / {{ total_count }}</p>
+
+    <div style="margin-top:20px;">
+        {% if page > 1 %}
+        <a href="?page={{ page-1 }}&sort={{ sort_column }}&order={{ sort_order }}">Previous</a>
+        {% endif %}
+        Page {{ page }} / {{ total_pages }}
+        {% if page < total_pages %}
+        <a href="?page={{ page+1 }}&sort={{ sort_column }}&order={{ sort_order }}">Next</a>
+        {% endif %}
+    </div>
+
+    <div style="margin-top:20px;">
+        {{ map_html | safe }}
+    </div>
+
+    <p style="margin-top:15px; font-size:0.8em; color:#aaa;">Disclaimer: Developed from public sources by darkgrid@redshark.my</p>
+</body>
+</html>
+"""
+
 # ================= EXPORT =================
 @app.route("/export/csv")
 def export_csv():
@@ -207,7 +324,11 @@ def export_csv():
     rows=conn.execute("SELECT * FROM threats ORDER BY created DESC").fetchall()
     conn.close()
     path=os.path.join(REPORTS_DIR,"export.csv")
-    write_csv(rows,path)
+    with open(path,"w",newline='') as f:
+        writer=csv.writer(f)
+        if rows:
+            writer.writerow(rows[0].keys())
+            for r in rows: writer.writerow(r)
     return send_file(path,as_attachment=True)
 
 @app.route("/export/json")
@@ -216,246 +337,90 @@ def export_json():
     rows=[dict(r) for r in conn.execute("SELECT * FROM threats ORDER BY created DESC").fetchall()]
     conn.close()
     path=os.path.join(REPORTS_DIR,"export.json")
-    write_json(rows,path)
+    with open(path,"w") as f:
+        json.dump(rows,f,indent=2)
     return send_file(path,as_attachment=True)
 
 @app.route("/export/pdf")
 def export_pdf():
-    conn=get_db()
-    rows=[dict(r) for r in conn.execute("SELECT * FROM threats ORDER BY created DESC").fetchall()]
-    conn.close()
     path=os.path.join(REPORTS_DIR,"export.pdf")
-    write_pdf(rows,path)
+    generate_pdf(path)
     return send_file(path,as_attachment=True)
 
-# ================= WRITE FUNCTIONS =================
-def write_csv(rows,path):
-    output=io.StringIO()
-    writer=csv.writer(output)
-    if rows:
-        writer.writerow(rows[0].keys())
-        for r in rows:
-            writer.writerow(r)
-    with open(path,"w") as f:
-        f.write(output.getvalue())
-
-def write_json(rows,path):
-    with open(path,"w") as f:
-        json.dump([dict(r) for r in rows],f,indent=2)
-
-# ================= PDF WITH PAGE NUMBERS =================
-class PageNumCanvas(canvas.Canvas):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._saved_page_states = []
-
-    def showPage(self):
-        self._saved_page_states.append(dict(self.__dict__))
-        self._startPage()
-
-    def save(self):
-        num_pages = len(self._saved_page_states)
-        for state in self._saved_page_states:
-            self.__dict__.update(state)
-            self.draw_page_number(num_pages)
-            super().showPage()
-        super().save()
-
-    def draw_page_number(self, page_count):
-        self.setFont("Helvetica", 8)
-        self.setFillColor(colors.grey)
-        self.drawRightString(800, 15, f"Page {self._pageNumber} of {page_count}")
-
-def write_pdf(rows,path):
-    score,level=calculate_risk(rows)
-    buffer=io.BytesIO()
-    doc=SimpleDocTemplate(buffer,pagesize=landscape(A4),
-                          leftMargin=40,rightMargin=40,topMargin=40,bottomMargin=40)
-    elements=[]
-    styles=getSampleStyleSheet()
-    wrap_style=ParagraphStyle("wrap",fontSize=8,leading=10)
-
-    # Trend chart
-    dates=[]
-    counts=[]
-    today=datetime.utcnow().date()
-    for i in range(30):
-        d=today-timedelta(days=i)
-        dates.append(str(d))
-        counts.append(sum(1 for r in rows if r["created"].startswith(str(d))))
-    plt.figure(figsize=(8,2))
-    plt.plot(dates[::-1],counts[::-1],marker='o',color='orange')
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    img_path=os.path.join(REPORTS_DIR,"trend.png")
-    plt.savefig(img_path)
-    plt.close()
-    trend_img = Image(img_path, width=400, height=100)
-
-    elements.append(Paragraph("<b>REDSHARK.MY Weekly Threat Intelligence Report</b>",styles["Title"]))
-    elements.append(Spacer(1,10))
-    elements.append(Paragraph(f"Risk Index: {score} ({level})",styles["Normal"]))
-    elements.append(Spacer(1,10))
-    elements.append(trend_img)
-    elements.append(Spacer(1,10))
-
-    page_size=50
-    for i in range(0,len(rows),page_size):
-        chunk=rows[i:i+page_size]
-        data=[["Indicator","Type","MITRE","Class","Date"]]
-        for idx,r in enumerate(chunk):
-            data.append([
-                Paragraph(r["indicator"],wrap_style),
-                r["indicator_type"],
-                r["mitre_tactic"],
-                r["classification"],
-                r["created"]
-            ])
-        table=Table(data,repeatRows=1)
-        table.setStyle(TableStyle([
-            ("BACKGROUND",(0,0),(-1,0),colors.crimson),
-            ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-            ("GRID",(0,0),(-1,-1),0.5,colors.grey),
-        ]))
-        for row_idx in range(1,len(data)):
-            if row_idx%2==0:
-                table.setStyle(TableStyle([("BACKGROUND",(0,row_idx),(-1,row_idx),colors.lightgrey)]))
-            else:
-                table.setStyle(TableStyle([("BACKGROUND",(0,row_idx),(-1,row_idx),colors.white)]))
-        elements.append(table)
-        elements.append(Spacer(1,10))
-        elements.append(Paragraph("Disclaimer: Developed from public sources by darkgrid@redshark.my",styles["Normal"]))
-        if i+page_size<len(rows):
-            elements.append(PageBreak())
-
-    doc.build(elements, canvasmaker=PageNumCanvas)
-    with open(path,"wb") as f:
-        f.write(buffer.getvalue())
-
-# ================= WEEKLY REPORT GENERATOR =================
-def generate_weekly_reports():
+# ================= PDF GENERATOR =================
+def generate_pdf(filepath):
     conn=get_db()
     rows=[dict(r) for r in conn.execute("SELECT * FROM threats ORDER BY created DESC").fetchall()]
     conn.close()
-    if not rows:
-        return
-    date_str=str(datetime.utcnow().date())
-    write_csv(rows,os.path.join(REPORTS_DIR,f"weekly_{date_str}.csv"))
-    write_json(rows,os.path.join(REPORTS_DIR,f"weekly_{date_str}.json"))
-    write_pdf(rows,os.path.join(REPORTS_DIR,f"weekly_{date_str}.pdf"))
+    doc=SimpleDocTemplate(filepath,pagesize=landscape(A4),
+                          leftMargin=20,rightMargin=20,topMargin=20,bottomMargin=20)
+    elements=[]
+    styles=getSampleStyleSheet()
+    header_style=ParagraphStyle("header",parent=styles["Heading1"],alignment=1,textColor=colors.crimson)
+    elements.append(Paragraph("REDSHARK.MY Weekly Threat Report",header_style))
+    elements.append(Spacer(1,12))
 
-# ================= WEEKLY SCHEDULER =================
-def weekly_scheduler_precise():
-    import time
-    import datetime
+    # Trend chart
+    dates=[str(datetime.utcnow().date()-timedelta(days=i)) for i in range(30)]
+    counts=[len([r for r in rows if r["created"].startswith(d)]) for d in dates]
+    plt.figure(figsize=(10,2))
+    plt.plot(dates[::-1],counts[::-1],color="orange",linewidth=2)
+    plt.xticks(rotation=45,fontsize=6)
+    plt.tight_layout()
+    chart_path=os.path.join(REPORTS_DIR,"trend.png")
+    plt.savefig(chart_path)
+    plt.close()
+    elements.append(Image(chart_path,width=500,height=100))
+    elements.append(Spacer(1,12))
+
+    # Table with alternating row colors
+    chunk_size=50
+    for i in range(0,len(rows),chunk_size):
+        data=[["Indicator","Type","MITRE","Class","Created"]]
+        for idx,r in enumerate(rows[i:i+chunk_size]):
+            data.append([r["indicator"],r["indicator_type"],r["mitre_tactic"],r["classification"],r["created"]])
+        table=Table(data,repeatRows=1)
+        tbl_style=TableStyle([
+            ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
+            ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
+            ('ALIGN',(0,0),(-1,-1),'LEFT'),
+            ('GRID',(0,0),(-1,-1),0.5,colors.grey)
+        ])
+        for row_num in range(1,len(data)):
+            bg=colors.whitesmoke if row_num%2==1 else colors.lightgrey
+            tbl_style.add('BACKGROUND',(0,row_num),(-1,row_num),bg)
+        table.setStyle(tbl_style)
+        elements.append(table)
+        elements.append(PageBreak())
+
+    elements.append(Paragraph("Disclaimer: Developed from public sources by darkgrid@redshark.my",styles["Normal"]))
+
+    def add_page_number(canvas_obj, doc_obj):
+        canvas_obj.setFont("Helvetica",8)
+        page_num_text=f"Page {canvas_obj.getPageNumber()}"
+        canvas_obj.drawRightString(landscape(A4)[0]-20,10,page_num_text)
+
+    doc.build(elements, onFirstPage=add_page_number, onLaterPages=add_page_number)
+
+# ================= WEEKLY REPORT SCHEDULER =================
+def weekly_report_scheduler():
     while True:
-        now = datetime.datetime.utcnow()
-        days_ahead = 6 - now.weekday()
-        if days_ahead < 0:
-            days_ahead += 7
-        next_run = datetime.datetime.combine(
-            now.date() + datetime.timedelta(days=days_ahead),
-            datetime.time(hour=0, minute=0, second=0)
-        )
-        delta = (next_run - now).total_seconds()
-        if delta <= 0:
-            next_run += datetime.timedelta(days=7)
-            delta = (next_run - now).total_seconds()
-        print(f"[Scheduler] Next weekly report in {delta/3600:.2f} hours")
-        time.sleep(delta)
-        print("[Scheduler] Generating weekly reports...")
-        generate_weekly_reports()
+        now=datetime.utcnow()
+        next_run=(now + timedelta(days=7-now.weekday())).replace(hour=0,minute=5,second=0)
+        wait=(next_run-now).total_seconds()
+        print(f"[Scheduler] Next weekly report in {wait/3600:.2f} hours")
+        threading.Event().wait(wait)
+        print("[Scheduler] Generating weekly report...")
+        ingest_otx()
+        generate_pdf(os.path.join(REPORTS_DIR,f"weekly_{datetime.utcnow().date()}.pdf"))
+        export_csv()
+        export_json()
 
-threading.Thread(target=weekly_scheduler_precise, daemon=True).start()
-
-# ================= FIRST RUN INGESTION =================
-print("[Startup] Performing initial data ingestion...")
-inserted = ingest_otx()
-print(f"[Startup] Inserted {inserted} indicators from OTX.")
-
-# ================= DASHBOARD TEMPLATE =================
-DASHBOARD_TEMPLATE = """
-<html>
-<head>
-<title>REDSHARK.MY Threat Dashboard</title>
-<style>
-body{font-family:Arial,sans-serif;background-color:#111;color:#eee;}
-table{border-collapse:collapse;width:100%;margin-top:20px;}
-th,td{border:1px solid #555;padding:8px;text-align:left;}
-th{background-color:#001F3F;cursor:pointer;color:white;}
-tr:nth-child(even){background-color:#1a1a1a;}
-.header{display:flex;align-items:center;gap:15px;}
-.headline h3{color:#ff4d4d;margin-top:5px;margin-bottom:15px;font-weight:bold;}
-.buttons{margin-bottom:20px;}
-.buttons a{background-color:#001F3F;color:#eee;padding:8px 12px;text-decoration:none;margin-right:10px;border-radius:4px;}
-.buttons a:hover{background-color:#003366;}
-</style>
-<script>
-function sortTable(column){
-    const url = new URL(window.location.href);
-    let currentOrder = url.searchParams.get("order");
-    currentOrder = currentOrder === "asc" ? "desc" : "asc";
-    url.searchParams.set("sort", column);
-    url.searchParams.set("order", currentOrder);
-    window.location.href=url.href;
-}
-function changePage(page){
-    const url=new URL(window.location.href);
-    url.searchParams.set("page",page);
-    window.location.href=url.href;
-}
-</script>
-</head>
-<body>
-<h1>REDSHARK.MY Threat Dashboard</h1>
-<div class="buttons">
-<a href="/export/json" target="_blank">Download JSON</a>
-<a href="/export/csv" target="_blank">Download CSV</a>
-<a href="/export/pdf" target="_blank">Download PDF</a>
-</div>
-<div style="width:100%;height:400px;">{{ map_html|safe }}</div>
-<h3>Trend Last 30 Days</h3>
-<canvas id="trend" width="800" height="200"></canvas>
-<table>
-<tr>
-<th onclick="sortTable('indicator')">Indicator</th>
-<th onclick="sortTable('indicator_type')">Type</th>
-<th onclick="sortTable('mitre_tactic')">MITRE</th>
-<th onclick="sortTable('classification')">Classification</th>
-<th onclick="sortTable('created')">Created</th>
-</tr>
-{% for row in rows %}
-<tr style="background-color:{% if loop.index0 %2 ==0 %}#222{% else %}#1a1a1a{% endif %}">
-<td>{{ row['indicator'] }}</td>
-<td>{{ row['indicator_type'] }}</td>
-<td>{{ row['mitre_tactic'] }}</td>
-<td>{{ row['classification'] }}</td>
-<td>{{ row['created'] }}</td>
-</tr>
-{% endfor %}
-</table>
-<p>Showing {{ rows|length }} of {{ total_count }} indicators</p>
-<div>
-{% if page>1 %}
-<button onclick="changePage({{ page-1 }})">Previous</button>
-{% endif %}
-Page {{ page }} of {{ total_pages }}
-{% if page<total_pages %}
-<button onclick="changePage({{ page+1 }})">Next</button>
-{% endif %}
-</div>
-<p style="margin-top:20px;font-size:0.8em;color:#999;">Disclaimer: Developed from public sources by darkgrid@redshark.my</p>
-<script>
-const ctx = document.getElementById('trend').getContext('2d');
-const data = {{ trend|tojson }};
-new Chart(ctx,{type:'line',data:{labels:Object.keys(data),datasets:[{label:'Indicators',data:Object.values(data),borderColor:'crimson',fill:false}]},options:{scales:{x:{ticks:{maxRotation:90,minRotation:45}}}}});
-</script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-</body>
-</html>
-"""
-
-# ================= START =================
+# ================= STARTUP =================
 if __name__=="__main__":
+    print("[Startup] Performing initial ingestion...")
+    inserted=ingest_otx()
+    print(f"[Startup] Inserted {inserted} indicators from OTX.")
+    threading.Thread(target=weekly_report_scheduler,daemon=True).start()
     port=int(os.environ.get("PORT",10000))
     app.run(host="0.0.0.0",port=port)
