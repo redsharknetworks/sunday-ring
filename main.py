@@ -221,6 +221,19 @@ def dashboard_html():
 # --------------------------
 # Run App
 # --------------------------
+def run_ingestion():
+    print("Starting ingestion...")
+    pulses = fetch_otx_pulses(limit=200)
+    save_threats(pulses)
+    print("Ingestion complete.")
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    import sys
+
+    if "ingest" in sys.argv:
+        run_ingestion()
+    else:
+        port = int(os.environ.get("PORT", 5000))
+        app.run(host="0.0.0.0", port=port)
+
+
