@@ -2,7 +2,7 @@ name: Threat Intel Ingestion
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/30 * * * *"   # Every 30 minutes
   workflow_dispatch:
 
 jobs:
@@ -10,24 +10,55 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # --------------------------
+      # Checkout Repository
+      # --------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Required for push
 
+      # --------------------------
+      # Setup Python
+      # --------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+      # --------------------------
+      # Install Dependencies
+      # --------------------------
       - name: Install dependencies
-        run: pip install -r threat/requirements.txt
+        run: |
+          pip install -r requirements.txt
 
+      # --------------------------
+      # Download MaxMind Database
+      # --------------------------
       - name: Download MaxMind DB
         run: |
           curl -L -o maxmind.tar.gz "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${{ secrets.MAXMIND_LICENSE_KEY }}&suffix=tar.gz"
-          tar -xzf maxmind.tar.gz --strip-components=1
-          mv GeoLite2-Country.mmdb threat/
-        
+          tar -xzf maxmind.tar.gz
+          MMDB_PATH=$(find . -name "GeoLite2-Country.mmdb")
+          mv "$MMDB_PATH" GeoLite2-Country.mmdb
+
+      # --------------------------
+      # Run Ingestion Mode
+      # --------------------------
       - name: Run ingestion
-        run: python src/main.py
+        run: python main.py ingest
         env:
           OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
+
+      # --------------------------
+      # Commit Updated Database
+      # --------------------------
+      - name: Commit updated DB
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git pull origin main
+          git add threat_intel.db
+          git commit -m "Auto update threat DB" || echo "No changes"
+          git push origin main
