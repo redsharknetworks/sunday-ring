@@ -5,7 +5,7 @@ import io
 import csv
 import json
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, request, render_template_string, send_file, abort
+from flask import Flask, jsonify, request, render_template_string, send_file
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -279,7 +279,8 @@ def write_pdf(rows,path):
     for i in range(0,len(rows),page_size):
         chunk=rows[i:i+page_size]
         data=[["Indicator","Type","MITRE","Class","Date"]]
-        for r in chunk:
+        for idx,r in enumerate(chunk):
+            bgcolor=colors.white if idx%2==0 else colors.lightgrey
             data.append([
                 Paragraph(r["indicator"],wrap_style),
                 r["indicator_type"],
@@ -292,8 +293,12 @@ def write_pdf(rows,path):
             ("BACKGROUND",(0,0),(-1,0),colors.darkblue),
             ("TEXTCOLOR",(0,0),(-1,0),colors.white),
             ("GRID",(0,0),(-1,-1),0.5,colors.grey),
-            ("BACKGROUND",(0,1),(-1,-1),colors.crimson)
+            ("BACKGROUND",(0,1),(-1,-1),colors.white)
         ]))
+        # Alternate row shading
+        for row_idx in range(1,len(data)):
+            if row_idx%2==0:
+                table.setStyle(TableStyle([("BACKGROUND",(0,row_idx),(-1,row_idx),colors.lightgrey)]))
         elements.append(table)
         elements.append(Spacer(1,10))
         elements.append(Paragraph("Disclaimer: Developed from public sources by darkgrid@redshark.my",styles["Normal"]))
