@@ -5,10 +5,10 @@ import io
 import csv
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, render_template_string, send_file
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table
-from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Image
+from reportlab.lib import colors, pagesizes
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib import pagesizes
+import urllib.request
 
 # --------------------------
 # Flask App
@@ -72,7 +72,6 @@ def fetch_otx_pulses(limit=100):
     headers = {"X-OTX-API-KEY": OTX_API_KEY, "Accept": "application/json"}
     url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
     params = {"limit": limit}
-
     try:
         response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
@@ -90,11 +89,9 @@ def compute_malaysia_score(pulse):
     for kw in MALAYSIA_KEYWORDS:
         if kw in text:
             score += THREAT_SCORES["keyword"]
-
     for ind in pulse.get("indicators") or []:
         if ind.get("type") == "domain" and ind.get("indicator", "").endswith(".my"):
             score += THREAT_SCORES["my_domain"]
-
     return score
 
 # --------------------------
@@ -103,7 +100,6 @@ def compute_malaysia_score(pulse):
 def save_threats(pulses):
     conn = get_db_connection()
     cursor = conn.cursor()
-
     for pulse in pulses:
         score = compute_malaysia_score(pulse)
         if score < 1:
@@ -122,7 +118,6 @@ def save_threats(pulses):
                 pulse.get("created"),
                 score
             ))
-
     conn.commit()
     conn.close()
 
@@ -134,7 +129,6 @@ def update_threats():
     key = request.args.get("key")
     if ADMIN_KEY and key != ADMIN_KEY:
         return {"error": "Unauthorized"}, 403
-
     pulses = fetch_otx_pulses(limit=200)
     save_threats(pulses)
     return {"status": "updated", "total_pulses_fetched": len(pulses)}
@@ -154,12 +148,11 @@ def dashboard_api():
     return jsonify([dict(row) for row in rows])
 
 # --------------------------
-# Weekly Top 10 Report
+# Weekly Top 10 Threats
 # --------------------------
 def get_weekly_top10():
     conn = get_db_connection()
     one_week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
-
     rows = conn.execute("""
         SELECT indicator, indicator_type, threat_score, pulse_name
         FROM malaysia_targeted_threats
@@ -168,7 +161,6 @@ def get_weekly_top10():
         LIMIT 100
     """, (one_week_ago,)).fetchall()
     conn.close()
-
     result = {"ips": [], "domains": [], "hashes": []}
     for row in rows:
         r = dict(row)
@@ -179,7 +171,6 @@ def get_weekly_top10():
             result["domains"].append(r)
         elif "FileHash" in t:
             result["hashes"].append(r)
-
     result["ips"] = result["ips"][:10]
     result["domains"] = result["domains"][:10]
     result["hashes"] = result["hashes"][:10]
@@ -190,7 +181,10 @@ def get_weekly_top10():
 # --------------------------
 @app.route("/report/json")
 def report_json():
-    return jsonify(get_weekly_top10())
+    return jsonify({
+        "title": "Sunday Ring With Red Shark - Top 10 Malaysia Weekly Threat Report",
+        "report": get_weekly_top10()
+    })
 
 # --------------------------
 # CSV Report
@@ -200,8 +194,9 @@ def report_csv():
     data = get_weekly_top10()
     output = io.StringIO()
     writer = csv.writer(output)
+    writer.writerow(["Sunday Ring With Red Shark - Top 10 Malaysia Weekly Threat Report"])
+    writer.writerow([])
     writer.writerow(["Category", "Indicator", "Threat Score", "Pulse Name"])
-
     for category, items in data.items():
         for item in items:
             writer.writerow([
@@ -211,7 +206,6 @@ def report_csv():
                 item["pulse_name"]
             ])
     output.seek(0)
-
     return send_file(
         io.BytesIO(output.getvalue().encode()),
         mimetype="text/csv",
@@ -220,7 +214,7 @@ def report_csv():
     )
 
 # --------------------------
-# PDF Report
+# PDF Report with RedShark Logo
 # --------------------------
 @app.route("/report/pdf")
 def report_pdf():
@@ -230,26 +224,42 @@ def report_pdf():
     elements = []
     styles = getSampleStyleSheet()
 
-    elements.append(Paragraph("Malaysia Weekly Threat Report", styles["Heading1"]))
+    # RedShark Logo
+    logo_url = "https://raw.githubusercontent.com/redsharknetworks/sunday-ring/main/redshark.png"
+    logo_file = io.BytesIO(urllib.request.urlopen(logo_url).read())
+    logo_img = Image(logo_file, width=120, height=60)
+    elements.append(logo_img)
     elements.append(Spacer(1, 12))
-    table_data = [["Category", "Indicator", "Threat Score"]]
 
+    # Title
+    elements.append(Paragraph(
+        "Sunday Ring With Red Shark - Top 10 Malaysia Weekly Threat Report",
+        styles["Heading1"]
+    ))
+    elements.append(Spacer(1, 12))
+
+    # Table
+    table_data = [["Category", "Indicator", "Threat Score"]]
     for category, items in data.items():
         for item in items:
-            table_data.append([
-                category,
-                item["indicator"],
-                str(item["threat_score"])
-            ])
-    table = Table(table_data)
+            table_data.append([category, item["indicator"], str(item["threat_score"])])
+
+    table = Table(table_data, hAlign='LEFT')
     table.setStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.grey),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
         ('GRID', (0,0), (-1,-1), 1, colors.black),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
     ])
     elements.append(table)
+    elements.append(Spacer(1, 24))
+
+    # Footer contact info
+    elements.append(Paragraph("Contact: darkgrid@redshark.my", styles["Normal"]))
+
     doc.build(elements)
     buffer.seek(0)
-
     return send_file(
         buffer,
         mimetype="application/pdf",
@@ -258,7 +268,7 @@ def report_pdf():
     )
 
 # --------------------------
-# Dashboard HTML (with download buttons)
+# Dashboard HTML
 # --------------------------
 @app.route("/")
 def dashboard_html():
