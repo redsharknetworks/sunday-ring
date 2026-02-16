@@ -1,426 +1,353 @@
 import os
 import sqlite3
-import requests
+import random
+from datetime import datetime, timedelta
+from flask import Flask, jsonify, request, render_template_string, send_file, redirect
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import io
 import csv
-import json
-from datetime import datetime, timedelta
-from flask import Flask, jsonify, request, render_template_string, send_file
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.pagesizes import landscape, A4
-import matplotlib.pyplot as plt
+import base64
 import folium
-from folium.plugins import MarkerCluster
-import threading
+from folium.plugins import HeatMap
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.pagesizes import A4, landscape
 
-# ================= CONFIG =================
 app = Flask(__name__)
-DB_FILE = "cti_platform.db"
-REPORTS_DIR = "reports"
-os.makedirs(REPORTS_DIR, exist_ok=True)
+DB = "threats.db"
 
-OTX_API_KEY = os.environ.get("OTX_API_KEY")
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "change_this")
-
-# ================= DATABASE =================
-def get_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
-
+# -----------------------
+# DATABASE INIT
+# -----------------------
 def init_db():
-    conn = get_db()
+    conn = sqlite3.connect(DB)
     c = conn.cursor()
+
     c.execute("""
     CREATE TABLE IF NOT EXISTS threats (
-        id TEXT PRIMARY KEY,
-        pulse_name TEXT,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pulse TEXT,
         indicator TEXT,
-        indicator_type TEXT,
-        latitude REAL,
-        longitude REAL,
-        mitre_tactic TEXT,
+        type TEXT,
         classification TEXT,
-        created TEXT
+        mitre TEXT,
+        risk_score INTEGER,
+        created_at TEXT
     )
     """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS incidents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT,
+        severity TEXT,
+        status TEXT,
+        linked_indicator TEXT,
+        created_at TEXT
+    )
+    """)
+
     conn.commit()
     conn.close()
 
-init_db()
+# -----------------------
+# RISK ENGINE
+# -----------------------
+def calculate_risk(classification, mitre):
+    base = {"Low":30,"Medium":60,"High":80}.get(classification,50)
+    mitre_weight = 15 if "T1566" in mitre else 10
+    recency = random.randint(5,15)
+    return min(base + mitre_weight + recency, 100)
 
-# ================= INTELLIGENCE LOGIC =================
-def mitre_tag(indicator_type):
-    mapping = {
-        "domain": "Command and Control",
-        "IPv4": "Initial Access",
-        "URL": "Execution",
-        "FileHash-SHA256": "Defense Evasion"
-    }
-    return mapping.get(indicator_type, "Reconnaissance")
+def risk_level(score):
+    if score >= 90:
+        return "Critical"
+    elif score >= 70:
+        return "High"
+    elif score >= 40:
+        return "Medium"
+    return "Low"
 
-def classify_indicator(indicator):
-    indicator = indicator.lower()
-    if ".my" in indicator:
-        return "TARGET_MY"
-    if indicator.startswith(("103.","175.","60.")):
-        return "SOURCE_MY"
-    return "SOURCE_OTHER"
+# -----------------------
+# DEMO DATA
+# -----------------------
+def seed_data():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
 
-def get_geo(ip):
-    try:
-        r = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            return data.get("lat"), data.get("lon")
-    except:
-        pass
-    return None, None
+    if c.execute("SELECT COUNT(*) FROM threats").fetchone()[0] > 0:
+        conn.close()
+        return
 
-def calculate_risk(rows):
-    weights = {"TARGET_MY":4,"SOURCE_MY":3,"SOURCE_OTHER":1}
-    score = sum(weights.get(r["classification"],0) for r in rows)
-    if score>100: level="CRITICAL"
-    elif score>50: level="HIGH"
-    elif score>20: level="MODERATE"
-    else: level="LOW"
-    return score, level
+    for i in range(150):
+        classification = random.choice(["Low","Medium","High"])
+        mitre = random.choice(["T1566 Phishing","T1071 C2","T1059 Execution"])
+        score = calculate_risk(classification, mitre)
 
-def cleanup_old():
-    cutoff=(datetime.utcnow()-timedelta(days=30)).isoformat()
-    conn=get_db()
-    conn.execute("DELETE FROM threats WHERE created < ?",(cutoff,))
+        c.execute("""
+        INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at)
+        VALUES (?,?,?,?,?,?,?)
+        """,(
+            f"Campaign {i%6}",
+            f"malicious{i}.com",
+            random.choice(["domain","IPv4","URL"]),
+            classification,
+            mitre,
+            score,
+            datetime.utcnow().isoformat()
+        ))
+
     conn.commit()
     conn.close()
 
-# ================= INGESTION =================
-def ingest_otx():
-    if not OTX_API_KEY:
-        print("OTX_API_KEY missing")
+# -----------------------
+# RISK INDEX
+# -----------------------
+def national_risk_index():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    scores = [x[0] for x in c.execute("SELECT risk_score FROM threats").fetchall()]
+    conn.close()
+    if not scores:
         return 0
-    headers={"X-OTX-API-KEY":OTX_API_KEY}
-    try:
-        r=requests.get("https://otx.alienvault.com/api/v1/pulses/subscribed",headers=headers,timeout=15)
-        if r.status_code!=200:
-            print("OTX fetch failed",r.status_code)
-            return 0
-        pulses=r.json().get("results",[])
-    except Exception as e:
-        print("OTX fetch error:",e)
-        return 0
+    return int(sum(scores)/len(scores))
 
-    conn=get_db()
-    c=conn.cursor()
-    inserted=0
-    for pulse in pulses:
-        created=pulse.get("created")
-        for ind in pulse.get("indicators",[]):
-            indicator=ind.get("indicator")
-            ind_type=ind.get("type")
-            tactic=mitre_tag(ind_type)
-            classification=classify_indicator(indicator)
-            lat,lon=(None,None)
-            if ind_type=="IPv4":
-                lat,lon=get_geo(indicator)
-            threat_id=pulse.get("id")+indicator
-            c.execute("""
-            INSERT OR IGNORE INTO threats
-            VALUES (?,?,?,?,?,?,?,?,?)
-            """,(
-                threat_id,
-                pulse.get("name"),
-                indicator,
-                ind_type,
-                lat,lon,
-                tactic,
-                classification,
-                created
-            ))
-            inserted+=1
-    conn.commit()
+# -----------------------
+# EXEC SUMMARY
+# -----------------------
+def executive_summary():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    total = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
+    high = c.execute("SELECT COUNT(*) FROM threats WHERE risk_score >=70").fetchone()[0]
+    top_mitre = c.execute("""
+        SELECT mitre, COUNT(*) as c FROM threats
+        GROUP BY mitre ORDER BY c DESC LIMIT 1
+    """).fetchone()
+
     conn.close()
-    cleanup_old()
-    return inserted
 
-# ================= DASHBOARD =================
+    mitre_text = top_mitre[0] if top_mitre else "N/A"
+
+    return f"""
+    REDSHARK.MY identified {total} active indicators this week.
+    {high} indicators were rated High or Critical risk.
+    Dominant observed technique: {mitre_text}.
+    Risk Index currently rated {risk_index()}.
+    """
+
+# -----------------------
+# TREND CHART
+# -----------------------
+def generate_trend():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    data = c.execute("""
+        SELECT substr(created_at,1,10), COUNT(*)
+        FROM threats GROUP BY substr(created_at,1,10)
+    """).fetchall()
+    conn.close()
+
+    dates = [d[0] for d in data]
+    counts = [d[1] for d in data]
+
+    plt.figure()
+    plt.plot(dates, counts, color="orange")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    img = io.BytesIO()
+    plt.savefig(img, format="png")
+    plt.close()
+    img.seek(0)
+    return base64.b64encode(img.read()).decode()
+
+# -----------------------
+# HEATMAP
+# -----------------------
+def generate_map():
+    m = folium.Map(location=[4.21,101.97], zoom_start=6)
+    heat = [[3.139,101.6869,5],[1.49,103.74,4],[5.41,100.33,3]]
+    HeatMap(heat).add_to(m)
+    return m._repr_html_()
+
+# -----------------------
+# DASHBOARD
+# -----------------------
 @app.route("/")
 def dashboard():
-    page=int(request.args.get("page",1))
-    sort_column=request.args.get("sort","created")
-    sort_order=request.args.get("order","desc").lower()
-    if sort_order not in ["asc","desc"]:
-        sort_order="desc"
-    allowed=["indicator","indicator_type","mitre_tactic","classification","created"]
-    if sort_column not in allowed:
-        sort_column="created"
+    page = int(request.args.get("page",1))
+    sort = request.args.get("sort","risk_score")
 
-    limit=50
-    offset=(page-1)*limit
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
 
-    conn=get_db()
-    total_count=conn.execute("SELECT COUNT(*) as c FROM threats").fetchone()["c"]
-    rows=[dict(r) for r in conn.execute(f"SELECT * FROM threats ORDER BY {sort_column} {sort_order} LIMIT {limit} OFFSET {offset}").fetchall()]
+    total = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
+    offset = (page-1)*50
 
-    # Malaysia GeoIP heatmap
-    map_obj = folium.Map(location=[4.2105,101.9758], zoom_start=5)
-    marker_cluster = MarkerCluster().add_to(map_obj)
-    for r in rows:
-        if r["latitude"] and r["longitude"]:
-            folium.CircleMarker(
-                location=[r["latitude"], r["longitude"]],
-                radius=4,
-                color="crimson" if r["classification"]=="TARGET_MY" else "darkblue",
-                fill=True
-            ).add_to(marker_cluster)
-    map_html = map_obj._repr_html_()
+    data = c.execute(f"""
+        SELECT pulse,indicator,type,mitre,risk_score,created_at
+        FROM threats ORDER BY {sort} DESC
+        LIMIT 50 OFFSET ?
+    """,(offset,)).fetchall()
+
     conn.close()
 
-    score,level=calculate_risk(rows)
+    return render_template_string(TEMPLATE,
+        data=data,
+        total=total,
+        risk_index=risk_index(),
+        summary=executive_summary(),
+        trend=generate_trend(),
+        map_html=generate_map()
+    )
 
-    # Trend chart last 30 days
-    trend={}
-    today=datetime.utcnow().date()
-    for i in range(30):
-        day=today-timedelta(days=i)
-        trend[str(day)]=0
-    for r in rows:
-        try:
-            d=datetime.fromisoformat(r["created"]).date()
-            if str(d) in trend:
-                trend[str(d)]+=1
-        except:
-            continue
+# -----------------------
+# INCIDENT
+# -----------------------
+@app.route("/create_incident", methods=["POST"])
+def create_incident():
+    title = request.form["title"]
+    severity = request.form["severity"]
+    indicator = request.form["indicator"]
 
-    total_pages=(total_count+limit-1)//limit
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("""
+    INSERT INTO incidents (title,severity,status,linked_indicator,created_at)
+    VALUES (?,?,?,?,?)
+    """,(title,severity,"Open",indicator,datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
 
-    return render_template_string(DASHBOARD_TEMPLATE,rows=rows,score=score,level=level,trend=trend,
-                                  page=page,total_pages=total_pages,sort_column=sort_column,sort_order=sort_order,
-                                  map_html=map_html,total_count=total_count)
+    return redirect("/")
 
-# ================= DASHBOARD TEMPLATE =================
-DASHBOARD_TEMPLATE = """
-<!DOCTYPE html>
+# -----------------------
+# PDF REPORT
+# -----------------------
+@app.route("/report/pdf")
+def pdf_report():
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4))
+    elements = []
+    styles = getSampleStyleSheet()
+
+    elements.append(Paragraph("REDSHARK.MY SOC WEEKLY REPORT", styles["Title"]))
+    elements.append(Spacer(1,12))
+    elements.append(Paragraph(executive_summary(), styles["Normal"]))
+    elements.append(PageBreak())
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    rows = c.execute("""
+        SELECT pulse,indicator,type,mitre,risk_score,created_at
+        FROM threats
+    """).fetchall()
+    conn.close()
+
+    header = ["Pulse","Indicator","Type","MITRE","Risk","Created"]
+    chunk = 40
+
+    for i in range(0,len(rows),chunk):
+        table_data = [header] + rows[i:i+chunk]
+        table = Table(table_data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),colors.crimson),
+            ("TEXTCOLOR",(0,0),(-1,0),colors.white),
+            ("GRID",(0,0),(-1,-1),0.5,colors.grey),
+            ("BACKGROUND",(0,1),(-1,-1),colors.whitesmoke)
+        ]))
+        elements.append(table)
+        elements.append(PageBreak())
+
+    doc.build(elements)
+    buffer.seek(0)
+
+    return send_file(buffer, as_attachment=True,
+                     download_name="soc_weekly.pdf",
+                     mimetype="application/pdf")
+
+# -----------------------
+# CSV / JSON
+# -----------------------
+@app.route("/report/csv")
+def csv_report():
+    conn = sqlite3.connect(DB)
+    rows = conn.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+
+    si = io.StringIO()
+    cw = csv.writer(si)
+    cw.writerow(["ID","Pulse","Indicator","Type","Classification","MITRE","Risk","Created"])
+    cw.writerows(rows)
+
+    output = io.BytesIO()
+    output.write(si.getvalue().encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name="soc.csv")
+
+@app.route("/report/json")
+def json_report():
+    conn = sqlite3.connect(DB)
+    rows = conn.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    return jsonify(rows)
+
+# -----------------------
+# TEMPLATE
+# -----------------------
+TEMPLATE = """
 <html>
 <head>
-    <title>REDSHARK.MY Threat Dashboard</title>
-    <style>
-        body { font-family: Arial, sans-serif; background-color: #111; color: #eee; }
-        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-        th, td { border: 1px solid #555; padding: 8px; text-align: left; }
-        th { background-color: darkblue; cursor: pointer; color:#fff; }
-        tr:nth-child(even) { background-color: #ccc; color:#000; }
-        tr:nth-child(odd) { background-color: #fff; color:#000; }
-        .header { display: flex; align-items: center; gap: 15px; }
-        .headline h3 { color: crimson; margin-top: 5px; margin-bottom: 15px; font-weight: bold; }
-        .email { margin-bottom: 12px; font-size: 0.9em; color: #aaa; }
-        .buttons { margin-bottom: 20px; }
-        .buttons a { background-color: #222; color: #eee; padding: 8px 12px; text-decoration: none; margin-right: 10px; border-radius: 4px; }
-        .buttons a:hover { background-color: #333; }
-        .trend-chart { margin-top: 20px; background-color: #1a1a1a; padding: 15px; border-radius: 8px; }
-    </style>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script>
-        function sortTable(column) {
-            const url = new URL(window.location.href);
-            let currentOrder = url.searchParams.get("order");
-            currentOrder = currentOrder === "asc" ? "desc" : "asc";
-            url.searchParams.set("sort", column);
-            url.searchParams.set("order", currentOrder);
-            window.location.href = url.href;
-        }
-    </script>
+<style>
+body { background:#0a1f44; color:white; font-family:Arial; }
+h1 { color:crimson; }
+th { background:#001f3f; padding:8px; }
+td { padding:6px; }
+tr:nth-child(even) { background:#2a3d6a; }
+tr:nth-child(odd) { background:#1a2d5a; }
+a { color:orange; }
+.badge { padding:4px 8px; border-radius:4px; }
+</style>
 </head>
 <body>
-    <div class="header">
-        <h1>REDSHARK.MY Threat Dashboard</h1>
-    </div>
-    <div class="headline">
-        <h3>Real-Time Threat Intelligence</h3>
-    </div>
-    <div class="email">Contact: darkgrid@redshark.my</div>
-    <div class="buttons">
-        <a href="/export/json" target="_blank">Download JSON</a>
-        <a href="/export/csv" target="_blank">Download CSV</a>
-        <a href="/export/pdf" target="_blank">Download PDF</a>
-    </div>
-
-    <div class="trend-chart">
-        <canvas id="trendChart"></canvas>
-    </div>
-    <script>
-        const trendLabels = {{ trend.keys() | list | tojson }};
-        const trendData = {{ trend.values() | list | tojson }};
-        const ctx = document.getElementById('trendChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: trendLabels,
-                datasets: [{
-                    label: 'Indicators Last 30 Days',
-                    data: trendData,
-                    borderColor: 'orange',
-                    backgroundColor: 'rgba(255,165,0,0.2)',
-                    tension: 0.3
-                }]
-            },
-            options: {
-                responsive: true,
-                plugins: {
-                    legend: { display: true, labels: { color: '#fff' } }
-                },
-                scales: {
-                    x: { ticks: { color: '#eee' }, grid: { color: '#333' } },
-                    y: { ticks: { color: '#eee' }, grid: { color: '#333' } }
-                }
-            }
-        });
-    </script>
-
-    <table>
-        <tr>
-            <th onclick="sortTable('indicator')">Indicator</th>
-            <th onclick="sortTable('indicator_type')">Type</th>
-            <th onclick="sortTable('mitre_tactic')">MITRE</th>
-            <th onclick="sortTable('classification')">Class</th>
-            <th onclick="sortTable('created')">Created</th>
-        </tr>
-        {% for row in rows %}
-        <tr>
-            <td>{{ row['indicator'] }}</td>
-            <td>{{ row['indicator_type'] }}</td>
-            <td>{{ row['mitre_tactic'] }}</td>
-            <td>{{ row['classification'] }}</td>
-            <td>{{ row['created'] }}</td>
-        </tr>
-        {% endfor %}
-    </table>
-    <p>Total Showing: {{ rows|length }} / {{ total_count }}</p>
-
-    <div style="margin-top:20px;">
-        {% if page > 1 %}
-        <a href="?page={{ page-1 }}&sort={{ sort_column }}&order={{ sort_order }}">Previous</a>
-        {% endif %}
-        Page {{ page }} / {{ total_pages }}
-        {% if page < total_pages %}
-        <a href="?page={{ page+1 }}&sort={{ sort_column }}&order={{ sort_order }}">Next</a>
-        {% endif %}
-    </div>
-
-    <div style="margin-top:20px;">
-        {{ map_html | safe }}
-    </div>
-
-    <p style="margin-top:15px; font-size:0.8em; color:#aaa;">Disclaimer: Developed from public sources by darkgrid@redshark.my</p>
+<h1>REDSHARK.MY SOC DASHBOARD</h1>
+<h3>Risk Index: {{ risk_index }}</h3>
+<div>{{ map_html|safe }}</div>
+<p>{{ summary }}</p>
+<img src="data:image/png;base64,{{ trend }}">
+<h3>Total Indicators: {{ total }}</h3>
+<table width="100%">
+<tr>
+<th>Pulse</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Risk Score</th><th>Created</th>
+</tr>
+{% for row in data %}
+<tr>
+<td>{{ row[0] }}</td>
+<td>{{ row[1] }}</td>
+<td>{{ row[2] }}</td>
+<td>{{ row[3] }}</td>
+<td>{{ row[4] }}</td>
+<td>{{ row[5] }}</td>
+</tr>
+{% endfor %}
+</table>
+<br>
+<a href="/report/pdf">PDF</a> |
+<a href="/report/csv">CSV</a> |
+<a href="/report/json">JSON</a>
 </body>
 </html>
 """
 
-# ================= EXPORT =================
-@app.route("/export/csv")
-def export_csv():
-    conn=get_db()
-    rows=conn.execute("SELECT * FROM threats ORDER BY created DESC").fetchall()
-    conn.close()
-    path=os.path.join(REPORTS_DIR,"export.csv")
-    with open(path,"w",newline='') as f:
-        writer=csv.writer(f)
-        if rows:
-            writer.writerow(rows[0].keys())
-            for r in rows: writer.writerow(r)
-    return send_file(path,as_attachment=True)
-
-@app.route("/export/json")
-def export_json():
-    conn=get_db()
-    rows=[dict(r) for r in conn.execute("SELECT * FROM threats ORDER BY created DESC").fetchall()]
-    conn.close()
-    path=os.path.join(REPORTS_DIR,"export.json")
-    with open(path,"w") as f:
-        json.dump(rows,f,indent=2)
-    return send_file(path,as_attachment=True)
-
-@app.route("/export/pdf")
-def export_pdf():
-    path=os.path.join(REPORTS_DIR,"export.pdf")
-    generate_pdf(path)
-    return send_file(path,as_attachment=True)
-
-# ================= PDF GENERATOR =================
-def generate_pdf(filepath):
-    conn=get_db()
-    rows=[dict(r) for r in conn.execute("SELECT * FROM threats ORDER BY created DESC").fetchall()]
-    conn.close()
-    doc=SimpleDocTemplate(filepath,pagesize=landscape(A4),
-                          leftMargin=20,rightMargin=20,topMargin=20,bottomMargin=20)
-    elements=[]
-    styles=getSampleStyleSheet()
-    header_style=ParagraphStyle("header",parent=styles["Heading1"],alignment=1,textColor=colors.crimson)
-    elements.append(Paragraph("REDSHARK.MY Weekly Threat Report",header_style))
-    elements.append(Spacer(1,12))
-
-    # Trend chart
-    dates=[str(datetime.utcnow().date()-timedelta(days=i)) for i in range(30)]
-    counts=[len([r for r in rows if r["created"].startswith(d)]) for d in dates]
-    plt.figure(figsize=(10,2))
-    plt.plot(dates[::-1],counts[::-1],color="orange",linewidth=2)
-    plt.xticks(rotation=45,fontsize=6)
-    plt.tight_layout()
-    chart_path=os.path.join(REPORTS_DIR,"trend.png")
-    plt.savefig(chart_path)
-    plt.close()
-    elements.append(Image(chart_path,width=500,height=100))
-    elements.append(Spacer(1,12))
-
-    # Table with alternating row colors
-    chunk_size=50
-    for i in range(0,len(rows),chunk_size):
-        data=[["Indicator","Type","MITRE","Class","Created"]]
-        for idx,r in enumerate(rows[i:i+chunk_size]):
-            data.append([r["indicator"],r["indicator_type"],r["mitre_tactic"],r["classification"],r["created"]])
-        table=Table(data,repeatRows=1)
-        tbl_style=TableStyle([
-            ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
-            ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
-            ('ALIGN',(0,0),(-1,-1),'LEFT'),
-            ('GRID',(0,0),(-1,-1),0.5,colors.grey)
-        ])
-        for row_num in range(1,len(data)):
-            bg=colors.whitesmoke if row_num%2==1 else colors.lightgrey
-            tbl_style.add('BACKGROUND',(0,row_num),(-1,row_num),bg)
-        table.setStyle(tbl_style)
-        elements.append(table)
-        elements.append(PageBreak())
-
-    elements.append(Paragraph("Disclaimer: Developed from public sources by darkgrid@redshark.my",styles["Normal"]))
-
-    def add_page_number(canvas_obj, doc_obj):
-        canvas_obj.setFont("Helvetica",8)
-        page_num_text=f"Page {canvas_obj.getPageNumber()}"
-        canvas_obj.drawRightString(landscape(A4)[0]-20,10,page_num_text)
-
-    doc.build(elements, onFirstPage=add_page_number, onLaterPages=add_page_number)
-
-# ================= WEEKLY REPORT SCHEDULER =================
-def weekly_report_scheduler():
-    while True:
-        now=datetime.utcnow()
-        next_run=(now + timedelta(days=7-now.weekday())).replace(hour=0,minute=5,second=0)
-        wait=(next_run-now).total_seconds()
-        print(f"[Scheduler] Next weekly report in {wait/3600:.2f} hours")
-        threading.Event().wait(wait)
-        print("[Scheduler] Generating weekly report...")
-        ingest_otx()
-        generate_pdf(os.path.join(REPORTS_DIR,f"weekly_{datetime.utcnow().date()}.pdf"))
-        export_csv()
-        export_json()
-
-# ================= STARTUP =================
-if __name__=="__main__":
-    print("[Startup] Performing initial ingestion...")
-    inserted=ingest_otx()
-    print(f"[Startup] Inserted {inserted} indicators from OTX.")
-    threading.Thread(target=weekly_report_scheduler,daemon=True).start()
-    port=int(os.environ.get("PORT",10000))
-    app.run(host="0.0.0.0",port=port)
+# -----------------------
+# START
+# -----------------------
+if __name__ == "__main__":
+    init_db()
+    seed_data()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
