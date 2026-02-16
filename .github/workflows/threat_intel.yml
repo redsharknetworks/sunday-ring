@@ -16,7 +16,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # Required for push
+          fetch-depth: 0
 
       # --------------------------
       # Setup Python
@@ -30,8 +30,7 @@ jobs:
       # Install Dependencies
       # --------------------------
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       # --------------------------
       # Run Ingestion Mode
@@ -42,7 +41,7 @@ jobs:
           OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
 
       # --------------------------
-      # Commit Updated Database
+      # Commit Updated DB (Optional)
       # --------------------------
       - name: Commit updated DB
         run: |
