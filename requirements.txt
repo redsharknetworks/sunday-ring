@@ -9,3 +9,4 @@ apscheduler
 pandas
 reportlab
 matplotlib
+folium
