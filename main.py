@@ -11,6 +11,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib import colors, pagesizes
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_CENTER
 
 # -----------------------------
 # Flask App
@@ -134,7 +135,7 @@ def ingest():
             """, (
                 ind.get("indicator"),
                 ind.get("type"),
-                pulse.get("name"),
+                ind.get("name") if "name" in ind else pulse.get("name"),
                 classification,
                 pulse.get("created")
             ))
@@ -144,11 +145,22 @@ def ingest():
     print(f"Ingested {len(pulses)} pulses with {total_indicators} indicators.")
 
 # -----------------------------
+# /update Endpoint (HTTP trigger)
+# -----------------------------
+@app.route("/update")
+def update_endpoint():
+    key = request.args.get("key")
+    if key != ADMIN_KEY:
+        return {"error": "Unauthorized"}, 403
+    ingest()
+    return {"status": "updated", "message": "OTX pulses ingested successfully"}
+
+# -----------------------------
 # PDF Report
 # -----------------------------
 def generate_pdf():
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=pagesizes.A4)
+    doc = SimpleDocTemplate(buffer, pagesize=pagesizes.A4, rightMargin=30, leftMargin=30)
     elements = []
     styles = getSampleStyleSheet()
 
@@ -157,15 +169,23 @@ def generate_pdf():
         elements.append(Image(LOGO_FILE, width=2*inch, height=1*inch))
         elements.append(Spacer(1, 12))
 
-    # Title
-    elements.append(Paragraph(REPORT_TITLE, styles["Heading1"]))
+    # Centered Title
+    title_style = ParagraphStyle(
+        "Title",
+        parent=styles["Heading1"],
+        alignment=TA_CENTER,
+        spaceAfter=12,
+        textColor=colors.darkred
+    )
+    elements.append(Paragraph(REPORT_TITLE, title_style))
     elements.append(Spacer(1, 8))
 
     # Executive Headline
     headline_style = ParagraphStyle(
         "Headline",
         parent=styles["Heading2"],
-        textColor=colors.darkred,
+        textColor=colors.black,
+        alignment=TA_CENTER,
         spaceAfter=12
     )
     elements.append(Paragraph(EXECUTIVE_HEADLINE, headline_style))
@@ -182,20 +202,24 @@ def generate_pdf():
     conn.close()
 
     table_data = [["Indicator", "Type", "Pulse Name", "Classification", "Created"]]
+    paragraph_style = ParagraphStyle('table', fontSize=9, leading=11)
+
     for row in rows:
-        pulse_name_paragraph = Paragraph(row["pulse_name"], styles["Normal"])
+        pulse_name_paragraph = Paragraph(row["pulse_name"], paragraph_style)
         table_data.append([row["indicator"], row["type"], pulse_name_paragraph, row["classification"], row["created"]])
 
-    col_widths = [2.2*inch, 0.8*inch, 2*inch, 1.2*inch, 1.5*inch]
+    col_widths = [2*inch, 0.8*inch, 3*inch, 1.2*inch, 1.5*inch]
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
 
     style = TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.red),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
         ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
     ])
 
+    # Color-code rows by classification
     for i, row in enumerate(rows, start=1):
         cls = row["classification"]
         if cls == "TARGET_MY":
