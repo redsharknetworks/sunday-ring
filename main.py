@@ -36,7 +36,6 @@ def init_db():
     CREATE TABLE IF NOT EXISTS threats (
         id TEXT PRIMARY KEY,
         pulse_name TEXT,
-        threat_actor TEXT,
         indicator TEXT,
         indicator_type TEXT,
         latitude REAL,
@@ -104,24 +103,26 @@ def cleanup_old():
     conn.commit()
     conn.close()
 
-# ================= ADMIN INGEST =================
-@app.route("/admin/update")
-def admin_update():
-    if request.args.get("key")!=ADMIN_KEY:
-        abort(403)
-
+# ================= INGESTION =================
+def ingest_otx():
+    if not OTX_API_KEY:
+        print("OTX_API_KEY missing")
+        return 0
     headers={"X-OTX-API-KEY":OTX_API_KEY}
-    r=requests.get("https://otx.alienvault.com/api/v1/pulses/subscribed",headers=headers,timeout=15)
-    if r.status_code!=200:
-        return jsonify({"error":"OTX fetch failed"}),500
+    try:
+        r=requests.get("https://otx.alienvault.com/api/v1/pulses/subscribed",headers=headers,timeout=15)
+        if r.status_code!=200:
+            print("OTX fetch failed",r.status_code)
+            return 0
+        pulses=r.json().get("results",[])
+    except Exception as e:
+        print("OTX fetch error:",e)
+        return 0
 
-    pulses=r.json().get("results",[])
     conn=get_db()
     c=conn.cursor()
     inserted=0
-
     for pulse in pulses:
-        actor=pulse.get("author_name","Unknown")
         created=pulse.get("created")
         for ind in pulse.get("indicators",[]):
             indicator=ind.get("indicator")
@@ -134,21 +135,22 @@ def admin_update():
             threat_id=pulse.get("id")+indicator
             c.execute("""
             INSERT OR IGNORE INTO threats
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?)
             """,(
                 threat_id,
-                pulse.get("name"),actor,
-                indicator,ind_type,
-                lat,lon,tactic,
-                classification,created
+                pulse.get("name"),
+                indicator,
+                ind_type,
+                lat,lon,
+                tactic,
+                classification,
+                created
             ))
             inserted+=1
-
     conn.commit()
     conn.close()
     cleanup_old()
-    generate_weekly_reports()
-    return jsonify({"status":"updated","inserted":inserted})
+    return inserted
 
 # ================= DASHBOARD =================
 @app.route("/")
@@ -258,7 +260,7 @@ def write_pdf(rows,path):
         dates.append(str(d))
         counts.append(sum(1 for r in rows if r["created"].startswith(str(d))))
     plt.figure(figsize=(8,2))
-    plt.plot(dates[::-1],counts[::-1],marker='o',color='orange')
+    plt.plot(dates[::-1],counts[::-1],marker='o',color='crimson')
     plt.xticks(rotation=45)
     plt.tight_layout()
     img_path=os.path.join(REPORTS_DIR,"trend.png")
@@ -276,10 +278,9 @@ def write_pdf(rows,path):
     page_size=50
     for i in range(0,len(rows),page_size):
         chunk=rows[i:i+page_size]
-        data=[["Actor","Indicator","Type","MITRE","Class","Date"]]
+        data=[["Indicator","Type","MITRE","Class","Date"]]
         for r in chunk:
             data.append([
-                Paragraph(r["threat_actor"],wrap_style),
                 Paragraph(r["indicator"],wrap_style),
                 r["indicator_type"],
                 r["mitre_tactic"],
@@ -290,7 +291,8 @@ def write_pdf(rows,path):
         table.setStyle(TableStyle([
             ("BACKGROUND",(0,0),(-1,0),colors.darkblue),
             ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-            ("GRID",(0,0),(-1,-1),0.5,colors.grey)
+            ("GRID",(0,0),(-1,-1),0.5,colors.grey),
+            ("BACKGROUND",(0,1),(-1,-1),colors.crimson)
         ]))
         elements.append(table)
         elements.append(Spacer(1,10))
@@ -344,13 +346,13 @@ DASHBOARD_TEMPLATE="""
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <style>
 body{background:#0b0f1a;color:#e0e0e0;font-family:Arial;}
-h1{color:orange;}
+h1{color:crimson;}
 table{width:100%;border-collapse:collapse;margin-top:10px;}
 th{background:#001f4d;color:white;cursor:pointer;}
 td,th{padding:6px;border:1px solid #333;}
 tr:nth-child(even){background:#001a33;}
 #map{height:400px;margin-bottom:20px;}
-a{color:orange;margin-right:10px;}
+a{color:crimson;margin-right:10px;}
 </style>
 </head>
 <body>
@@ -368,7 +370,7 @@ var trend={{trend|tojson}};
 var labels=Object.keys(trend).sort();
 var data=labels.map(l=>trend[l]);
 var ctx=document.getElementById('trendChart').getContext('2d');
-new Chart(ctx,{type:'line',data:{labels:labels,datasets:[{label:'Threats per day',data:data,borderColor:'orange',fill:false}]},options:{responsive:true}});
+new Chart(ctx,{type:'line',data:{labels:labels,datasets:[{label:'Threats per day',data:data,borderColor:'crimson',fill:false}]},options:{responsive:true}});
 var map=L.map('map').setView([4.2105,101.9758],6);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 var threats={{rows|tojson}};
@@ -381,10 +383,9 @@ threats.forEach(function(t){
 </script>
 
 <table>
-<tr><th>Actor</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Class</th><th>Date</th></tr>
+<tr><th>Indicator</th><th>Type</th><th>MITRE</th><th>Class</th><th>Date</th></tr>
 {% for r in rows %}
 <tr>
-<td>{{r.threat_actor}}</td>
 <td>{{r.indicator}}</td>
 <td>{{r.indicator_type}}</td>
 <td>{{r.mitre_tactic}}</td>
@@ -400,7 +401,7 @@ threats.forEach(function(t){
 </html>
 """
 
-# ================= WEEKLY SCHEDULER (Precise) =================
+# ================= WEEKLY SCHEDULER =================
 def weekly_scheduler_precise():
     import time
     import datetime
@@ -423,6 +424,10 @@ def weekly_scheduler_precise():
         generate_weekly_reports()
 
 threading.Thread(target=weekly_scheduler_precise, daemon=True).start()
+
+# ================= FIRST RUN INGESTION =================
+if ingest_otx()==0:
+    print("No initial data, dashboard will populate after next ingestion.")
 
 # ================= START =================
 if __name__=="__main__":
