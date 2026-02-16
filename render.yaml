@@ -1,22 +1,12 @@
 services:
   - type: web
-    name: redshark-threat-intel
-    runtime: docker
-    repo: https://github.com/redsharknetworks/redshark-threat-intel-platform
-    branch: main
-    plan: starter
-    dockerContext: ./backend
-    dockerfilePath: ./backend/Dockerfile
+    name: sunday-ring
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app --bind 0.0.0.0:$PORT
     envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: redshark-db
-          property: connectionString
       - key: OTX_API_KEY
         sync: false
-      - key: MAXMIND_DB
-        value: /app/GeoLite2-Country.mmdb
-
-databases:
-  - name: redshark-db
-    plan: starter
+      - key: ADMIN_KEY
+        sync: false
