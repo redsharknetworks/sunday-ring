@@ -369,8 +369,21 @@ def dashboard():
     """, rows=rows, email=CONTACT_EMAIL)
 
 # ==========================================================
-# Run
+# Entry Point (Supports Ingestion Mode)
 # ==========================================================
 if __name__ == "__main__":
+    import sys
+
+    # CLI Ingestion Mode
+    if len(sys.argv) > 1 and sys.argv[1] == "ingest":
+        print("Running ingestion mode...")
+        pulses = fetch_otx_pulses(limit=200)
+        save_threats(pulses)
+        print(f"Ingestion complete. Pulses fetched: {len(pulses)}")
+        sys.exit(0)
+
+    # Normal Web Server Mode
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+
