@@ -3,7 +3,8 @@ import sys
 import sqlite3
 import requests
 import io
-from datetime import datetime, timedelta
+import csv
+from datetime import datetime
 from flask import Flask, jsonify, send_file, render_template_string
 import geoip2.database
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
@@ -24,12 +25,9 @@ if not OTX_API_KEY:
     raise RuntimeError("OTX_API_KEY environment variable is required!")
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
-
 DB_FILE = "threat_intel.db"
 GEOIP_DB = "GeoLite2-Country.mmdb"
 LOGO_FILE = "static/redshark_logo.png"
-
-# OTX API
 OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
 
 # -----------------------------
@@ -39,11 +37,13 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""
-        CREATE TABLE IF NOT EXISTS pulses (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            created TEXT,
-            classification TEXT
+        CREATE TABLE IF NOT EXISTS indicators (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            indicator TEXT,
+            type TEXT,
+            pulse_name TEXT,
+            classification TEXT,
+            created TEXT
         )
     """)
     conn.commit()
@@ -85,9 +85,8 @@ def classify_pulse(indicators):
             elif country:
                 has_source_other = True
 
-        if ind_type == "domain":
-            if value.endswith(".my"):
-                has_target_my = True
+        if ind_type == "domain" and value.endswith(".my"):
+            has_target_my = True
 
     if has_target_my and has_source_my:
         return "BOTH"
@@ -121,20 +120,24 @@ def ingest():
     pulses = fetch_otx(limit=200)
     conn = get_db_connection()
     c = conn.cursor()
+    total_indicators = 0
     for pulse in pulses:
         classification = classify_pulse(pulse.get("indicators", []))
-        c.execute("""
-            INSERT OR REPLACE INTO pulses (id, name, created, classification)
-            VALUES (?, ?, ?, ?)
-        """, (
-            pulse.get("id"),
-            pulse.get("name"),
-            pulse.get("created"),
-            classification
-        ))
+        for ind in pulse.get("indicators", []):
+            c.execute("""
+                INSERT INTO indicators (indicator, type, pulse_name, classification, created)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                ind.get("indicator"),
+                ind.get("type"),
+                pulse.get("name"),
+                classification,
+                pulse.get("created")
+            ))
+            total_indicators += 1
     conn.commit()
     conn.close()
-    print(f"Ingested {len(pulses)} pulses.")
+    print(f"Ingested {len(pulses)} pulses with {total_indicators} indicators.")
 
 # -----------------------------
 # PDF Report
@@ -173,30 +176,47 @@ def generate_pdf():
     # Table Data
     conn = get_db_connection()
     rows = conn.execute("""
-        SELECT name, classification, created
-        FROM pulses
+        SELECT indicator, type, pulse_name, classification, created
+        FROM indicators
         ORDER BY created DESC
-        LIMIT 50
+        LIMIT 100
     """).fetchall()
     conn.close()
 
-    table_data = [["Pulse Name", "Classification", "Created"]]
+    table_data = [["Indicator", "Type", "Pulse Name", "Classification", "Created"]]
     for row in rows:
-        table_data.append([row["name"], row["classification"], row["created"]])
+        pulse_name_paragraph = Paragraph(row["pulse_name"], styles["Normal"])
+        table_data.append([row["indicator"], row["type"], pulse_name_paragraph, row["classification"], row["created"]])
 
-    table = Table(table_data, colWidths=[3*inch, 1.5*inch, 2*inch])
-    table.setStyle([
+    col_widths = [2.2*inch, 0.8*inch, 2*inch, 1.2*inch, 1.5*inch]
+    table = Table(table_data, colWidths=col_widths, repeatRows=1)
+
+    style = TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.red),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
         ('ALIGN', (0,0), (-1,-1), 'LEFT'),
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
     ])
+
+    for i, row in enumerate(rows, start=1):
+        cls = row["classification"]
+        if cls == "TARGET_MY":
+            style.add('BACKGROUND', (0,i), (-1,i), colors.lightcoral)
+        elif cls == "SOURCE_MY":
+            style.add('BACKGROUND', (0,i), (-1,i), colors.orange)
+        elif cls == "BOTH":
+            style.add('BACKGROUND', (0,i), (-1,i), colors.darkred)
+            style.add('TEXTCOLOR', (0,i), (-1,i), colors.whitesmoke)
+        elif cls == "SOURCE_OTHER":
+            style.add('BACKGROUND', (0,i), (-1,i), colors.lightblue)
+        elif cls == "UNCLASSIFIED":
+            style.add('BACKGROUND', (0,i), (-1,i), colors.lightgrey)
+
+    table.setStyle(style)
     elements.append(table)
     elements.append(Spacer(1, 24))
 
-    # Footer
     elements.append(Paragraph("Contact: darkgrid@redshark.my", styles["Normal"]))
-
     doc.build(elements)
     buffer.seek(0)
     return buffer
@@ -208,12 +228,21 @@ def generate_pdf():
 def dashboard_html():
     conn = get_db_connection()
     rows = conn.execute("""
-        SELECT name, classification, created
-        FROM pulses
+        SELECT indicator, type, pulse_name, classification, created
+        FROM indicators
         ORDER BY created DESC
-        LIMIT 20
+        LIMIT 50
     """).fetchall()
     conn.close()
+
+    # Color mapping
+    color_map = {
+        "TARGET_MY": "#f08080",      # light coral
+        "SOURCE_MY": "#ffa500",      # orange
+        "BOTH": "#8b0000",           # dark red
+        "SOURCE_OTHER": "#add8e6",   # light blue
+        "UNCLASSIFIED": "#d3d3d3"    # light gray
+    }
 
     html = """
     <html>
@@ -242,13 +271,17 @@ def dashboard_html():
         <div class="email">Contact: darkgrid@redshark.my</div>
         <table>
             <tr>
+                <th>Indicator</th>
+                <th>Type</th>
                 <th>Pulse Name</th>
                 <th>Classification</th>
                 <th>Created</th>
             </tr>
             {% for row in rows %}
-            <tr>
-                <td>{{ row['name'] }}</td>
+            <tr style="background-color: {{ color_map.get(row['classification'], '#d3d3d3') }}">
+                <td>{{ row['indicator'] }}</td>
+                <td>{{ row['type'] }}</td>
+                <td>{{ row['pulse_name'] }}</td>
                 <td>{{ row['classification'] }}</td>
                 <td>{{ row['created'] }}</td>
             </tr>
@@ -258,12 +291,49 @@ def dashboard_html():
     </body>
     </html>
     """
-    return render_template_string(html, rows=rows)
+    return render_template_string(html, rows=rows, color_map=color_map)
 
 @app.route("/report/pdf")
 def report_pdf():
     buffer = generate_pdf()
     return send_file(buffer, mimetype="application/pdf", as_attachment=True, download_name="weekly_threat_report.pdf")
+
+@app.route("/report/json")
+def report_json():
+    conn = get_db_connection()
+    rows = conn.execute("""
+        SELECT indicator, type, pulse_name, classification, created
+        FROM indicators
+        ORDER BY created DESC
+        LIMIT 100
+    """).fetchall()
+    conn.close()
+    return jsonify([dict(row) for row in rows])
+
+@app.route("/report/csv")
+def report_csv():
+    conn = get_db_connection()
+    rows = conn.execute("""
+        SELECT indicator, type, pulse_name, classification, created
+        FROM indicators
+        ORDER BY created DESC
+        LIMIT 100
+    """).fetchall()
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Indicator", "Type", "Pulse Name", "Classification", "Created"])
+    for row in rows:
+        writer.writerow([row["indicator"], row["type"], row["pulse_name"], row["classification"], row["created"]])
+
+    output.seek(0)
+    return send_file(
+        io.BytesIO(output.getvalue().encode()),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="weekly_threat_report.csv"
+    )
 
 # -----------------------------
 # Main Entry
