@@ -10,11 +10,12 @@ from reportlab.lib import colors, pagesizes
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4, landscape
 
 # -----------------------------
 # Flask App
 # -----------------------------
-app = Flask(__name__)
+app = Flask(__name__, static_folder="static")
 
 # -----------------------------
 # Configuration
@@ -68,10 +69,15 @@ def classify_pulse(indicators):
 
     for ind in indicators:
         ind_type = ind.get("type")
-        value = ind.get("indicator")
+        value = ind.get("indicator", "")
+        source = ind.get("source", "").lower()  # optional, depends on OTX data
 
         if ind_type == "domain" and value.endswith(".my"):
             has_target_my = True
+        if source == "my":
+            has_source_my = True
+        elif source:
+            has_source_other = True
 
     if has_target_my and has_source_my:
         return "BOTH"
@@ -91,7 +97,8 @@ def fetch_otx(limit=100):
     headers = {"X-OTX-API-KEY": OTX_API_KEY}
     params = {"limit": limit}
     try:
-        r = requests.get("https://otx.alienvault.com/api/v1/pulses/subscribed", headers=headers, params=params, timeout=15)
+        r = requests.get("https://otx.alienvault.com/api/v1/pulses/subscribed",
+                         headers=headers, params=params, timeout=15)
         r.raise_for_status()
         return r.json().get("results", [])
     except Exception as e:
@@ -138,11 +145,11 @@ def update_endpoint():
     return jsonify({"status": "updated", "message": "OTX pulses ingested successfully"})
 
 # -----------------------------
-# Generate PDF
+# Generate PDF (Landscape)
 # -----------------------------
 def generate_pdf(limit=100):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=pagesizes.A4, rightMargin=30, leftMargin=30)
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     elements = []
     styles = getSampleStyleSheet()
 
@@ -151,29 +158,18 @@ def generate_pdf(limit=100):
         elements.append(Image(LOGO_FILE, width=2*inch, height=1*inch))
         elements.append(Spacer(1, 12))
 
-    # Centered multi-line title
+    # Title
     title_text = "Sunday Ring With Red Shark<br/>(Malaysian Cyber Threat Landscape)"
-    title_style = ParagraphStyle(
-        "Title",
-        parent=styles["Heading1"],
-        alignment=TA_CENTER,
-        spaceAfter=12,
-        textColor=colors.darkred
-    )
+    title_style = ParagraphStyle("Title", parent=styles["Heading1"], alignment=TA_CENTER, spaceAfter=12, textColor=colors.darkred)
     elements.append(Paragraph(title_text, title_style))
     elements.append(Spacer(1, 8))
 
-    # Executive Headline
-    headline_style = ParagraphStyle(
-        "Headline",
-        parent=styles["Heading2"],
-        alignment=TA_CENTER,
-        spaceAfter=12
-    )
+    # Headline
+    headline_style = ParagraphStyle("Headline", parent=styles["Heading2"], alignment=TA_CENTER, spaceAfter=12)
     elements.append(Paragraph(EXECUTIVE_HEADLINE, headline_style))
     elements.append(Spacer(1, 12))
 
-    # Fetch latest indicators from DB
+    # Fetch latest indicators
     conn = get_db_connection()
     rows = conn.execute("""
         SELECT indicator, type, pulse_name, classification, created
@@ -183,22 +179,21 @@ def generate_pdf(limit=100):
     """, (limit,)).fetchall()
     conn.close()
 
-    # Table data with wrapped cells
+    # Table data
     table_data = [["Indicator", "Type", "Pulse Name", "Classification", "Created"]]
     paragraph_style = ParagraphStyle('table', fontSize=9, leading=11)
 
     for row in rows:
-        indicator_paragraph = Paragraph(row["indicator"], paragraph_style)
-        pulse_name_paragraph = Paragraph(row["pulse_name"], paragraph_style)
         table_data.append([
-            indicator_paragraph,
+            Paragraph(row["indicator"], paragraph_style),
             row["type"],
-            pulse_name_paragraph,
+            Paragraph(row["pulse_name"], paragraph_style),
             row["classification"],
             row["created"]
         ])
 
-    col_widths = [2.5*inch, 0.8*inch, 4*inch, 1*inch, 1.2*inch]
+    # Adjust column widths for landscape
+    col_widths = [4*inch, 1*inch, 5*inch, 1.2*inch, 1.5*inch]
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
 
     style = TableStyle([
@@ -209,7 +204,6 @@ def generate_pdf(limit=100):
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
     ])
 
-    # Color-code rows by classification
     color_map = {
         "TARGET_MY": colors.lightcoral,
         "SOURCE_MY": colors.orange,
@@ -217,9 +211,7 @@ def generate_pdf(limit=100):
         "SOURCE_OTHER": colors.lightblue,
         "UNCLASSIFIED": colors.lightgrey
     }
-    text_map = {
-        "BOTH": colors.whitesmoke
-    }
+    text_map = {"BOTH": colors.whitesmoke}
 
     for i, row in enumerate(rows, start=1):
         cls = row["classification"]
@@ -231,8 +223,6 @@ def generate_pdf(limit=100):
     table.setStyle(style)
     elements.append(table)
     elements.append(Spacer(1, 12))
-
-    # Contact Info Footer
     elements.append(Paragraph(f"Contact: {CONTACT_EMAIL}", styles["Normal"]))
 
     doc.build(elements)
@@ -240,7 +230,7 @@ def generate_pdf(limit=100):
     return buffer
 
 # -----------------------------
-# Dashboard with Sorting
+# Dashboard
 # -----------------------------
 @app.route("/")
 def dashboard():
@@ -248,6 +238,11 @@ def dashboard():
     sort_order = request.args.get("order", "desc").lower()
     if sort_order not in ["asc", "desc"]:
         sort_order = "desc"
+
+    # Validate sort_column
+    allowed_sort = ["indicator", "type", "pulse_name", "classification", "created"]
+    if sort_column not in allowed_sort:
+        sort_column = "created"
 
     conn = get_db_connection()
     rows = conn.execute(f"""
@@ -281,10 +276,7 @@ def dashboard():
             .headline h3 { color: #ff4d4d; margin-top: 5px; margin-bottom: 15px; font-weight: bold; }
             .email { margin-bottom: 12px; font-size: 0.9em; color: #aaa; }
             .buttons { margin-bottom: 20px; }
-            .buttons a { 
-                background-color: #222; color: #eee; padding: 8px 12px; text-decoration: none; 
-                margin-right: 10px; border-radius: 4px;
-            }
+            .buttons a { background-color: #222; color: #eee; padding: 8px 12px; text-decoration: none; margin-right: 10px; border-radius: 4px; }
             .buttons a:hover { background-color: #333; }
         </style>
         <script>
@@ -343,7 +335,7 @@ def dashboard():
                                   contact_email=CONTACT_EMAIL)
 
 # -----------------------------
-# Reports
+# Reports Endpoints
 # -----------------------------
 @app.route("/report/pdf")
 def report_pdf():
