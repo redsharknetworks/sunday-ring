@@ -1,7 +1,15 @@
 import os
+import sys
 import sqlite3
 import requests
-from flask import Flask, jsonify, request, render_template_string
+import io
+import csv
+from datetime import datetime, timedelta
+from flask import Flask, jsonify, request, render_template_string, send_file
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import pagesizes
 
 # --------------------------
 # Flask App
@@ -9,13 +17,14 @@ from flask import Flask, jsonify, request, render_template_string
 app = Flask(__name__)
 
 # --------------------------
-# Environment / Config
+# Environment Config
 # --------------------------
 OTX_API_KEY = os.environ.get("OTX_API_KEY")
+ADMIN_KEY = os.environ.get("ADMIN_KEY")
+
 if not OTX_API_KEY:
     raise RuntimeError("OTX_API_KEY environment variable is required!")
 
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "M@ttdemon2026")
 DATABASE_FILE = "threat_intel.db"
 
 # --------------------------
@@ -59,25 +68,17 @@ def get_db_connection():
     return conn
 
 # --------------------------
-# Fetch Pulses from OTX
+# Fetch OTX Pulses
 # --------------------------
 def fetch_otx_pulses(limit=100):
-    headers = {"X-OTX-API-KEY": OTX_API_KEY, "Accept": "application/json"}
+    headers = {"X-OTX-API-KEY": OTX_API_KEY}
     url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
     params = {"limit": limit}
 
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response = requests.get(url, headers=headers, params=params, timeout=15)
         response.raise_for_status()
-        data = response.json()
-        pulses = data.get("results", [])
-        print(f"Fetched {len(pulses)} pulses from OTX")
-        return pulses
-    except requests.HTTPError as e:
-        print(f"OTX Fetch Error: {e} | Status: {getattr(e.response, 'status_code', None)}")
-        if hasattr(e.response, "text"):
-            print("Response Text:", e.response.text[:200])
-        return []
+        return response.json().get("results", [])
     except Exception as e:
         print("OTX Fetch Error:", e)
         return []
@@ -89,21 +90,18 @@ def compute_malaysia_score(pulse):
     score = 0
     text = (pulse.get("name", "") + " " + pulse.get("description", "")).lower()
 
-    # Keyword matches
     for kw in MALAYSIA_KEYWORDS:
         if kw in text:
             score += THREAT_SCORES["keyword"]
 
-    # Indicators ending with .my
-    indicators = pulse.get("indicators") or []
-    for ind in indicators:
+    for ind in pulse.get("indicators") or []:
         if ind.get("type") == "domain" and ind.get("indicator", "").endswith(".my"):
             score += THREAT_SCORES["my_domain"]
 
     return score
 
 # --------------------------
-# Save Threats to DB
+# Save Threats
 # --------------------------
 def save_threats(pulses):
     conn = get_db_connection()
@@ -111,14 +109,15 @@ def save_threats(pulses):
 
     for pulse in pulses:
         score = compute_malaysia_score(pulse)
-        if score < 0:
-            continue  # ignore low-score pulses
+        if score < 1:
+            continue
 
-        indicators = pulse.get("indicators") or []
-        for ind in indicators:
+        for ind in pulse.get("indicators") or []:
             cursor.execute("""
                 INSERT OR IGNORE INTO malaysia_targeted_threats
-                (indicator, indicator_type, pulse_name, pulse_description, pulse_author, pulse_created, threat_score)
+                (indicator, indicator_type, pulse_name,
+                 pulse_description, pulse_author,
+                 pulse_created, threat_score)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 ind.get("indicator"),
@@ -132,20 +131,63 @@ def save_threats(pulses):
 
     conn.commit()
     conn.close()
-    print("Threats saved to database.")
 
 # --------------------------
-# Update Endpoint
+# Ingestion Runner (CLI Mode)
 # --------------------------
-@app.route("/update")
-def update_threats():
-    key = request.args.get("key")
-    if key != ADMIN_KEY:
-        return {"error": "Unauthorized"}, 403
-
+def run_ingestion():
+    print("Running ingestion...")
     pulses = fetch_otx_pulses(limit=200)
     save_threats(pulses)
-    return {"status": "updated", "total_pulses_fetched": len(pulses)}
+    print("Ingestion completed.")
+
+# --------------------------
+# Weekly Top 10
+# --------------------------
+def get_weekly_top10():
+    conn = get_db_connection()
+    one_week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+
+    rows = conn.execute("""
+        SELECT indicator, indicator_type, threat_score, pulse_name
+        FROM malaysia_targeted_threats
+        WHERE pulse_created >= ?
+        ORDER BY threat_score DESC
+        LIMIT 100
+    """, (one_week_ago,)).fetchall()
+
+    conn.close()
+
+    result = {"ips": [], "domains": [], "hashes": []}
+
+    for row in rows:
+        r = dict(row)
+        t = r["indicator_type"]
+
+        if t in ["IPv4", "IPv6"]:
+            result["ips"].append(r)
+        elif t == "domain":
+            result["domains"].append(r)
+        elif "FileHash" in t:
+            result["hashes"].append(r)
+
+    result["ips"] = result["ips"][:10]
+    result["domains"] = result["domains"][:10]
+    result["hashes"] = result["hashes"][:10]
+
+    return result
+
+# --------------------------
+# Update Endpoint (Manual)
+# --------------------------
+@app.route("/update")
+def update():
+    key = request.args.get("key")
+    if ADMIN_KEY and key != ADMIN_KEY:
+        return {"error": "Unauthorized"}, 403
+
+    run_ingestion()
+    return {"status": "updated"}
 
 # --------------------------
 # Dashboard API
@@ -155,86 +197,136 @@ def dashboard_api():
     conn = get_db_connection()
     rows = conn.execute("""
         SELECT * FROM malaysia_targeted_threats
-        ORDER BY threat_score DESC, pulse_created DESC
+        ORDER BY threat_score DESC
         LIMIT 50
     """).fetchall()
     conn.close()
     return jsonify([dict(row) for row in rows])
 
 # --------------------------
+# Weekly JSON Report
+# --------------------------
+@app.route("/report/json")
+def report_json():
+    return jsonify(get_weekly_top10())
+
+# --------------------------
+# Weekly CSV Report
+# --------------------------
+@app.route("/report/csv")
+def report_csv():
+    data = get_weekly_top10()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Category", "Indicator", "Threat Score", "Pulse Name"])
+
+    for category, items in data.items():
+        for item in items:
+            writer.writerow([
+                category,
+                item["indicator"],
+                item["threat_score"],
+                item["pulse_name"]
+            ])
+
+    output.seek(0)
+
+    return send_file(
+        io.BytesIO(output.getvalue().encode()),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="weekly_threat_report.csv"
+    )
+
+# --------------------------
+# Weekly PDF Report
+# --------------------------
+@app.route("/report/pdf")
+def report_pdf():
+    data = get_weekly_top10()
+    buffer = io.BytesIO()
+
+    doc = SimpleDocTemplate(buffer, pagesize=pagesizes.A4)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    elements.append(Paragraph("RED SHARK - Sunday Ring Weekly Threat Report", styles["Heading1"]))
+    elements.append(Spacer(1, 12))
+
+    table_data = [["Category", "Indicator", "Threat Score"]]
+
+    for category, items in data.items():
+        for item in items:
+            table_data.append([
+                category,
+                item["indicator"],
+                str(item["threat_score"])
+            ])
+
+    table = Table(table_data)
+    table.setStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+    ])
+
+    elements.append(table)
+    doc.build(elements)
+
+    buffer.seek(0)
+
+    return send_file(
+        buffer,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name="weekly_threat_report.pdf"
+    )
+
+# --------------------------
 # Dashboard HTML
 # --------------------------
 @app.route("/")
-def dashboard_html():
+def dashboard():
     conn = get_db_connection()
     rows = conn.execute("""
         SELECT * FROM malaysia_targeted_threats
-        ORDER BY threat_score DESC, pulse_created DESC
+        ORDER BY threat_score DESC
         LIMIT 20
     """).fetchall()
     conn.close()
 
-    html = """
+    return render_template_string("""
     <html>
-    <head>
-        <title>Malaysia Threat Intel Dashboard</title>
-        <style>
-            body { font-family: Arial, sans-serif; background-color: #111; color: #eee; }
-            table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-            th, td { border: 1px solid #555; padding: 8px; text-align: left; }
-            th { background-color: #222; }
-            tr:nth-child(even) { background-color: #1a1a1a; }
-            .header { display: flex; align-items: center; gap: 15px; }
-            img.logo { height: 60px; }
-            .email { margin-top: 5px; font-size: 0.9em; color: #aaa; }
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <img src="https://raw.githubusercontent.com/redsharknetworks/sunday-ring/main/redshark.png" class="logo" />
-            <h1>Malaysia Threat Intel Dashboard</h1>
-        </div>
-        <div class="email">Contact: darkgrid@redshark.my</div>
-
-        <table>
+    <body style="background:#111;color:#eee;font-family:Arial">
+        <h1>Malaysia Threat Intel Dashboard</h1>
+        <p>
+        <a href="/report/json">Download JSON</a> |
+        <a href="/report/csv">Download CSV</a> |
+        <a href="/report/pdf">Download PDF</a>
+        </p>
+        <table border="1" cellpadding="6">
             <tr>
                 <th>Indicator</th>
                 <th>Type</th>
-                <th>Pulse Name</th>
                 <th>Threat Score</th>
             </tr>
             {% for row in rows %}
             <tr>
                 <td>{{row['indicator']}}</td>
                 <td>{{row['indicator_type']}}</td>
-                <td>{{row['pulse_name']}}</td>
                 <td>{{row['threat_score']}}</td>
             </tr>
             {% endfor %}
         </table>
-        <p>Total Showing: {{rows|length}}</p>
     </body>
     </html>
-    """
-    return render_template_string(html, rows=rows)
+    """, rows=rows)
 
 # --------------------------
-# Run App
+# Run Mode
 # --------------------------
-def run_ingestion():
-    print("Starting ingestion...")
-    pulses = fetch_otx_pulses(limit=200)
-    save_threats(pulses)
-    print("Ingestion complete.")
-
 if __name__ == "__main__":
-    import sys
-
     if "ingest" in sys.argv:
         run_ingestion()
     else:
         port = int(os.environ.get("PORT", 5000))
         app.run(host="0.0.0.0", port=port)
-
-
-
