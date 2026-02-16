@@ -6,10 +6,11 @@ import csv
 import json
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, render_template_string, send_file, abort
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.pagesizes import landscape, A4
+from reportlab.pdfgen import canvas
 import matplotlib.pyplot as plt
 import threading
 
@@ -32,16 +33,8 @@ def init_db():
     conn = get_db()
     c = conn.cursor()
     c.execute("""
-    CREATE TABLE IF NOT EXISTS clients (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE,
-        api_key TEXT UNIQUE
-    )
-    """)
-    c.execute("""
     CREATE TABLE IF NOT EXISTS threats (
         id TEXT PRIMARY KEY,
-        client TEXT,
         pulse_name TEXT,
         threat_actor TEXT,
         indicator TEXT,
@@ -113,7 +106,7 @@ def cleanup_old():
 
 # ================= ADMIN INGEST =================
 @app.route("/admin/update")
-def ingest():
+def admin_update():
     if request.args.get("key")!=ADMIN_KEY:
         abort(403)
 
@@ -141,9 +134,9 @@ def ingest():
             threat_id=pulse.get("id")+indicator
             c.execute("""
             INSERT OR IGNORE INTO threats
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
             """,(
-                threat_id,"default",
+                threat_id,
                 pulse.get("name"),actor,
                 indicator,ind_type,
                 lat,lon,tactic,
@@ -157,22 +150,15 @@ def ingest():
     generate_weekly_reports()
     return jsonify({"status":"updated","inserted":inserted})
 
-# ================= CLIENT PORTAL =================
-@app.route("/portal")
-def portal():
-    api_key=request.args.get("api_key")
+# ================= DASHBOARD =================
+@app.route("/")
+def dashboard():
     conn=get_db()
-    client=conn.execute("SELECT * FROM clients WHERE api_key=?",(api_key,)).fetchone()
-    if not client:
-        return "Unauthorized"
-
-    rows=conn.execute("SELECT * FROM threats ORDER BY created DESC LIMIT 200").fetchall()
-    rows=[dict(r) for r in rows]
+    rows=[dict(r) for r in conn.execute("SELECT * FROM threats ORDER BY created DESC LIMIT 50").fetchall()]
     conn.close()
-
     score,level=calculate_risk(rows)
 
-    # Trend chart data last 30 days
+    # Trend chart last 30 days
     trend={}
     today=datetime.utcnow().date()
     for i in range(30):
@@ -186,7 +172,7 @@ def portal():
         except:
             continue
 
-    return render_template_string(PORTAL_TEMPLATE,rows=rows,score=score,level=level,trend=trend)
+    return render_template_string(DASHBOARD_TEMPLATE,rows=rows,score=score,level=level,trend=trend)
 
 # ================= EXPORT =================
 @app.route("/export/csv")
@@ -231,6 +217,29 @@ def write_json(rows,path):
     with open(path,"w") as f:
         json.dump([dict(r) for r in rows],f,indent=2)
 
+# ================= PDF WITH PAGE NUMBERS =================
+class PageNumCanvas(canvas.Canvas):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._saved_page_states = []
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        num_pages = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self.draw_page_number(num_pages)
+            super().showPage()
+        super().save()
+
+    def draw_page_number(self, page_count):
+        self.setFont("Helvetica", 8)
+        self.setFillColor(colors.grey)
+        self.drawRightString(800, 15, f"Page {self._pageNumber} of {page_count}")
+
 def write_pdf(rows,path):
     score,level=calculate_risk(rows)
     buffer=io.BytesIO()
@@ -240,7 +249,7 @@ def write_pdf(rows,path):
     styles=getSampleStyleSheet()
     wrap_style=ParagraphStyle("wrap",fontSize=8,leading=10)
 
-    # Trend chart on first page
+    # Trend chart
     dates=[]
     counts=[]
     today=datetime.utcnow().date()
@@ -264,10 +273,9 @@ def write_pdf(rows,path):
     elements.append(trend_img)
     elements.append(Spacer(1,10))
 
-    # Split table into pages (max 50 rows/page)
-    page_size = 50
+    page_size=50
     for i in range(0,len(rows),page_size):
-        chunk = rows[i:i+page_size]
+        chunk=rows[i:i+page_size]
         data=[["Actor","Indicator","Type","MITRE","Class","Date"]]
         for r in chunk:
             data.append([
@@ -286,11 +294,11 @@ def write_pdf(rows,path):
         ]))
         elements.append(table)
         elements.append(Spacer(1,10))
-        elements.append(Paragraph("Disclaimer: Developed and analyzed from public sources by darkgrid@redshark.my",styles["Normal"]))
-        if i+page_size < len(rows):
+        elements.append(Paragraph("Disclaimer: Developed from public sources by darkgrid@redshark.my",styles["Normal"]))
+        if i+page_size<len(rows):
             elements.append(PageBreak())
 
-    doc.build(elements)
+    doc.build(elements, canvasmaker=PageNumCanvas)
     with open(path,"wb") as f:
         f.write(buffer.getvalue())
 
@@ -326,14 +334,14 @@ def get_notes(threat_id):
     conn.close()
     return jsonify([dict(r) for r in rows])
 
-# ================= PORTAL TEMPLATE =================
-PORTAL_TEMPLATE="""
+# ================= DASHBOARD TEMPLATE =================
+DASHBOARD_TEMPLATE="""
 <!DOCTYPE html>
 <html>
 <head>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 body{background:#0b0f1a;color:#e0e0e0;font-family:Arial;}
 h1{color:orange;}
@@ -346,7 +354,7 @@ a{color:orange;margin-right:10px;}
 </style>
 </head>
 <body>
-<h1>REDSHARK.MY CTI Portal</h1>
+<h1>REDSHARK.MY CTI Dashboard</h1>
 <h2>Risk Index: {{score}} ({{level}})</h2>
 
 <a href="/export/pdf">Download PDF</a>
@@ -373,7 +381,7 @@ threats.forEach(function(t){
 </script>
 
 <table>
-<tr><th>Actor</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Class</th></tr>
+<tr><th>Actor</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Class</th><th>Date</th></tr>
 {% for r in rows %}
 <tr>
 <td>{{r.threat_actor}}</td>
@@ -381,27 +389,40 @@ threats.forEach(function(t){
 <td>{{r.indicator_type}}</td>
 <td>{{r.mitre_tactic}}</td>
 <td>{{r.classification}}</td>
+<td>{{r.created}}</td>
 </tr>
 {% endfor %}
 </table>
 
 <p>Total Showing: {{rows|length}}</p>
-<p style="font-size:0.8em;color:#aaa;">Disclaimer: Developed and analyzed from public sources by darkgrid@redshark.my</p>
-
+<p style="font-size:0.8em;color:#aaa;">Disclaimer: Developed from public sources by darkgrid@redshark.my</p>
 </body>
 </html>
 """
 
-# ================= WEEKLY SCHEDULER =================
-def weekly_scheduler():
+# ================= WEEKLY SCHEDULER (Precise) =================
+def weekly_scheduler_precise():
     import time
+    import datetime
     while True:
-        now=datetime.utcnow()
-        if now.weekday()==6 and now.hour==0:
-            generate_weekly_reports()
-        time.sleep(3600)
+        now = datetime.datetime.utcnow()
+        days_ahead = 6 - now.weekday()
+        if days_ahead < 0:
+            days_ahead += 7
+        next_run = datetime.datetime.combine(
+            now.date() + datetime.timedelta(days=days_ahead),
+            datetime.time(hour=0, minute=0, second=0)
+        )
+        delta = (next_run - now).total_seconds()
+        if delta <= 0:
+            next_run += datetime.timedelta(days=7)
+            delta = (next_run - now).total_seconds()
+        print(f"[Scheduler] Next weekly report in {delta/3600:.2f} hours")
+        time.sleep(delta)
+        print("[Scheduler] Generating weekly reports...")
+        generate_weekly_reports()
 
-threading.Thread(target=weekly_scheduler,daemon=True).start()
+threading.Thread(target=weekly_scheduler_precise, daemon=True).start()
 
 # ================= START =================
 if __name__=="__main__":
