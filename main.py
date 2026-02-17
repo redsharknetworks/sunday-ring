@@ -1,31 +1,31 @@
-from flask import Flask, render_template, send_file, jsonify
-import requests
-import pandas as pd
-import sqlite3
 import os
-from datetime import datetime, timedelta, timezone
+import sqlite3
+import requests
+from datetime import datetime, timezone, timedelta
+
+from flask import Flask, render_template
+import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from reportlab.pdfgen import canvas
-import csv
-import json
-import pytz
 
 app = Flask(__name__)
 
-DB = "threats.db"
+DB_PATH = "data.db"
+OTX_API_KEY = os.getenv("OTX_API_KEY")
 
-# ---------------- DB INIT ----------------
+# =========================
+# INIT DB
+# =========================
 def init_db():
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        CREATE TABLE IF NOT EXISTS indicators(
+        CREATE TABLE IF NOT EXISTS indicators (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ip TEXT,
-            risk INTEGER,
-            mitre TEXT,
+            country TEXT,
+            risk_score INTEGER,
             created_at TEXT
         )
     """)
@@ -34,114 +34,115 @@ def init_db():
 
 init_db()
 
-# ---------------- OTX FETCH (LIMITED) ----------------
-def fetch_otx():
+# =========================
+# INSERT DATA
+# =========================
+def insert_indicator(ip, country, risk):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO indicators (ip, country, risk_score, created_at)
+        VALUES (?, ?, ?, ?)
+    """, (ip, country, risk, datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+# =========================
+# FETCH OTX
+# =========================
+def fetch_otx_data():
+    if not OTX_API_KEY:
+        return 0
+
+    url = "https://otx.alienvault.com/api/v1/indicators/IPv4/reputation"
+    headers = {"X-OTX-API-KEY": OTX_API_KEY}
+
+    inserted = 0
+
     try:
-        url = "https://otx.alienvault.com/api/v1/pulses/subscribed?limit=3"
-        r = requests.get(url, timeout=10)
-        data = r.json()
+        # simple demo IP list to avoid heavy memory
+        test_ips = ["8.8.8.8", "1.1.1.1", "8.8.4.4"]
 
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
+        for ip in test_ips:
+            r = requests.get(f"{url}?ip={ip}", headers=headers, timeout=10)
+            if r.status_code != 200:
+                continue
 
-        for pulse in data.get("results", []):
-            for ind in pulse.get("indicators", [])[:3]:
-                ip = ind.get("indicator", "")
-                risk = 50
-                mitre = "T1046"
+            data = r.json()
+            risk = data.get("reputation", 10)
 
-                c.execute("""
-                    INSERT INTO indicators(ip,risk,mitre,created_at)
-                    VALUES (?,?,?,?)
-                """, (
-                    ip,
-                    risk,
-                    mitre,
-                    datetime.utcnow().isoformat()
-                ))
+            insert_indicator(ip, "Unknown", risk)
+            inserted += 1
 
-        conn.commit()
-        conn.close()
-        return "OK"
-    except:
-        return "FAILED"
+    except Exception as e:
+        print("OTX ERROR:", e)
 
-@app.route("/fetch_otx")
-def manual_otx():
-    return fetch_otx()
+    return inserted
 
-# ---------------- TREND CHART ----------------
-def generate_trend():
-    conn = sqlite3.connect(DB)
-    df = pd.read_sql_query("""
-        SELECT DATE(created_at) d, AVG(risk) r
-        FROM indicators
-        GROUP BY d
-    """, conn)
+# =========================
+# TREND CHART
+# =========================
+def generate_trend_chart():
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query(
+        "SELECT created_at, risk_score FROM indicators ORDER BY created_at ASC",
+        conn
+    )
     conn.close()
 
     if df.empty:
         return None
 
+    df["created_at"] = pd.to_datetime(df["created_at"])
+
     plt.figure(figsize=(6,3))
-    plt.plot(df["d"], df["r"], color="orange", linewidth=3)
+    plt.plot(df["created_at"], df["risk_score"], color="orange", linewidth=3)
     plt.title("Risk Trend")
     plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.savefig("static/trend.png")
+
+    path = "static/trend.png"
+    os.makedirs("static", exist_ok=True)
+    plt.savefig(path)
     plt.close()
 
-    return "trend.png"
+    return path
 
-# ---------------- EXPORT REPORT ----------------
-@app.route("/generate_report")
-def export_report():
-    conn = sqlite3.connect(DB)
-    df = pd.read_sql_query("SELECT * FROM indicators", conn)
-    conn.close()
-
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M")
-    base = f"darkgrid_redshark_{ts}"
-
-    # CSV
-    df.to_csv(f"{base}.csv", index=False)
-
-    # JSON
-    df.to_json(f"{base}.json", orient="records")
-
-    # PDF
-    c = canvas.Canvas(f"{base}.pdf")
-    c.drawString(50, 800, "Threat Report")
-    c.drawString(50, 780, f"Records: {len(df)}")
-    c.save()
-
-    return jsonify({"status": "generated", "file": base})
-
-# ---------------- DASHBOARD ----------------
+# =========================
+# ROUTES
+# =========================
 @app.route("/")
 def dashboard():
-    trend_img = generate_trend()
+    trend_image = generate_trend_chart()
 
-    conn = sqlite3.connect(DB)
-    df = pd.read_sql_query("""
-        SELECT ip,risk,mitre,created_at
-        FROM indicators
-        ORDER BY created_at DESC
-        LIMIT 200
-    """, conn)
-    conn.close()
-
-    malaysia_time = (
-        datetime.utcnow().replace(tzinfo=timezone.utc)
-        + timedelta(hours=8)
-    ).strftime("%Y-%m-%d %H:%M:%S")
+    tz = timezone(timedelta(hours=8))
+    now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
 
     return render_template(
         "dashboard.html",
-        table=df.to_dict(orient="records"),
-        trend=trend_img,
-        malaysia_time=malaysia_time
+        trend_image=trend_image,
+        timestamp=now
     )
 
+@app.route("/fetch_otx")
+def fetch_otx_route():
+    try:
+        rows = fetch_otx_data()
+        return f"FETCH OK - {rows} rows inserted"
+    except Exception as e:
+        return f"ERROR: {str(e)}"
+
+@app.route("/count")
+def count():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM indicators")
+    total = c.fetchone()[0]
+    conn.close()
+    return str(total)
+
+# =========================
+# RUN
+# =========================
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=5000)
