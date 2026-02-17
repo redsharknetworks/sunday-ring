@@ -1,86 +1,17 @@
 <!DOCTYPE html>
 <html>
 <head>
-<title>RedShark Threat Intelligence Dashboard</title>
-<style>
-body { font-family: Arial; background:#0f172a; color:white; }
-h1 { text-align:center; }
-table { width:100%; border-collapse:collapse; }
-th, td { padding:8px; border:1px solid #333; }
-th { cursor:pointer; background:#1f2937; }
-.pagination { margin-top:10px; text-align:center; }
-button { padding:6px 10px; }
-</style>
+    <title>RedShark Threat Dashboard</title>
 </head>
-
 <body>
+    <h1>RedShark Threat Dashboard</h1>
+    <p>Timestamp (MY Time +8): {{ timestamp }}</p>
 
-<h1>RedShark Threat Intelligence Dashboard</h1>
-<p style="text-align:center;">Malaysia Time (UTC+8): {{ malaysia_time }}</p>
-
-{% if trend %}
-<div style="text-align:center;">
-<img src="/static/{{trend}}" width="500">
-</div>
-{% endif %}
-
-<table id="tbl">
-<thead>
-<tr>
-<th onclick="sortTable(0)">IP</th>
-<th onclick="sortTable(1)">Risk</th>
-<th onclick="sortTable(2)">MITRE</th>
-<th onclick="sortTable(3)">Date</th>
-</tr>
-</thead>
-<tbody>
-{% for r in table %}
-<tr>
-<td>{{r.ip}}</td>
-<td>{{r.risk}}</td>
-<td>{{r.mitre}}</td>
-<td>{{r.created_at}}</td>
-</tr>
-{% endfor %}
-</tbody>
-</table>
-
-<div class="pagination">
-<button onclick="prev()">Prev</button>
-<button onclick="next()">Next</button>
-</div>
-
-<script>
-let page=0, rows=20;
-const table=document.getElementById("tbl");
-const tbody=table.tBodies[0];
-const tr=tbody.getElementsByTagName("tr");
-
-function show(){
-for(let i=0;i<tr.length;i++){
-tr[i].style.display=(i>=page*rows && i<(page+1)*rows)?"":"none";
-}}
-function next(){ page++; show(); }
-function prev(){ if(page>0) page--; show(); }
-show();
-
-function sortTable(n){
-let switching=true, dir="asc";
-while(switching){
-switching=false;
-let rows=table.rows;
-for(let i=1;i<rows.length-1;i++){
-let x=rows[i].getElementsByTagName("TD")[n];
-let y=rows[i+1].getElementsByTagName("TD")[n];
-if((dir=="asc" && x.innerHTML>y.innerHTML) ||
-(dir=="desc" && x.innerHTML<y.innerHTML)){
-rows[i].parentNode.insertBefore(rows[i+1], rows[i]);
-switching=true;
-break;
-}}
-if(!switching && dir=="asc"){ dir="desc"; switching=true; }
-}}
-</script>
-
+    {% if trend_image %}
+        <h2>Risk Score Trend</h2>
+        <img src="data:image/png;base64,{{ trend_image }}" alt="Trend Chart">
+    {% else %}
+        <p>No data available. Run <a href="/fetch_otx">Fetch OTX</a>.</p>
+    {% endif %}
 </body>
 </html>
