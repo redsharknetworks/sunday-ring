@@ -1,28 +1,20 @@
 import os
 import json
 import sqlite3
+import pandas as pd
 from flask import Flask, render_template, jsonify
 from OTXv2 import OTXv2
-import pandas as pd
-
-# ----------------------------
-# Configuration
-# ----------------------------
-OTX_API_KEY = os.getenv("OTX_API_KEY", "")
-SEED_FILE = "otx_seed.json"  # stored in root of repo
-DB_FILE = "indicators.db"
 
 app = Flask(__name__)
 
-# ----------------------------
-# Database helpers
-# ----------------------------
-def get_db_connection():
-    conn = sqlite3.connect(DB_FILE)
-    return conn
+# --- Config ---
+DB_FILE = "ioc.db"
+SEED_FILE = "seed.json"
+OTX_API_KEY = os.getenv("OTX_API_KEY")  # Ensure you set this in Render env
 
-def create_table_if_not_exists():
-    conn = get_db_connection()
+# --- Initialize Database ---
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS indicators (
@@ -30,106 +22,89 @@ def create_table_if_not_exists():
             type TEXT,
             indicator TEXT,
             country TEXT,
-            risk_score REAL,
+            risk_score INTEGER,
             created_at TEXT
         )
     """)
     conn.commit()
     conn.close()
 
-# Initialize DB at startup
-create_table_if_not_exists()
+init_db()
 
-# ----------------------------
-# Helper to insert indicators
-# ----------------------------
-def insert_indicators(indicators):
-    if not indicators:
-        return 0
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    rows = 0
-    for ind in indicators:
-        cursor.execute("""
-            INSERT INTO indicators (type, indicator, country, risk_score, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (
-            ind.get("type"),
-            ind.get("indicator"),
-            ind.get("country"),
-            ind.get("risk_score"),
-            ind.get("created_at")
-        ))
-        rows += 1
-    conn.commit()
-    conn.close()
-    return rows
-
-# ----------------------------
-# Load manual seed file
-# ----------------------------
-def load_seed_file():
+# --- Load Seed JSON if exists ---
+def load_seed():
     if os.path.exists(SEED_FILE):
         with open(SEED_FILE, "r") as f:
             data = json.load(f)
-        inserted = insert_indicators(data)
-        return inserted
-    return 0
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        for i in data:
+            cursor.execute("""
+                INSERT INTO indicators (type, indicator, country, risk_score, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                i.get("type"),
+                i.get("indicator"),
+                i.get("country"),
+                i.get("risk_score"),
+                i.get("created_at")
+            ))
+        conn.commit()
+        conn.close()
 
-# ----------------------------
-# Fetch from OTX
-# ----------------------------
-def fetch_otx(limit=50):
-    if not OTX_API_KEY:
-        return {"message": "OTX API key not set", "status": "error"}
+# Uncomment to load seed once
+# load_seed()
 
-    otx = OTXv2(OTX_API_KEY)
-    try:
-        pulses = otx.getall(limit=limit)
-    except Exception as e:
-        return {"message": str(e), "status": "error"}
-
-    indicators = []
-    for pulse in pulses:
-        for ind in pulse.get("indicators", []):
-            indicators.append({
-                "type": ind.get("type"),
-                "indicator": ind.get("indicator"),
-                "country": ind.get("country"),
-                "risk_score": ind.get("risk_score"),
-                "created_at": ind.get("created_at")
-            })
-    rows = insert_indicators(indicators)
-    return {"message": f"{rows} rows inserted", "status": "ok"}
-
-# ----------------------------
-# Routes
-# ----------------------------
+# --- Dashboard ---
 @app.route("/")
 def dashboard():
+    conn = sqlite3.connect(DB_FILE)
     try:
-        conn = get_db_connection()
         df = pd.read_sql_query(
             "SELECT type, indicator, country, risk_score, created_at FROM indicators ORDER BY created_at DESC",
             conn
         )
-        conn.close()
-        return render_template("dashboard.html", data=df.to_dict(orient="records"))
+        chart_data = df.to_dict(orient="records") if not df.empty else []
     except Exception as e:
-        return f"Dashboard read failed: {str(e)}"
+        print(f"Dashboard read failed: {e}")
+        chart_data = []
+    finally:
+        conn.close()
+    return render_template("dashboard.html", chart_data=chart_data)
 
+# --- Fetch OTX manually ---
 @app.route("/fetch_otx")
-def fetch_otx_route():
-    # First, load manual seed file if exists
-    seed_rows = load_seed_file()
+def fetch_otx():
+    if not OTX_API_KEY:
+        return jsonify({"status": "error", "message": "OTX_API_KEY not set"}), 400
 
-    # Then fetch latest OTX
-    result = fetch_otx(limit=50)
-    result["seed_rows"] = seed_rows
-    return jsonify(result)
+    try:
+        otx = OTXv2(OTX_API_KEY)
+        pulses = otx.getall(limit=50)  # adjust limit
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-# ----------------------------
-# Run app
-# ----------------------------
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    rows_inserted = 0
+
+    for pulse in pulses:
+        for ioc in pulse.get("indicators", []):
+            cursor.execute("""
+                INSERT INTO indicators (type, indicator, country, risk_score, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                ioc.get("type"),
+                ioc.get("indicator"),
+                ioc.get("country", ""),
+                ioc.get("risk_score", 0),
+                ioc.get("created_at")
+            ))
+            rows_inserted += 1
+    conn.commit()
+    conn.close()
+
+    return jsonify({"status": "ok", "rows_inserted": rows_inserted})
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
