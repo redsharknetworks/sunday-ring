@@ -1,111 +1,69 @@
+<!-- dashboard.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <title>Threat Dashboard</title>
-    <meta http-equiv="refresh" content="300"> <!-- Refresh every 5 minutes -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.1/normalize.min.css">
     <style>
         body {
             font-family: Arial, sans-serif;
             background-color: #1a1a1a;
-            color: #f5f5f5;
+            color: #f0f0f0;
             margin: 0;
-            padding: 0;
-        }
-        header {
-            background-color: #d32f2f;
-            padding: 15px;
-            text-align: center;
-            font-size: 1.8em;
-            font-weight: bold;
-        }
-        .container {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: space-around;
             padding: 20px;
         }
-        .chart, .heatmap {
-            background-color: #2b2b2b;
-            border-radius: 10px;
-            padding: 15px;
-            margin: 10px;
+        h1 {
+            text-align: center;
+            color: #ff4500;
         }
-        .chart img {
+        .chart-container {
+            width: 80%;
+            margin: 0 auto;
+            text-align: center;
+        }
+        img {
             max-width: 100%;
+            border: 2px solid #ff4500;
+            border-radius: 8px;
         }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 15px;
-        }
-        th, td {
-            padding: 8px 12px;
-            border: 1px solid #555;
-            text-align: left;
-        }
-        th {
-            background-color: #d32f2f;
-            color: #fff;
-        }
-        tr:nth-child(even) {
-            background-color: #3a3a3a;
+        .update-time {
+            text-align: center;
+            margin-top: 10px;
+            color: #ccc;
+            font-size: 0.9em;
         }
     </style>
 </head>
 <body>
-
-<header>
-    Sunday Ring Threat Dashboard
-</header>
-
-<div class="container">
-    <!-- Trend Chart -->
-    <div class="chart" style="flex: 1 1 600px;">
-        <h2>Threat Trend</h2>
-        {% if trend_image %}
-            <img src="{{ trend_image }}?t={{ loop.index0 }}" alt="Trend Chart">
-        {% else %}
-            <p>No trend data available</p>
-        {% endif %}
+    <h1>Threat Dashboard</h1>
+    
+    <div class="chart-container">
+        <img id="trendChart" src="/trend.png" alt="Risk Score Trend Chart">
+    </div>
+    
+    <div class="update-time" id="updateTime">
+        Last updated: <span id="timeText">Loading...</span>
     </div>
 
-    <!-- Heat Map -->
-    <div class="heatmap" style="flex: 1 1 600px;">
-        <h2>Threat Geo Heat Map</h2>
-        <iframe src="{{ url_for('static', filename='heatmap.html') }}" width="100%" height="450px" style="border:none;"></iframe>
-    </div>
-</div>
+    <script>
+        function updateChart() {
+            const chart = document.getElementById("trendChart");
+            const timeText = document.getElementById("timeText");
+            const timestamp = new Date().getTime();
+            
+            // Force refresh the chart image
+            chart.src = `/trend.png?ts=${timestamp}`;
+            
+            // Update the displayed time
+            const now = new Date();
+            timeText.innerText = now.toLocaleString();
+        }
 
-<div class="container">
-    <!-- Latest Indicators Table -->
-    <div style="flex: 1 1 100%;">
-        <h2>Latest Indicators</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Indicator</th>
-                    <th>Type</th>
-                    <th>Risk Score</th>
-                    <th>MITRE</th>
-                    <th>Created At</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for item in indicators %}
-                <tr>
-                    <td>{{ item.indicator }}</td>
-                    <td>{{ item.type }}</td>
-                    <td>{{ item.risk_score }}</td>
-                    <td>{{ item.mitre }}</td>
-                    <td>{{ item.created_at }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
+        // Refresh chart every 30 seconds
+        setInterval(updateChart, 30000);
 
+        // Initial load
+        updateChart();
+    </script>
 </body>
 </html>
