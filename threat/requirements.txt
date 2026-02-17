@@ -10,4 +10,5 @@ pandas
 reportlab
 matplotlib
 folium
+plotly
 
