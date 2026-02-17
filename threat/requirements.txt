@@ -1,6 +1,4 @@
 flask
-fastapi
-uvicorn
 requests
 python-dotenv
 geoip2
@@ -11,4 +9,5 @@ reportlab
 matplotlib
 folium
 plotly
+pytz
 
