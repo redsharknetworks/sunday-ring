@@ -3,32 +3,84 @@
 <head>
     <meta charset="UTF-8">
     <title>Threat Dashboard</title>
+    <meta http-equiv="refresh" content="300"> <!-- Refresh every 5 minutes -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.1/normalize.min.css">
     <style>
-        body { font-family: Arial, sans-serif; background-color: #1e1e1e; color: #f0f0f0; margin: 0; padding: 20px; }
-        h1 { text-align: center; color: #ff6600; }
-        .section { margin-bottom: 40px; }
-        img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
-        iframe { width: 100%; height: 600px; border: none; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th, td { padding: 8px; border: 1px solid #444; text-align: left; }
-        th { background-color: #333; color: #ff6600; }
-        tr:nth-child(even) { background-color: #2a2a2a; }
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #f5f5f5;
+            margin: 0;
+            padding: 0;
+        }
+        header {
+            background-color: #d32f2f;
+            padding: 15px;
+            text-align: center;
+            font-size: 1.8em;
+            font-weight: bold;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-around;
+            padding: 20px;
+        }
+        .chart, .heatmap {
+            background-color: #2b2b2b;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 10px;
+        }
+        .chart img {
+            max-width: 100%;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        th, td {
+            padding: 8px 12px;
+            border: 1px solid #555;
+            text-align: left;
+        }
+        th {
+            background-color: #d32f2f;
+            color: #fff;
+        }
+        tr:nth-child(even) {
+            background-color: #3a3a3a;
+        }
     </style>
 </head>
 <body>
-    <h1>Malware Threat Dashboard</h1>
 
-    <div class="section">
-        <h2>Trend of Indicators</h2>
-        <img src="{{ trend_image }}" alt="Trend Chart">
+<header>
+    Sunday Ring Threat Dashboard
+</header>
+
+<div class="container">
+    <!-- Trend Chart -->
+    <div class="chart" style="flex: 1 1 600px;">
+        <h2>Threat Trend</h2>
+        {% if trend_image %}
+            <img src="{{ trend_image }}?t={{ loop.index0 }}" alt="Trend Chart">
+        {% else %}
+            <p>No trend data available</p>
+        {% endif %}
     </div>
 
-    <div class="section">
-        <h2>Geolocation Heat Map</h2>
-        <iframe src="{{ url_for('static', filename='../templates/heatmap.html') }}"></iframe>
+    <!-- Heat Map -->
+    <div class="heatmap" style="flex: 1 1 600px;">
+        <h2>Threat Geo Heat Map</h2>
+        <iframe src="{{ url_for('static', filename='heatmap.html') }}" width="100%" height="450px" style="border:none;"></iframe>
     </div>
+</div>
 
-    <div class="section">
+<div class="container">
+    <!-- Latest Indicators Table -->
+    <div style="flex: 1 1 100%;">
         <h2>Latest Indicators</h2>
         <table>
             <thead>
@@ -41,17 +93,19 @@
                 </tr>
             </thead>
             <tbody>
-                {% for row in indicators %}
+                {% for item in indicators %}
                 <tr>
-                    <td>{{ row.indicator }}</td>
-                    <td>{{ row.type }}</td>
-                    <td>{{ row.risk_score }}</td>
-                    <td>{{ row.mitre }}</td>
-                    <td>{{ row.created_at }}</td>
+                    <td>{{ item.indicator }}</td>
+                    <td>{{ item.type }}</td>
+                    <td>{{ item.risk_score }}</td>
+                    <td>{{ item.mitre }}</td>
+                    <td>{{ item.created_at }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
+</div>
+
 </body>
 </html>
