@@ -3,94 +3,138 @@
 <head>
     <meta charset="UTF-8">
     <title>Sunday Ring Threat Dashboard</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    <meta http-equiv="refresh" content="300"> <!-- Refresh every 5 minutes -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+    <script src="https://cdn.plot.ly/plotly-2.33.0.min.js"></script>
     <style>
-        body { padding: 20px; background-color: #f4f4f9; }
-        .chart, .heatmap { margin-bottom: 40px; }
-        table { background: white; }
-        th, td { text-align: center; }
-        h2 { margin-top: 30px; margin-bottom: 20px; }
+        body {
+            background-color: #1b1b1b;
+            color: #f1f1f1;
+            font-family: Arial, sans-serif;
+        }
+        .container {
+            margin-top: 20px;
+        }
+        h2 {
+            margin-top: 30px;
+            margin-bottom: 20px;
+            color: #ff7f0e; /* Orange trend headings */
+        }
+        .card {
+            background-color: #2a2a2a;
+            border: 1px solid #444;
+            margin-bottom: 20px;
+        }
+        .card-body {
+            padding: 15px;
+        }
+        table {
+            color: #f1f1f1;
+        }
+        th {
+            color: #ff7f0e;
+        }
     </style>
 </head>
 <body>
     <div class="container">
+        <h1>Sunday Ring Cyber Threat Dashboard</h1>
 
-        <h1>Sunday Ring Threat Dashboard</h1>
-
-        <!-- Heatmap -->
-        <div class="heatmap">
-            <h2>Threat Geo Heatmap</h2>
-            {{ heatmap_html|safe }}
+        <!-- Heatmap Section -->
+        <h2>Geo Heat Map</h2>
+        <div class="card">
+            <div class="card-body">
+                {{ heatmap_html|safe }}
+            </div>
         </div>
 
-        <!-- Trend Chart -->
-        <div class="chart">
-            <h2>Weekly Risk Trend</h2>
-            <img src="data:image/png;base64,{{ trend_chart }}" class="img-fluid" />
+        <!-- Trend Chart Section -->
+        <h2>Trend Chart</h2>
+        <div class="card">
+            <div class="card-body">
+                <div id="trendChart"></div>
+            </div>
         </div>
 
-        <!-- Top 10 Malicious IPs -->
-        <h2>Top 10 Malicious IPs</h2>
-        <table class="table table-striped table-bordered">
-            <thead class="table-dark">
-                <tr>
-                    <th>IP</th>
-                    <th>Risk Score</th>
-                    <th>Count</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for row in top_ips %}
-                <tr>
-                    <td>{{ row['ip'] }}</td>
-                    <td>{{ row['risk_score'] }}</td>
-                    <td>{{ row['c'] }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+        <script>
+            var trendData = {{ trend_chart|safe }};
+            Plotly.newPlot('trendChart', trendData.data, trendData.layout);
+        </script>
 
-        <!-- Top 10 Malicious Domains -->
-        <h2>Top 10 Malicious Domains</h2>
-        <table class="table table-striped table-bordered">
-            <thead class="table-dark">
-                <tr>
-                    <th>Domain</th>
-                    <th>Risk Score</th>
-                    <th>Count</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for row in top_domains %}
-                <tr>
-                    <td>{{ row['domain'] }}</td>
-                    <td>{{ row['risk_score'] }}</td>
-                    <td>{{ row['c'] }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+        <!-- Top Malicious IPs -->
+        <h2>Top Malicious IPs</h2>
+        <div class="card">
+            <div class="card-body">
+                <table class="table table-striped table-dark">
+                    <thead>
+                        <tr>
+                            <th>IP Address</th>
+                            <th>Risk Score</th>
+                            <th>Count</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for ip in top_ips %}
+                        <tr>
+                            <td>{{ ip[0] }}</td>
+                            <td>{{ ip[1] }}</td>
+                            <td>{{ ip[2] }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
 
-        <!-- Top 10 Malicious Hashes -->
-        <h2>Top 10 Malicious Hashes</h2>
-        <table class="table table-striped table-bordered">
-            <thead class="table-dark">
-                <tr>
-                    <th>Hash</th>
-                    <th>Risk Score</th>
-                    <th>Count</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for row in top_hashes %}
-                <tr>
-                    <td>{{ row['hash'] }}</td>
-                    <td>{{ row['risk_score'] }}</td>
-                    <td>{{ row['c'] }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+        <!-- Top Bad Domains -->
+        <h2>Top Malicious Domains</h2>
+        <div class="card">
+            <div class="card-body">
+                <table class="table table-striped table-dark">
+                    <thead>
+                        <tr>
+                            <th>Domain</th>
+                            <th>Risk Score</th>
+                            <th>Count</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for domain in top_domains %}
+                        <tr>
+                            <td>{{ domain[0] }}</td>
+                            <td>{{ domain[1] }}</td>
+                            <td>{{ domain[2] }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Top Hashes -->
+        <h2>Top Malicious Hashes</h2>
+        <div class="card">
+            <div class="card-body">
+                <table class="table table-striped table-dark">
+                    <thead>
+                        <tr>
+                            <th>Hash</th>
+                            <th>Risk Score</th>
+                            <th>Count</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for h in top_hashes %}
+                        <tr>
+                            <td>{{ h[0] }}</td>
+                            <td>{{ h[1] }}</td>
+                            <td>{{ h[2] }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
 
     </div>
 </body>
