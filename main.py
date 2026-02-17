@@ -118,7 +118,7 @@ ensure_database()   # <-- Runs when Gunicorn imports app
 # -------------------------------------------------
 # ANALYTICS
 # -------------------------------------------------
-def national_risk_index():
+def risk_index():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     scores = [x[0] for x in c.execute("SELECT risk_score FROM threats").fetchall()]
@@ -146,7 +146,7 @@ def executive_summary():
     REDSHARK.MY identified {total} active indicators this week.
     {high} were rated High or Critical risk.
     Dominant technique observed: {mitre_text}.
-    National Risk Index currently at {national_risk_index()}.
+    SecureNation Index currently at {risk_index()}.
     """
 
 # -------------------------------------------------
@@ -209,7 +209,7 @@ def dashboard():
     return render_template_string(TEMPLATE,
         data=data,
         total=total,
-        risk_index=national_risk_index(),
+        risk_index=risk_index(),
         summary=executive_summary(),
         trend=generate_trend(),
         map_html=generate_map()
@@ -225,7 +225,7 @@ def pdf_report():
     elements = []
     styles = getSampleStyleSheet()
 
-    elements.append(Paragraph("REDSHARK.MY SOC ELITE REPORT", styles["Title"]))
+    elements.append(Paragraph("REDSHARK DARKGRID REPORT", styles["Title"]))
     elements.append(Spacer(1,12))
     elements.append(Paragraph(executive_summary(), styles["Normal"]))
     elements.append(PageBreak())
@@ -300,8 +300,8 @@ a { color:orange; }
 </style>
 </head>
 <body>
-<h1>REDSHARK.MY SOC ELITE</h1>
-<h3>National Risk Index: {{ risk_index }}</h3>
+<h1>REDSHARK DARKGRID DASHBOARD</h1>
+<h3>SecureNation Index: {{ risk_index }}</h3>
 <div>{{ map_html|safe }}</div>
 <p>{{ summary }}</p>
 <img src="data:image/png;base64,{{ trend }}">
