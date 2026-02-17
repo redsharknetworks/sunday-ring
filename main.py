@@ -9,7 +9,7 @@ from folium.plugins import HeatMap
 from reportlab.pdfgen import canvas
 
 app = Flask(__name__)
-DB = "threats.db"
+DB = "/tmp/threats.db"
 PAGE_SIZE = 50
 DISCLAIMER = "Information and analysis developed from publicly available sources by DarkGrid (darkgrid@redshark.my)."
 
@@ -231,16 +231,13 @@ def json_report():
 def pdf_report():
     buf = io.BytesIO()
     c = canvas.Canvas(buf,pagesize=(612,792))
-    # Executive summary
     y = 750
     for line in executive_summary().split("\n"):
         c.drawString(50,y,line.strip())
         y -= 20
     y -= 20
     conn = sqlite3.connect(DB)
-    # Top 10 normal indicators
     rows = conn.execute("SELECT indicator,risk_score FROM threats ORDER BY risk_score DESC LIMIT 10").fetchall()
-    # Top 10 hash indicators
     hash_rows = conn.execute("SELECT hash,risk_score FROM threat_hashes ORDER BY risk_score DESC LIMIT 10").fetchall()
     conn.close()
     c.drawString(50,y,"Weekly Top 10 Threats (Indicators)")
@@ -260,8 +257,12 @@ def pdf_report():
     return Response(buf,mimetype="application/pdf",
                     headers={"Content-Disposition":"attachment; filename=darkgridatredsharkdotmy.pdf"})
 
-# ---------------- MAIN ----------------
-if __name__=="__main__":
+# ---------------- RENDER-SAFE STARTUP ----------------
+@app.before_first_request
+def startup():
     init_db()
     fetch_otx()
+
+# ---------------- MAIN ----------------
+if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
