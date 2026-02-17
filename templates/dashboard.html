@@ -1,45 +1,42 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>IOC Dashboard</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <meta charset="UTF-8">
+    <title>Threat Intelligence Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-  <h1>Indicators Dashboard</h1>
+    <h1>Threat Intelligence Dashboard</h1>
+    <canvas id="riskChart" width="800" height="400"></canvas>
 
-  <canvas id="iocChart" width="800" height="400"></canvas>
+    <script>
+        const data = {{ data|tojson }};
+        
+        const labels = data.map(d => d.indicator);
+        const scores = data.map(d => d.risk_score);
 
-  <script>
-    // Ensure chart_data is always an array
-    var chartData = {{ chart_data|default([])|tojson }};
-
-    // Example: Count indicators by type
-    var typeCount = {};
-    chartData.forEach(item => {
-        if(item.type){
-            typeCount[item.type] = (typeCount[item.type] || 0) + 1;
-        }
-    });
-
-    var ctx = document.getElementById('iocChart').getContext('2d');
-    new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: Object.keys(typeCount),
-            datasets: [{
-                label: 'IOC Count by Type',
-                data: Object.values(typeCount),
-                backgroundColor: 'rgba(255, 99, 132, 0.5)'
-            }]
-        },
-        options: {
-            responsive: true,
-            scales: {
-                y: { beginAtZero: true }
+        const ctx = document.getElementById('riskChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Risk Score',
+                    data: scores,
+                    backgroundColor: 'rgba(255, 99, 132, 0.6)'
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { display: false },
+                    title: {
+                        display: true,
+                        text: 'Top Threat Indicators'
+                    }
+                }
             }
-        }
-    });
-  </script>
+        });
+    </script>
 </body>
 </html>
