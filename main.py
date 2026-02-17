@@ -14,8 +14,6 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 import pytz
-
-# For geo heat map
 import geopandas as gpd
 from ipwhois import IPWhois
 
@@ -81,7 +79,7 @@ def fetch_otx():
         pulse = item.get("pulse_name","OTX")
         mitre = item.get("mitre") or "N/A"
         classification = item.get("classification","Medium")
-        risk_score = item.get("risk_score",50)
+        risk_score = item.get("risk_score") or 50
         created_at = item.get("created_at",datetime.utcnow().isoformat())
 
         if indicator_type == "hash":
@@ -106,7 +104,7 @@ def risk_index():
     conn = sqlite3.connect(DB)
     scores = [x[0] for x in conn.execute("SELECT risk_score FROM threats").fetchall()]
     conn.close()
-    return int(sum(scores)/len(scores)) if scores else 0
+    return int(sum(scores)/len(scores)) if scores else 50
 
 def executive_summary():
     conn = sqlite3.connect(DB)
@@ -123,7 +121,10 @@ def executive_summary():
 def generate_trend(pdf=False):
     conn = sqlite3.connect(DB)
     data = conn.execute("""
-        SELECT substr(created_at,1,10), COUNT(*) FROM threats GROUP BY substr(created_at,1,10) ORDER BY substr(created_at,1,10)
+        SELECT substr(created_at,1,10), COUNT(*) 
+        FROM threats 
+        GROUP BY substr(created_at,1,10) 
+        ORDER BY substr(created_at,1,10)
     """).fetchall()
     conn.close()
     dates = [d[0] for d in data]
@@ -136,7 +137,6 @@ def generate_trend(pdf=False):
 
     line_width = 5 if pdf else 3
     plt.plot(dates, counts, color="#FF8000", linewidth=line_width, marker='o', markersize=5, label="Total Indicators")
-    
     plt.xticks(rotation=45)
     plt.grid(True, linestyle='--', alpha=0.5)
     plt.tight_layout()
@@ -198,18 +198,11 @@ def generate_geo_heatmap():
     world['counts'] = world['name'].map(lambda x: country_counts.get(x,0))
 
     fig, ax = plt.subplots(1,1,figsize=(10,4))
-    
-    # Draw all countries light grey
     world.plot(ax=ax, color='lightgrey', edgecolor='white')
-
-    # Highlight countries with counts
     world[world['counts']>0].plot(ax=ax, column='counts', cmap='OrRd', legend=True, legend_kwds={'label':"Threat Count"})
-
-    # Highlight Malaysia
     malaysia = world[world['name']=="Malaysia"]
     if not malaysia.empty:
         malaysia.plot(ax=ax, facecolor='crimson', edgecolor='red', linewidth=2)
-
     ax.set_title("Threat Indicators by Country (Malaysia Highlighted)", fontsize=14, color='white')
     ax.axis('off')
 
@@ -253,8 +246,8 @@ a { color:orange; }
 <td>{{ row[0] }}</td>
 <td>{{ row[1] }}</td>
 <td>{{ row[2] }}</td>
-<td>{{ row[3] }}</td>
-<td>{{ row[4] }}</td>
+<td>{{ row[3] or 'N/A' }}</td>
+<td>{{ row[4] if row[4] is not None else 50 }}</td>
 <td>{{ row[5] }}</td>
 </tr>
 {% endfor %}
@@ -330,7 +323,23 @@ def pdf_report():
     for t in ["IPv4","domain","URL","hash"]:
         table = "threat_hashes" if t=="hash" else "threats"
         col = "hash" if t=="hash" else "indicator"
-        res = conn.execute(f"SELECT {col},risk_score,COUNT(*) as c FROM {table} WHERE created_at>=? AND type!=? GROUP BY {col},risk_score ORDER BY c DESC LIMIT 10",(week_ago.isoformat(), "hash")).fetchall()
+        if table == "threats":
+            res = conn.execute(f"""
+                SELECT {col}, risk_score, COUNT(*) as c 
+                FROM {table} 
+                WHERE created_at>=? AND type!=? 
+                GROUP BY {col}, risk_score 
+                ORDER BY c DESC LIMIT 10
+            """, (week_ago.isoformat(), "hash")).fetchall()
+        else:  # threat_hashes table has no 'type'
+            res = conn.execute(f"""
+                SELECT {col}, risk_score, COUNT(*) as c 
+                FROM {table} 
+                WHERE created_at>=? 
+                GROUP BY {col}, risk_score 
+                ORDER BY c DESC LIMIT 10
+            """, (week_ago.isoformat(),)).fetchall()
+
         elements.append(Paragraph(f"Top 10 {t} Weekly", styles["Heading2"]))
         elements.append(Paragraph(f"Snapshot: {current_time}", styles["Normal"]))
         header = [t.capitalize(),"Risk Score","Count"]
@@ -344,10 +353,8 @@ def pdf_report():
         elements.append(PageBreak())
     conn.close()
 
-    # Disclaimer
     elements.append(Paragraph("Disclaimer: Information developed from public sources by darkgrid@redshark.my", styles["Normal"]))
 
-    # Page numbers
     def add_page_number(canvas, doc):
         page_num = canvas.getPageNumber()
         canvas.setFont("Helvetica", 9)
