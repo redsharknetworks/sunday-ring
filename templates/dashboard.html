@@ -1,68 +1,69 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-<meta charset="UTF-8">
-<title>RedShark Dashboard</title>
-<link rel="stylesheet" href="https://cdn.datatables.net/1.13.5/css/jquery.dataTables.min.css">
-<script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
-<script src="https://cdn.datatables.net/1.13.5/js/jquery.dataTables.min.js"></script>
+    <title>Red Shark Threat Dashboard - Malaysia</title>
+
+    <!-- Bootstrap -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css">
+
+    <!-- DataTables CSS -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+
+    <!-- Auto refresh every 5 min -->
+    <meta http-equiv="refresh" content="300">
 </head>
+
 <body>
-<h1>RedShark Threat Dashboard</h1>
+<div class="container mt-4">
 
-<h2>Executive Summary</h2>
-<ul>
-  <li>Total Indicators: {{ exec_summary.total_indicators }}</li>
-  <li>Average Risk: {{ exec_summary.average_risk|round(2) }}</li>
-  <li>High Risk Count: {{ exec_summary.high_risk_count }}</li>
-</ul>
+    <h1 class="text-danger">Red Shark Threat Intelligence Dashboard</h1>
+    <p><strong>Last Updated (UTC+8):</strong> {{ malaysia_time }}</p>
 
-<h2>Trend Chart</h2>
-<img src="data:image/png;base64,{{ trend_chart | b64encode }}" alt="Trend Chart">
+    <hr>
 
-<h2>Malaysia Geo Map</h2>
-<div>{{ geo_map | safe }}</div>
+    <!-- TREND -->
+    <h3>Risk Trend</h3>
+    <img src="data:image/png;base64,{{ trend_image }}" class="img-fluid mb-4"/>
 
-<h2>Indicators Table</h2>
-<table id="indicators" class="display">
-  <thead>
-    <tr>
-      <th>Created At</th>
-      <th>Source IP</th>
-      <th>Source Country</th>
-      <th>Target City</th>
-      <th>Target Country</th>
-      <th>Risk Score</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for row in table_data %}
-      <tr>
-        <td>{{ row.created_at }}</td>
-        <td>{{ row.source_ip }}</td>
-        <td>{{ row.source_country }}</td>
-        <td>{{ row.target_city }}</td>
-        <td>{{ row.target_country }}</td>
-        <td>{{ row.risk_score }}</td>
-      </tr>
-    {% endfor %}
-  </tbody>
-</table>
+    <!-- HEAT MAP -->
+    <h3>Malaysia Geo Heat Map</h3>
+    <iframe src="{{ heatmap_file }}" width="100%" height="500" class="mb-4"></iframe>
 
-<h2>Reports</h2>
-<ul>
-  <li><a href="static/{{ report_base }}.csv" target="_blank">Download CSV</a></li>
-  <li><a href="static/{{ report_base }}.json" target="_blank">Download JSON</a></li>
-  <li><a href="static/{{ report_base }}.pdf" target="_blank">Download PDF</a></li>
-</ul>
+    <!-- TABLE -->
+    <h3>Indicators Table</h3>
+    <div class="table-responsive">
+        {{ table_html | safe }}
+    </div>
+
+    <hr>
+
+    <!-- EXPORT -->
+    <h3>Download Reports</h3>
+    <ul>
+        <li><a href="{{ export_files['csv'] }}" class="btn btn-success btn-sm">CSV</a></li>
+        <li><a href="{{ export_files['json'] }}" class="btn btn-primary btn-sm">JSON</a></li>
+        <li><a href="{{ export_files['pdf'] }}" class="btn btn-danger btn-sm">PDF</a></li>
+    </ul>
+
+</div>
+
+<!-- jQuery -->
+<script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+
+<!-- DataTables JS -->
+<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 
 <script>
-$(document).ready( function () {
-    $('#indicators').DataTable({
+$(document).ready(function () {
+    $('table').DataTable({
         "pageLength": 20,
-        "order": [[0, "desc"]]
+        "lengthChange": false,
+        "ordering": true,
+        "searching": true,
+        "info": true
     });
-} );
+});
 </script>
+
 </body>
 </html>
