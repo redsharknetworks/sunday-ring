@@ -1,32 +1,32 @@
 import os
 import sqlite3
-from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify
 import pandas as pd
-import matplotlib.pyplot as plt
-import io
-import base64
+from flask import Flask, render_template, jsonify
+from datetime import datetime, timedelta
+from matplotlib import pyplot as plt
+from matplotlib.dates import DateFormatter
 from OTXv2 import OTXv2
+import pdfkit
+import json
+import csv
+import folium
 
-# -----------------------------
-# Configuration
-# -----------------------------
+# ===== CONFIG =====
 DB_FILE = "indicators.db"
-OTX_API_KEY = os.getenv("OTX_API_KEY")  # Make sure this is set
+OTX_API_KEY = os.environ.get("OTX_API_KEY")
 COUNTRY_FILTER = "MY"  # Malaysia
+ROWS_PER_PAGE = 20
 
 app = Flask(__name__)
 
-# -----------------------------
-# Initialize Database
-# -----------------------------
+# ===== DATABASE =====
 def init_db():
     conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute('''
+    c = conn.cursor()
+    c.execute('''
         CREATE TABLE IF NOT EXISTS indicators (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ip TEXT,
+            ip TEXT UNIQUE,
             country TEXT,
             risk_score INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -35,87 +35,137 @@ def init_db():
     conn.commit()
     conn.close()
 
-init_db()
-
-# -----------------------------
-# Insert Indicator
-# -----------------------------
 def insert_indicator(ip, country, risk_score):
     conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO indicators (ip, country, risk_score, created_at) VALUES (?, ?, ?, ?)",
-        (ip, country, risk_score, datetime.utcnow())
-    )
-    conn.commit()
-    conn.close()
+    c = conn.cursor()
+    try:
+        c.execute('''
+            INSERT OR IGNORE INTO indicators (ip, country, risk_score) 
+            VALUES (?, ?, ?)
+        ''', (ip, country, risk_score))
+        conn.commit()
+    except Exception as e:
+        print("DB insert error:", e)
+    finally:
+        conn.close()
 
-# -----------------------------
-# Fetch OTX Pulses
-# -----------------------------
+# ===== OTX FETCH =====
 @app.route("/fetch_otx")
 def fetch_otx():
     try:
         otx = OTXv2(OTX_API_KEY)
-
-        # Get all pulses (limit for demo)
-        pulses = otx.getall(indicator_type="IPv4", limit=50)  
-
+        pulses = otx.getall(limit=50)  # fetch recent pulses
         inserted = 0
+
         for pulse in pulses:
-            for ind in pulse.get("indicators", []):
+            indicators = pulse.get("indicators", [])
+            for ind in indicators:
                 ip = ind.get("indicator")
-                country = ind.get("geo", {}).get("country")  # Some pulses include country
+                if not ip or len(ip.split(".")) != 4:
+                    continue  # only IPv4
+
+                geo = ind.get("geo", {})
+                country = geo.get("country")
                 if country != COUNTRY_FILTER:
-                    continue  # Only Malaysia
-                risk_score = pulse.get("threat_score", 50)  # Approximation
+                    continue  # only Malaysia
+
+                risk_score = pulse.get("threat_score", 50)
                 insert_indicator(ip, country, risk_score)
                 inserted += 1
 
         return jsonify({"status": "ok", "inserted": inserted})
-
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-# -----------------------------
-# Generate Trend Chart
-# -----------------------------
+# ===== TREND CHART =====
 def generate_trend_chart():
     conn = sqlite3.connect(DB_FILE)
     df = pd.read_sql_query(
-        "SELECT created_at, risk_score FROM indicators ORDER BY created_at ASC",
-        conn
+        "SELECT created_at, risk_score FROM indicators ORDER BY created_at ASC", conn
     )
     conn.close()
 
     if df.empty:
         return None
 
-    plt.figure(figsize=(10,4))
-    plt.plot(pd.to_datetime(df["created_at"]), df["risk_score"], marker='o')
+    plt.figure(figsize=(10,5))
+    plt.plot(pd.to_datetime(df['created_at']), df['risk_score'], marker='o')
     plt.title("Risk Score Trend")
     plt.xlabel("Time")
     plt.ylabel("Risk Score")
+    plt.grid(True)
     plt.tight_layout()
 
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight')
-    buf.seek(0)
-    encoded = base64.b64encode(buf.read()).decode("utf-8")
+    img_path = "static/trend_chart.png"
+    plt.savefig(img_path)
     plt.close()
-    return encoded
+    return img_path
 
-# -----------------------------
-# Dashboard
-# -----------------------------
+# ===== DASHBOARD =====
 @app.route("/")
 def dashboard():
-    trend_image = generate_trend_chart()
-    timestamp = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-    return render_template("dashboard.html", trend_image=trend_image, timestamp=timestamp)
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query(
+        "SELECT ip, country, risk_score, created_at FROM indicators ORDER BY created_at DESC", conn
+    )
+    conn.close()
 
-# -----------------------------
-# Run Flask
-# -----------------------------
+    trend_image = generate_trend_chart()
+
+    malaysia_time = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    return render_template("dashboard.html", indicators=df.to_dict(orient="records"),
+                           trend_image=trend_image,
+                           timestamp=malaysia_time)
+
+# ===== EXPORT REPORTS =====
+@app.route("/export_reports")
+def export_reports():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query(
+        "SELECT ip, country, risk_score, created_at FROM indicators ORDER BY created_at DESC", conn
+    )
+    conn.close()
+
+    ts = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y%m%d%H%M%S")
+    base_filename = f"dsrkgrid_redshark_{ts}"
+
+    # CSV
+    csv_file = f"{base_filename}.csv"
+    df.to_csv(csv_file, index=False)
+
+    # JSON
+    json_file = f"{base_filename}.json"
+    df.to_json(json_file, orient="records", indent=2)
+
+    # PDF
+    pdf_file = f"{base_filename}.pdf"
+    html_content = render_template("dashboard.html", indicators=df.to_dict(orient="records"),
+                                   trend_image=None, timestamp=ts)
+    pdfkit.from_string(html_content, pdf_file)
+
+    return jsonify({"status": "ok", "csv": csv_file, "json": json_file, "pdf": pdf_file})
+
+# ===== HEAT MAP =====
+@app.route("/malaysia_heatmap")
+def malaysia_heatmap():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT ip, country FROM indicators WHERE country='MY'", conn)
+    conn.close()
+
+    m = folium.Map(location=[4.2105, 101.9758], zoom_start=6)  # Center Malaysia
+    for _, row in df.iterrows():
+        folium.CircleMarker(
+            location=[4.2105, 101.9758],  # Placeholder, real geo can be added
+            radius=5,
+            color="red",
+            fill=True
+        ).add_to(m)
+
+    heatmap_file = "static/malaysia_heatmap.html"
+    m.save(heatmap_file)
+    return render_template("malaysia_heatmap.html", map_file=heatmap_file)
+
+# ===== MAIN =====
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    init_db()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
