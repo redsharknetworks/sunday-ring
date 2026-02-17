@@ -183,6 +183,66 @@ def dashboard():
         trend=trend,map_html=generate_map(),disclaimer=DISCLAIMER,
         ipv4_count=ipv4_count,domain_count=domain_count,url_count=url_count,type_chart=type_chart)
 
+# ------------------ REPORTS ------------------
+@app.route("/report/pdf")
+def pdf_report():
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4))
+    elements = []
+    styles = getSampleStyleSheet()
+
+    elements.append(Paragraph("REDSHARK DARKGRID REPORT", styles["Title"]))
+    elements.append(Spacer(1,12))
+    elements.append(Paragraph(executive_summary(), styles["Normal"]))
+    elements.append(Spacer(1,12))
+
+    conn = sqlite3.connect(DB)
+    rows = conn.execute("SELECT pulse,indicator,type,classification,mitre,risk_score,hash,created_at FROM threats").fetchall()
+    conn.close()
+
+    # Header
+    header = ["Pulse","Indicator","Type","Classification","MITRE","Risk","Hash","Created"]
+    chunk = 40
+    for i in range(0,len(rows),chunk):
+        table_data = [header] + rows[i:i+chunk]
+        table = Table(table_data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),colors.black),
+            ("TEXTCOLOR",(0,0),(-1,0),colors.white),
+            ("GRID",(0,0),(-1,-1),0.5,colors.grey),
+            ("BACKGROUND",(0,1),(-1,-1),colors.whitesmoke)
+        ]))
+        elements.append(table)
+        elements.append(PageBreak())
+
+    # Disclaimer
+    elements.append(Paragraph(DISCLAIMER, styles["Italic"]))
+    doc.build(elements)
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name="darkgridatredsharkdotmy.pdf", mimetype="application/pdf")
+
+@app.route("/report/csv")
+def csv_report():
+    conn = sqlite3.connect(DB)
+    rows = conn.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+
+    si = io.StringIO()
+    cw = csv.writer(si)
+    cw.writerow(["ID","Pulse","Indicator","Type","Classification","MITRE","Risk","Hash","Created"])
+    cw.writerows(rows)
+    output = io.BytesIO()
+    output.write(si.getvalue().encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name="darkgridatredsharkdotmy.csv")
+
+@app.route("/report/json")
+def json_report():
+    conn = sqlite3.connect(DB)
+    rows = conn.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    return jsonify(rows)
+
 # ------------------ RUN SERVER ------------------
 def run_app():
     app.run(host="0.0.0.0", port=5000, debug=True)
@@ -253,5 +313,10 @@ function sortTable(n) {
 {% endfor %}
 </table>
 <p style="text-align:center;">{{ disclaimer }}</p>
+<p style="text-align:center;">
+<a href="/report/pdf">Download PDF</a> |
+<a href="/report/csv">Download CSV</a> |
+<a href="/report/json">Download JSON</a>
+</p>
 </body></html>
 """
