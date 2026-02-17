@@ -1,68 +1,85 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Red Shark Threat Dashboard - Malaysia</title>
-
-    <!-- Bootstrap -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css">
-
-    <!-- DataTables CSS -->
-    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
-
-    <!-- Auto refresh every 5 min -->
-    <meta http-equiv="refresh" content="300">
+<title>RedShark Threat Intelligence Dashboard</title>
+<style>
+body { font-family: Arial; background:#0f172a; color:white; }
+h1 { text-align:center; }
+table { width:100%; border-collapse:collapse; }
+th, td { padding:8px; border:1px solid #333; }
+th { cursor:pointer; background:#1f2937; }
+.pagination { margin-top:10px; text-align:center; }
+button { padding:6px 10px; }
+</style>
 </head>
 
 <body>
-<div class="container mt-4">
 
-    <h1 class="text-danger">Red Shark Threat Intelligence Dashboard</h1>
-    <p><strong>Last Updated (UTC+8):</strong> {{ malaysia_time }}</p>
+<h1>RedShark Threat Intelligence Dashboard</h1>
+<p style="text-align:center;">Malaysia Time (UTC+8): {{ malaysia_time }}</p>
 
-    <hr>
+{% if trend %}
+<div style="text-align:center;">
+<img src="/static/{{trend}}" width="500">
+</div>
+{% endif %}
 
-    <!-- TREND -->
-    <h3>Risk Trend</h3>
-    <img src="data:image/png;base64,{{ trend_image }}" class="img-fluid mb-4"/>
+<table id="tbl">
+<thead>
+<tr>
+<th onclick="sortTable(0)">IP</th>
+<th onclick="sortTable(1)">Risk</th>
+<th onclick="sortTable(2)">MITRE</th>
+<th onclick="sortTable(3)">Date</th>
+</tr>
+</thead>
+<tbody>
+{% for r in table %}
+<tr>
+<td>{{r.ip}}</td>
+<td>{{r.risk}}</td>
+<td>{{r.mitre}}</td>
+<td>{{r.created_at}}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
 
-    <!-- HEAT MAP -->
-    <h3>Malaysia Geo Heat Map</h3>
-    <iframe src="{{ heatmap_file }}" width="100%" height="500" class="mb-4"></iframe>
-
-    <!-- TABLE -->
-    <h3>Indicators Table</h3>
-    <div class="table-responsive">
-        {{ table_html | safe }}
-    </div>
-
-    <hr>
-
-    <!-- EXPORT -->
-    <h3>Download Reports</h3>
-    <ul>
-        <li><a href="{{ export_files['csv'] }}" class="btn btn-success btn-sm">CSV</a></li>
-        <li><a href="{{ export_files['json'] }}" class="btn btn-primary btn-sm">JSON</a></li>
-        <li><a href="{{ export_files['pdf'] }}" class="btn btn-danger btn-sm">PDF</a></li>
-    </ul>
-
+<div class="pagination">
+<button onclick="prev()">Prev</button>
+<button onclick="next()">Next</button>
 </div>
 
-<!-- jQuery -->
-<script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
-
-<!-- DataTables JS -->
-<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
-
 <script>
-$(document).ready(function () {
-    $('table').DataTable({
-        "pageLength": 20,
-        "lengthChange": false,
-        "ordering": true,
-        "searching": true,
-        "info": true
-    });
-});
+let page=0, rows=20;
+const table=document.getElementById("tbl");
+const tbody=table.tBodies[0];
+const tr=tbody.getElementsByTagName("tr");
+
+function show(){
+for(let i=0;i<tr.length;i++){
+tr[i].style.display=(i>=page*rows && i<(page+1)*rows)?"":"none";
+}}
+function next(){ page++; show(); }
+function prev(){ if(page>0) page--; show(); }
+show();
+
+function sortTable(n){
+let switching=true, dir="asc";
+while(switching){
+switching=false;
+let rows=table.rows;
+for(let i=1;i<rows.length-1;i++){
+let x=rows[i].getElementsByTagName("TD")[n];
+let y=rows[i+1].getElementsByTagName("TD")[n];
+if((dir=="asc" && x.innerHTML>y.innerHTML) ||
+(dir=="desc" && x.innerHTML<y.innerHTML)){
+rows[i].parentNode.insertBefore(rows[i+1], rows[i]);
+switching=true;
+break;
+}}
+if(!switching && dir=="asc"){ dir="desc"; switching=true; }
+}}
 </script>
 
 </body>
