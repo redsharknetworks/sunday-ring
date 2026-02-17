@@ -68,12 +68,6 @@ def calculate_risk(classification, mitre):
     recency = random.randint(5,15)
     return min(base + mitre_weight + recency, 100)
 
-def risk_level(score):
-    if score >= 90: return "Critical"
-    elif score >= 70: return "High"
-    elif score >= 40: return "Medium"
-    return "Low"
-
 # ------------------ SEED DATA ------------------
 def seed_data():
     conn = sqlite3.connect(DB)
@@ -82,7 +76,6 @@ def seed_data():
     if count > 0:
         conn.close()
         return
-
     for i in range(120):
         classification = random.choice(["Low","Medium","High"])
         mitre = random.choice(["T1566 Phishing","T1071 C2","T1059 Execution"])
@@ -100,20 +93,10 @@ def seed_data():
             if not is_valid_url(indicator): continue
 
         hash_val = f"{random.getrandbits(128):032x}"
-
         c.execute("""
         INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,hash,created_at)
         VALUES (?,?,?,?,?,?,?,?)
-        """,(
-            f"Campaign {i%6}",
-            indicator,
-            typ,
-            classification,
-            mitre,
-            score,
-            hash_val,
-            datetime.utcnow().isoformat()
-        ))
+        """,(f"Campaign {i%6}",indicator,typ,classification,mitre,score,hash_val,datetime.utcnow().isoformat()))
     conn.commit()
     conn.close()
 
@@ -144,7 +127,6 @@ def executive_summary():
 # ------------------ TREND CHART ------------------
 def get_top10_indicators_for_chart():
     week_ago = datetime.utcnow() - timedelta(days=7)
-    week_str = week_ago.isoformat()
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     top10 = c.execute("""
@@ -154,7 +136,7 @@ def get_top10_indicators_for_chart():
         GROUP BY indicator
         ORDER BY risk DESC, c DESC
         LIMIT 10
-    """,(week_str,)).fetchall()
+    """,(week_ago.isoformat(),)).fetchall()
     conn.close()
     return top10
 
@@ -171,14 +153,12 @@ def generate_trend_html():
 
     plt.figure(figsize=(10,4))
     plt.plot(dates, counts, color="crimson", marker="o", label="Total Indicators")
-
     for i, date in enumerate(dates):
         conn = sqlite3.connect(DB)
         day_indicators = [x[0] for x in conn.execute("SELECT indicator FROM threats WHERE substr(created_at,1,10)=?",(date,)).fetchall()]
         conn.close()
         if any(ind in top_indicators for ind in day_indicators):
             plt.scatter(date, counts[i], color="orange", s=100, zorder=5, label="Top 10 Weekly" if i==0 else "")
-
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.legend()
@@ -194,12 +174,12 @@ def generate_type_count_chart(ipv4_count, domain_count, url_count):
     fig.add_trace(go.Bar(
         x=["IPv4","Domain","URL"],
         y=[ipv4_count, domain_count, url_count],
-        marker_color=["crimson","orange","lime"],
+        marker_color=["crimson","orange","#7fb77e"],  # grey-green
         text=[ipv4_count, domain_count, url_count],
         textposition="auto",
         hovertemplate='%{x}: %{y} indicators<extra></extra>'
     ))
-    fig.update_layout(title="Active Indicators by Type", template="plotly_dark", height=300, margin=dict(l=20,r=20,t=40,b=20))
+    fig.update_layout(title="Active Indicators by Type", template="plotly_dark", height=300, margin=dict(l=50,r=50,t=40,b=20))
     return pio.to_html(fig, full_html=False)
 
 # ------------------ MAP ------------------
@@ -209,16 +189,15 @@ def generate_map():
     HeatMap(heat).add_to(m)
     return m._repr_html_()
 
-# ------------------ WEEKLY TOP 10 FOR PDF ------------------
+# ------------------ WEEKLY TOP 10 ------------------
 def get_weekly_top10():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     week_ago = datetime.utcnow() - timedelta(days=7)
-    week_str = week_ago.isoformat()
-    top_ipv4 = c.execute("""SELECT indicator, MAX(risk_score) as risk, COUNT(*) as c FROM threats WHERE type='IPv4' AND created_at>=? GROUP BY indicator ORDER BY risk DESC, c DESC LIMIT 10""",(week_str,)).fetchall()
-    top_domain = c.execute("""SELECT indicator, MAX(risk_score) as risk, COUNT(*) as c FROM threats WHERE type='domain' AND created_at>=? GROUP BY indicator ORDER BY risk DESC, c DESC LIMIT 10""",(week_str,)).fetchall()
-    top_url = c.execute("""SELECT indicator, MAX(risk_score) as risk, COUNT(*) as c FROM threats WHERE type='URL' AND created_at>=? GROUP BY indicator ORDER BY risk DESC, c DESC LIMIT 10""",(week_str,)).fetchall()
-    top_hash = c.execute("""SELECT hash, MAX(risk_score) as risk, COUNT(*) as c FROM threats WHERE created_at>=? GROUP BY hash ORDER BY risk DESC, c DESC LIMIT 10""",(week_str,)).fetchall()
+    top_ipv4 = c.execute("""SELECT indicator, MAX(risk_score), COUNT(*) FROM threats WHERE type='IPv4' AND created_at>=? GROUP BY indicator ORDER BY MAX(risk_score) DESC LIMIT 10""",(week_ago.isoformat(),)).fetchall()
+    top_domain = c.execute("""SELECT indicator, MAX(risk_score), COUNT(*) FROM threats WHERE type='domain' AND created_at>=? GROUP BY indicator ORDER BY MAX(risk_score) DESC LIMIT 10""",(week_ago.isoformat(),)).fetchall()
+    top_url = c.execute("""SELECT indicator, MAX(risk_score), COUNT(*) FROM threats WHERE type='URL' AND created_at>=? GROUP BY indicator ORDER BY MAX(risk_score) DESC LIMIT 10""",(week_ago.isoformat(),)).fetchall()
+    top_hash = c.execute("""SELECT hash, MAX(risk_score), COUNT(*) FROM threats WHERE created_at>=? GROUP BY hash ORDER BY MAX(risk_score) DESC LIMIT 10""",(week_ago.isoformat(),)).fetchall()
     conn.close()
     return top_ipv4, top_domain, top_url, top_hash
 
@@ -272,9 +251,11 @@ def pdf_report():
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4))
     elements = []
     styles = getSampleStyleSheet()
-    elements.append(Paragraph("REDSHARK DARKGRID REPORT", styles["Title"]))
+    elements.append(Paragraph("REDSHARK CYBER THREAT INTELLIGENCE REPORT", styles["Title"]))
     elements.append(Spacer(1,12))
     elements.append(Paragraph(executive_summary(), styles["Normal"]))
+    elements.append(Spacer(1,6))
+    elements.append(Paragraph(DISCLAIMER, styles["Normal"]))
 
     top_ipv4, top_domain, top_url, top_hash = get_weekly_top10()
     add_top10_table(elements, "Weekly Top 10 IPv4 Threats", top_ipv4, ["IPv4","Risk Score","Count"])
@@ -299,10 +280,10 @@ def pdf_report():
         ]))
         elements.append(table)
         elements.append(PageBreak())
-
+    elements.append(Paragraph(DISCLAIMER, styles["Normal"]))
     doc.build(elements)
     buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="soc_elite_report.pdf", mimetype="application/pdf")
+    return send_file(buffer, as_attachment=True, download_name="darkgridatredsharkdotmy.pdf", mimetype="application/pdf")
 
 @app.route("/report/csv")
 def csv_report():
@@ -316,55 +297,70 @@ def csv_report():
     output = io.BytesIO()
     output.write(si.getvalue().encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name="soc_elite.csv")
+    return send_file(output, as_attachment=True, download_name="darkgridatredsharkdotmy.csv")
 
 @app.route("/report/json")
 def json_report():
     conn = sqlite3.connect(DB)
     rows = conn.execute("SELECT * FROM threats").fetchall()
     conn.close()
-    return jsonify(rows)
+    return send_file(io.BytesIO(str(rows).encode()), as_attachment=True, download_name="darkgridatredsharkdotmy.json")
 
 # ------------------ DASHBOARD TEMPLATE ------------------
 TEMPLATE = """
-<html><head><style>
-body { background:#0a1f44; color:white; font-family:Arial; }
-h1 { color:crimson; }
-th { background:#001f3f; padding:8px; }
-td { padding:6px; }
+<html><head>
+<style>
+body { background:#0a1f44; color:white; font-family:Arial; margin:0 auto; max-width:1200px; }
+h1 { color:crimson; text-align:center; }
+h3 { text-align:center; }
+table { width:100%; border-collapse:collapse; margin:auto; }
+th, td { padding:6px; text-align:center; }
 tr:nth-child(even) { background:#2a3d6a; }
 tr:nth-child(odd) { background:#1a2d5a; }
+th { background:#001f3f; cursor:pointer; }
 a { color:orange; }
-</style></head>
+.container { text-align:center; margin:auto; }
+</style>
+<script>
+function sortTable(n) {
+  var table=document.getElementById("threatTable");
+  var rows, switching, i, x, y, shouldSwitch, dir="asc", switchcount=0;
+  switching=true;
+  while(switching){
+    switching=false;
+    rows=table.rows;
+    for(i=1;i<rows.length-1;i++){
+      shouldSwitch=false;
+      x=rows[i].getElementsByTagName("TD")[n];
+      y=rows[i+1].getElementsByTagName("TD")[n];
+      if(dir=="asc" && x.innerHTML.toLowerCase()>y.innerHTML.toLowerCase()){shouldSwitch=true;break;}
+      else if(dir=="desc" && x.innerHTML.toLowerCase()<y.innerHTML.toLowerCase()){shouldSwitch=true;break;}
+    }
+    if(shouldSwitch){rows[i].parentNode.insertBefore(rows[i+1],rows[i]);switching=true;switchcount++;}
+    else if(switchcount==0 && dir=="asc"){dir="desc";switching=true;}
+  }
+}
+</script>
+</head>
 <body>
-<h1>REDSHARK DARKGRID DASHBOARD</h1>
-<h3>SecureNation Index: {{ risk_index }}</h3>
-<div>{{ map_html|safe }}</div>
-<p>{{ summary }}</p>
-<img src="data:image/png;base64,{{ trend }}">
-<h3>Indicator Breakdown:</h3>
-<div>{{ type_chart|safe }}</div>
+<h1>REDSHARK CYBER THREAT INTELLIGENCE DASHBOARD</h1>
+<div class="container">{{ map_html|safe }}</div>
+<p style="text-align:center;">{{ summary }}</p>
+<div class="container"><img src="data:image/png;base64,{{ trend }}"></div>
+<div class="container">{{ type_chart|safe }}</div>
 <h3>Total Indicators: {{ total }}</h3>
-<table width="100%">
-<tr><th>Pulse</th><th>Indicator</th><th>Type</th><th>Classification</th><th>MITRE</th><th>Risk Score</th><th>Hash</th><th>Created</th></tr>
+<table id="threatTable">
+<tr>
+<th onclick="sortTable(0)">Pulse</th>
+<th onclick="sortTable(1)">Indicator</th>
+<th onclick="sortTable(2)">Type</th>
+<th onclick="sortTable(3)">Classification</th>
+<th onclick="sortTable(4)">MITRE</th>
+<th onclick="sortTable(5)">Risk Score</th>
+<th onclick="sortTable(6)">Hash</th>
+<th onclick="sortTable(7)">Created</th>
+</tr>
 {% for row in data %}
 <tr>
-<td>{{ row[0] }}</td>
-<td>{{ row[1] }}</td>
-<td>{{ row[2] }}</td>
-<td>{{ row[3] }}</td>
-<td>{{ row[4] }}</td>
-<td>{{ row[5] }}</td>
-<td>{{ row[6] }}</td>
-<td>{{ row[7] }}</td>
-</tr>
-{% endfor %}
-</table>
-<br>
-<a href="/report/pdf">PDF</a> | <a href="/report/csv">CSV</a> | <a href="/report/json">JSON</a>
-<p style="font-size:10px;">{{ disclaimer }}</p>
-</body></html>
-"""
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+<td>{{ row[0] }}</td><td>{{ row[1] }}</td><td>{{ row[2] }}</td><td>{{ row[3] }}</td>
+<td>{{ row[4] }}</td><td>{{ row[5] }}</td><td>{{ row[6] }}</td><
