@@ -47,6 +47,29 @@ def init_db():
     conn.commit()
     conn.close()
 
+# ---------------- ANALYTICS ----------------
+def risk_index():
+    conn = sqlite3.connect(DB)
+    rows = conn.execute("SELECT risk_score FROM threats").fetchall()
+    conn.close()
+    if not rows:
+        return 0
+    return int(sum(r[0] for r in rows)/len(rows))
+
+def executive_summary():
+    conn = sqlite3.connect(DB)
+    total = conn.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
+    high = conn.execute("SELECT COUNT(*) FROM threats WHERE risk_score >=70").fetchone()[0]
+    top_mitre = conn.execute("SELECT mitre, COUNT(*) FROM threats GROUP BY mitre ORDER BY COUNT(*) DESC LIMIT 1").fetchone()
+    conn.close()
+    mitre_text = top_mitre[0] if top_mitre else "N/A"
+    return f"""
+REDSHARK.MY identified {total} active indicators this week.
+{high} were rated High or Critical risk.
+Dominant technique observed: {mitre_text}.
+SecureNation Index currently at {risk_index()}.
+"""
+
 # ---------------- OTX FETCH ----------------
 def fetch_otx():
     if not OTX_API_KEY:
@@ -62,8 +85,8 @@ def fetch_otx():
         conn = sqlite3.connect(DB)
         c = conn.cursor()
         for pulse in data:
-            pulse_name = pulse.get("name", "OTX Pulse")
-            for ind in pulse.get("indicators", []):
+            pulse_name = pulse.get("name","OTX Pulse")
+            for ind in pulse.get("indicators",[]):
                 value = ind.get("indicator")
                 itype = ind.get("type")
                 if not value:
@@ -74,26 +97,25 @@ def fetch_otx():
                     c.execute("""
                         INSERT INTO threat_hashes(pulse,hash,classification,mitre,risk_score,created_at)
                         VALUES (?,?,?,?,?,?)
-                    """,(pulse_name, value, "Medium", mitre, score, datetime.utcnow().isoformat()))
+                    """,(pulse_name,value,"Medium",mitre,score,datetime.utcnow().isoformat()))
                 else:
                     c.execute("""
                         INSERT INTO threats(pulse,indicator,type,classification,mitre,risk_score,created_at)
                         VALUES (?,?,?,?,?,?,?)
-                    """,(pulse_name, value, itype, "Medium", mitre, score, datetime.utcnow().isoformat()))
+                    """,(pulse_name,value,itype,"Medium",mitre,score,datetime.utcnow().isoformat()))
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"OTX fetch exception: {e}")
 
-# ---------------- BOXING BACKGROUND ----------------
-def boxing_bg(ax, max_y, count):
+# ---------------- TREND CHART ----------------
+def boxing_bg(ax,max_y,count):
     try:
-        img = plt.imread("boxing_ring.png")  # must exist in project root
+        img = plt.imread("boxing_ring.png")
         ax.imshow(img, extent=[-1,count,0,max_y*1.2], alpha=0.25, aspect="auto")
     except:
         pass
 
-# ---------------- TREND CHART ----------------
 def trend_chart():
     conn = sqlite3.connect(DB)
     rows = conn.execute("SELECT substr(created_at,1,10), COUNT(*) FROM threats GROUP BY 1").fetchall()
@@ -104,7 +126,7 @@ def trend_chart():
     ax.set_facecolor("#2b2b2b")
     fig.patch.set_facecolor("#2b2b2b")
     if counts:
-        boxing_bg(ax, max(counts)+5, len(dates))
+        boxing_bg(ax,max(counts)+5,len(dates))
         ax.plot(dates, counts, color="crimson", marker="o", linewidth=2)
         ax.fill_between(dates, counts, color="crimson", alpha=0.15)
     ax.set_title("Total Indicators Trend", color="white")
@@ -153,22 +175,25 @@ def dashboard():
     rows = conn.execute(f"SELECT * FROM threats ORDER BY {sort} DESC LIMIT ? OFFSET ?",(PAGE_SIZE,offset)).fetchall()
     conn.close()
     return render_template_string("""
-    <body style="background:#0a1f44;color:white;font-family:Arial;">
-    <h2 style="text-align:center;">RedShark Cyber Threat Intelligent Dashboard</h2>
-    <div style="text-align:center;">
-        <img src="data:image/png;base64,{{trend}}"/><br>
-        <img src="data:image/png;base64,{{type}}"/><br>
-        {{ map_html|safe }}
-    </div>
-    <table border=1 align=center width="80%">
-    <tr><th>Pulse</th><th>Indicator</th><th>Type</th><th>Risk</th></tr>
-    {% for r in rows %}
-    <tr><td>{{r.pulse}}</td><td>{{r.indicator}}</td><td>{{r.type}}</td><td>{{r.risk_score}}</td></tr>
-    {% endfor %}
-    </table>
-    <p style="text-align:center;margin-top:20px;">{{disc}}</p>
-    </body>
-    """, rows=rows, trend=trend_chart(), type=type_chart(), map_html=generate_map(), disc=DISCLAIMER)
+<body style="background:#0a1f44;color:white;font-family:Arial;">
+<h2 style="text-align:center;">RedShark Cyber Threat Intelligent Dashboard</h2>
+<div style="text-align:center;">
+    <img src="data:image/png;base64,{{trend}}"/><br>
+    <img src="data:image/png;base64,{{type}}"/><br>
+    {{ map_html|safe }}
+</div>
+<h3 style="text-align:center;">SecureNation Index: {{risk}}</h3>
+<p style="text-align:center;">{{summary}}</p>
+<table border=1 align=center width="80%">
+<tr><th>Pulse</th><th>Indicator</th><th>Type</th><th>Risk</th></tr>
+{% for r in rows %}
+<tr><td>{{r.pulse}}</td><td>{{r.indicator}}</td><td>{{r.type}}</td><td>{{r.risk_score}}</td></tr>
+{% endfor %}
+</table>
+<p style="text-align:center;margin-top:20px;">{{disc}}</p>
+</body>
+""", rows=rows, trend=trend_chart(), type=type_chart(),
+   map_html=generate_map(), disc=DISCLAIMER, risk=risk_index(), summary=executive_summary())
 
 # ---------------- REPORTS ----------------
 @app.route("/report/csv")
@@ -205,14 +230,19 @@ def json_report():
 @app.route("/report/pdf")
 def pdf_report():
     buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=(612,792))
+    c = canvas.Canvas(buf,pagesize=(612,792))
+    # Executive summary
+    y = 750
+    for line in executive_summary().split("\n"):
+        c.drawString(50,y,line.strip())
+        y -= 20
+    y -= 20
     conn = sqlite3.connect(DB)
     # Top 10 normal indicators
     rows = conn.execute("SELECT indicator,risk_score FROM threats ORDER BY risk_score DESC LIMIT 10").fetchall()
     # Top 10 hash indicators
     hash_rows = conn.execute("SELECT hash,risk_score FROM threat_hashes ORDER BY risk_score DESC LIMIT 10").fetchall()
     conn.close()
-    y = 750
     c.drawString(50,y,"Weekly Top 10 Threats (Indicators)")
     y -= 20
     for r in rows:
