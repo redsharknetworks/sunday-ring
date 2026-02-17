@@ -25,7 +25,7 @@ DB = "/tmp/threats.db"
 PAGE_SIZE = 50
 DISCLAIMER = "Information and analysis are derived from publicly available sources and developed by DarkGrid (darkgrid@redshark.my)."
 
-# ------------------ DATABASE INIT ------------------
+# ------------------ DATABASE ------------------
 def init_db():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -125,18 +125,23 @@ def executive_summary():
 def generate_trend_html():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    data = c.execute("SELECT substr(created_at,1,10), COUNT(*) FROM threats GROUP BY substr(created_at,1,10)").fetchall()
+    data = c.execute("SELECT substr(created_at,1,10), COUNT(*) FROM threats GROUP BY substr(created_at,1,10) ORDER BY substr(created_at,1,10)").fetchall()
     conn.close()
+    if not data: return ""
     dates = [d[0] for d in data]
     counts = [d[1] for d in data]
 
     plt.figure(figsize=(10,4))
-    plt.plot(dates, counts, color="crimson", marker="o", label="Total Indicators")
+    ax = plt.gca()
+    ax.set_facecolor('#2a2a2a')
+    plt.plot(dates, counts, color="crimson", marker="o", linewidth=2, label="Total Indicators")
+    plt.fill_between(dates, counts, color="crimson", alpha=0.1)
+    plt.grid(color='white', linestyle='--', linewidth=0.3, alpha=0.5)
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.legend()
     img = io.BytesIO()
-    plt.savefig(img, format="png")
+    plt.savefig(img, format="png", facecolor=ax.get_facecolor())
     plt.close()
     img.seek(0)
     return base64.b64encode(img.read()).decode()
@@ -147,7 +152,7 @@ def generate_type_count_chart(ipv4_count, domain_count, url_count):
     fig.add_trace(go.Bar(
         x=["IPv4","Domain","URL"],
         y=[ipv4_count, domain_count, url_count],
-        marker_color=["crimson","orange","#7fb77e"],  # grey-green
+        marker_color=["crimson","orange","#7fb77e"],
         text=[ipv4_count, domain_count, url_count],
         textposition="auto",
         hovertemplate='%{x}: %{y} indicators<extra></extra>'
@@ -174,7 +179,11 @@ def dashboard():
     ipv4_count = c.execute("SELECT COUNT(*) FROM threats WHERE type='IPv4'").fetchone()[0]
     domain_count = c.execute("SELECT COUNT(*) FROM threats WHERE type='domain'").fetchone()[0]
     url_count = c.execute("SELECT COUNT(*) FROM threats WHERE type='URL'").fetchone()[0]
-    data = c.execute(f"SELECT pulse,indicator,type,classification,mitre,risk_score,hash,created_at FROM threats ORDER BY {sort} DESC LIMIT ? OFFSET ?",(PAGE_SIZE, offset)).fetchall()
+    data = c.execute(f"""
+        SELECT pulse,indicator,type,classification,mitre,risk_score,hash,created_at
+        FROM threats
+        ORDER BY {sort} DESC LIMIT ? OFFSET ?
+    """,(PAGE_SIZE, offset)).fetchall()
     conn.close()
     type_chart = generate_type_count_chart(ipv4_count, domain_count, url_count)
     trend = generate_trend_html()
@@ -184,23 +193,61 @@ def dashboard():
         ipv4_count=ipv4_count,domain_count=domain_count,url_count=url_count,type_chart=type_chart)
 
 # ------------------ REPORTS ------------------
+def get_weekly_top10():
+    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    result = {}
+    for typ in ["IPv4","domain","URL"]:
+        result[typ] = c.execute(f"""
+            SELECT pulse,indicator,type,classification,mitre,risk_score,hash,created_at
+            FROM threats
+            WHERE type='{typ}' AND created_at >= ?
+            ORDER BY risk_score DESC
+            LIMIT 10
+        """,(week_ago,)).fetchall()
+    # Top 10 hashes
+    result["hash"] = c.execute("""
+        SELECT pulse,indicator,type,classification,mitre,risk_score,hash,created_at
+        FROM threats
+        WHERE hash IS NOT NULL AND created_at >= ?
+        ORDER BY risk_score DESC
+        LIMIT 10
+    """,(week_ago,)).fetchall()
+    conn.close()
+    return result
+
 @app.route("/report/pdf")
 def pdf_report():
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4))
     elements = []
     styles = getSampleStyleSheet()
-
     elements.append(Paragraph("REDSHARK DARKGRID REPORT", styles["Title"]))
     elements.append(Spacer(1,12))
     elements.append(Paragraph(executive_summary(), styles["Normal"]))
     elements.append(Spacer(1,12))
 
+    # Weekly top 10
+    weekly_top = get_weekly_top10()
+    for typ, rows in weekly_top.items():
+        elements.append(Paragraph(f"Weekly Top 10 {typ} Threats", styles["Heading2"]))
+        header = ["Pulse","Indicator","Type","Classification","MITRE","Risk","Hash","Created"]
+        table_data = [header] + rows
+        table = Table(table_data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),colors.black),
+            ("TEXTCOLOR",(0,0),(-1,0),colors.white),
+            ("GRID",(0,0),(-1,-1),0.5,colors.grey),
+            ("BACKGROUND",(0,1),(-1,-1),colors.whitesmoke)
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1,12))
+
+    # Full report
     conn = sqlite3.connect(DB)
     rows = conn.execute("SELECT pulse,indicator,type,classification,mitre,risk_score,hash,created_at FROM threats").fetchall()
     conn.close()
-
-    # Header
     header = ["Pulse","Indicator","Type","Classification","MITRE","Risk","Hash","Created"]
     chunk = 40
     for i in range(0,len(rows),chunk):
@@ -214,8 +261,6 @@ def pdf_report():
         ]))
         elements.append(table)
         elements.append(PageBreak())
-
-    # Disclaimer
     elements.append(Paragraph(DISCLAIMER, styles["Italic"]))
     doc.build(elements)
     buffer.seek(0)
@@ -226,7 +271,6 @@ def csv_report():
     conn = sqlite3.connect(DB)
     rows = conn.execute("SELECT * FROM threats").fetchall()
     conn.close()
-
     si = io.StringIO()
     cw = csv.writer(si)
     cw.writerow(["ID","Pulse","Indicator","Type","Classification","MITRE","Risk","Hash","Created"])
@@ -243,17 +287,13 @@ def json_report():
     conn.close()
     return jsonify(rows)
 
-# ------------------ RUN SERVER ------------------
-def run_app():
-    app.run(host="0.0.0.0", port=5000, debug=True)
-
+# ------------------ RUN ------------------
 if __name__ == "__main__":
     print("Starting REDSHARK Cyber Threat Intelligence Dashboard...")
-    run_app()
+    app.run(host="0.0.0.0", port=5000, debug=True)
 
 # ------------------ DASHBOARD TEMPLATE ------------------
-TEMPLATE = """
-<html><head>
+TEMPLATE = """<html><head>
 <style>
 body { background:#0a1f44; color:white; font-family:Arial; margin:0 auto; max-width:1200px; }
 h1 { color:crimson; text-align:center; }
@@ -307,8 +347,14 @@ function sortTable(n) {
 </tr>
 {% for row in data %}
 <tr>
-<td>{{ row[0] }}</td><td>{{ row[1] }}</td><td>{{ row[2] }}</td><td>{{ row[3] }}</td>
-<td>{{ row[4] }}</td><td>{{ row[5] }}</td><td>{{ row[6] }}</td><td>{{ row[7] }}</td>
+<td>{{ row[0] }}</td>
+<td>{{ row[1] }}</td>
+<td>{{ row[2] }}</td>
+<td>{{ row[3] }}</td>
+<td>{{ row[4] }}</td>
+<td>{{ row[5] }}</td>
+<td>{{ row[6] }}</td>
+<td>{{ row[7] }}</td>
 </tr>
 {% endfor %}
 </table>
