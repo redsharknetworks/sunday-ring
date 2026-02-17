@@ -1,0 +1,66 @@
+[
+  {
+    "id": "seed‑001",
+    "indicators": [
+      {
+        "type": "IPv4",
+        "indicator": "192.0.2.1",
+        "country": "US",
+        "risk_score": 85,
+        "created": "2026-02-10T12:34:56"
+      },
+      {
+        "type": "IPv4",
+        "indicator": "198.51.100.23",
+        "country": "MY",
+        "risk_score": 90,
+        "created": "2026-02-11T08:15:42"
+      },
+      {
+        "type": "IPv4",
+        "indicator": "203.0.113.77",
+        "country": "SG",
+        "risk_score": 78,
+        "created": "2026-02-12T14:22:30"
+      }
+    ]
+  },
+  {
+    "id": "seed‑002",
+    "indicators": [
+      {
+        "type": "domain",
+        "indicator": "malicious-example.com",
+        "country": "US",
+        "risk_score": 80,
+        "created": "2026-02-09T09:05:12"
+      },
+      {
+        "type": "domain",
+        "indicator": "badsite-test.org",
+        "country": "MY",
+        "risk_score": 88,
+        "created": "2026-02-08T17:40:00"
+      }
+    ]
+  },
+  {
+    "id": "seed‑003",
+    "indicators": [
+      {
+        "type": "hash",
+        "indicator": "e99a18c428cb38d5f260853678922e03",
+        "country": "",
+        "risk_score": 92,
+        "created": "2026-02-06T21:11:11"
+      },
+      {
+        "type": "hash",
+        "indicator": "7c4a8d09ca3762af61e59520943dc264",
+        "country": "",
+        "risk_score": 88,
+        "created": "2026-02-05T10:22:19"
+      }
+    ]
+  }
+]
