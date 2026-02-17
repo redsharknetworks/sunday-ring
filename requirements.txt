@@ -11,3 +11,6 @@ Jinja2
 pyproj
 shapely
 plotly
+geoip2
+gunicorn
+apscheduler
