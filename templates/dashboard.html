@@ -1,105 +1,45 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>OTX Threat Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            background-color: #f7f7f7;
-        }
-        h1 { text-align: center; color: #c00; }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 40px;
-        }
-        th, td {
-            border: 1px solid #ccc;
-            padding: 8px;
-            text-align: left;
-        }
-        th { background-color: #eee; }
-        tr:nth-child(even) { background-color: #f9f9f9; }
-        .chart-container {
-            width: 80%;
-            margin: 0 auto;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <title>IOC Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
+  <h1>Indicators Dashboard</h1>
 
-<h1>OTX Threat Dashboard</h1>
+  <canvas id="iocChart" width="800" height="400"></canvas>
 
-<h2>Latest Indicators</h2>
-<table>
-    <thead>
-        <tr>
-            <th>Type</th>
-            <th>Indicator</th>
-            <th>Country</th>
-            <th>Risk Score</th>
-            <th>Created At</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for ind in indicators %}
-        <tr>
-            <td>{{ ind.type }}</td>
-            <td>{{ ind.indicator }}</td>
-            <td>{{ ind.country }}</td>
-            <td>{{ ind.risk_score }}</td>
-            <td>{{ ind.created_at }}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
+  <script>
+    // Ensure chart_data is always an array
+    var chartData = {{ chart_data|default([])|tojson }};
 
-<div class="chart-container">
-    <h2>Risk Score by Type</h2>
-    <canvas id="riskChart"></canvas>
-</div>
-
-<script>
-    // Prepare chart data
-    const indicators = {{ indicators | tojson }};
-    const typeCounts = {};
-    const typeRisk = {};
-
-    indicators.forEach(ind => {
-        if (!typeCounts[ind.type]) {
-            typeCounts[ind.type] = 0;
-            typeRisk[ind.type] = 0;
+    // Example: Count indicators by type
+    var typeCount = {};
+    chartData.forEach(item => {
+        if(item.type){
+            typeCount[item.type] = (typeCount[item.type] || 0) + 1;
         }
-        typeCounts[ind.type] += 1;
-        typeRisk[ind.type] += ind.risk_score;
     });
 
-    const labels = Object.keys(typeCounts);
-    const avgRisk = labels.map(t => Math.round(typeRisk[t] / typeCounts[t]));
-
-    const ctx = document.getElementById('riskChart').getContext('2d');
+    var ctx = document.getElementById('iocChart').getContext('2d');
     new Chart(ctx, {
         type: 'bar',
         data: {
-            labels: labels,
+            labels: Object.keys(typeCount),
             datasets: [{
-                label: 'Average Risk Score',
-                data: avgRisk,
-                backgroundColor: 'rgba(200,0,0,0.7)',
-                borderColor: 'rgba(150,0,0,1)',
-                borderWidth: 1
+                label: 'IOC Count by Type',
+                data: Object.values(typeCount),
+                backgroundColor: 'rgba(255, 99, 132, 0.5)'
             }]
         },
         options: {
+            responsive: true,
             scales: {
-                y: { beginAtZero: true, max: 100 }
+                y: { beginAtZero: true }
             }
         }
     });
-</script>
-
+  </script>
 </body>
 </html>
