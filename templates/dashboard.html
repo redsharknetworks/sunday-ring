@@ -8,107 +8,98 @@
         body {
             font-family: Arial, sans-serif;
             margin: 20px;
-            background-color: #f4f6f8;
+            background-color: #f7f7f7;
         }
-        h1 { color: #d32f2f; }
+        h1 { text-align: center; color: #c00; }
         table {
             width: 100%;
             border-collapse: collapse;
-            margin-bottom: 30px;
-            background-color: #fff;
-        }
-        table, th, td {
-            border: 1px solid #ddd;
+            margin-bottom: 40px;
         }
         th, td {
-            padding: 8px 12px;
+            border: 1px solid #ccc;
+            padding: 8px;
             text-align: left;
         }
-        th {
-            background-color: #d32f2f;
-            color: #fff;
-        }
-        canvas {
-            background-color: #fff;
-            padding: 15px;
-            border: 1px solid #ddd;
+        th { background-color: #eee; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        .chart-container {
+            width: 80%;
+            margin: 0 auto;
         }
     </style>
 </head>
 <body>
-    <h1>OTX Threat Dashboard</h1>
 
-    <h2>Indicators Table</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>IP / Indicator</th>
-                <th>Country</th>
-                <th>Risk Score</th>
-                <th>Created At</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for row in data %}
-            <tr>
-                <td>{{ row.ip }}</td>
-                <td>{{ row.country }}</td>
-                <td>{{ row.risk_score }}</td>
-                <td>{{ row.created_at }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<h1>OTX Threat Dashboard</h1>
 
-    <h2>Risk Score by Country</h2>
-    <canvas id="riskChart" width="800" height="400"></canvas>
+<h2>Latest Indicators</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Type</th>
+            <th>Indicator</th>
+            <th>Country</th>
+            <th>Risk Score</th>
+            <th>Created At</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for ind in indicators %}
+        <tr>
+            <td>{{ ind.type }}</td>
+            <td>{{ ind.indicator }}</td>
+            <td>{{ ind.country }}</td>
+            <td>{{ ind.risk_score }}</td>
+            <td>{{ ind.created_at }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
 
-    <script>
-        const rawData = {{ data|tojson }};
-        const countryMap = {};
+<div class="chart-container">
+    <h2>Risk Score by Type</h2>
+    <canvas id="riskChart"></canvas>
+</div>
 
-        rawData.forEach(item => {
-            if (!countryMap[item.country]) {
-                countryMap[item.country] = 0;
+<script>
+    // Prepare chart data
+    const indicators = {{ indicators | tojson }};
+    const typeCounts = {};
+    const typeRisk = {};
+
+    indicators.forEach(ind => {
+        if (!typeCounts[ind.type]) {
+            typeCounts[ind.type] = 0;
+            typeRisk[ind.type] = 0;
+        }
+        typeCounts[ind.type] += 1;
+        typeRisk[ind.type] += ind.risk_score;
+    });
+
+    const labels = Object.keys(typeCounts);
+    const avgRisk = labels.map(t => Math.round(typeRisk[t] / typeCounts[t]));
+
+    const ctx = document.getElementById('riskChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Average Risk Score',
+                data: avgRisk,
+                backgroundColor: 'rgba(200,0,0,0.7)',
+                borderColor: 'rgba(150,0,0,1)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            scales: {
+                y: { beginAtZero: true, max: 100 }
             }
-            countryMap[item.country] += item.risk_score;
-        });
+        }
+    });
+</script>
 
-        const labels = Object.keys(countryMap);
-        const scores = Object.values(countryMap);
-
-        const ctx = document.getElementById('riskChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: 'Total Risk Score',
-                    data: scores,
-                    backgroundColor: 'rgba(211, 47, 47, 0.7)',
-                    borderColor: 'rgba(211, 47, 47, 1)',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        title: {
-                            display: true,
-                            text: 'Risk Score'
-                        }
-                    },
-                    x: {
-                        title: {
-                            display: true,
-                            text: 'Country'
-                        }
-                    }
-                }
-            }
-        });
-    </script>
 </body>
 </html>
