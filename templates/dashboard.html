@@ -1,48 +1,113 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Sunday Ring Red Shark Dashboard</title>
-    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.5/css/jquery.dataTables.min.css">
-    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-    <script src="https://cdn.datatables.net/1.13.5/js/jquery.dataTables.min.js"></script>
+    <meta charset="UTF-8">
+    <title>OTX Threat Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f6f8;
+        }
+        h1 { color: #d32f2f; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 30px;
+            background-color: #fff;
+        }
+        table, th, td {
+            border: 1px solid #ddd;
+        }
+        th, td {
+            padding: 8px 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #d32f2f;
+            color: #fff;
+        }
+        canvas {
+            background-color: #fff;
+            padding: 15px;
+            border: 1px solid #ddd;
+        }
+    </style>
 </head>
 <body>
-    <h1>Sunday Ring Red Shark Dashboard</h1>
-    <p>Malaysia Time: {{ timestamp }}</p>
-
-    {% if trend_image %}
-    <h2>Trend Chart</h2>
-    <img src="{{ trend_image }}" alt="Trend Chart">
-    {% endif %}
+    <h1>OTX Threat Dashboard</h1>
 
     <h2>Indicators Table</h2>
-    <table id="indicators" class="display">
+    <table>
         <thead>
             <tr>
-                <th>IP</th>
+                <th>IP / Indicator</th>
                 <th>Country</th>
                 <th>Risk Score</th>
                 <th>Created At</th>
             </tr>
         </thead>
         <tbody>
-            {% for ind in indicators %}
+            {% for row in data %}
             <tr>
-                <td>{{ ind.ip }}</td>
-                <td>{{ ind.country }}</td>
-                <td>{{ ind.risk_score }}</td>
-                <td>{{ ind.created_at }}</td>
+                <td>{{ row.ip }}</td>
+                <td>{{ row.country }}</td>
+                <td>{{ row.risk_score }}</td>
+                <td>{{ row.created_at }}</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
 
+    <h2>Risk Score by Country</h2>
+    <canvas id="riskChart" width="800" height="400"></canvas>
+
     <script>
-        $(document).ready(function () {
-            $('#indicators').DataTable({
-                "pageLength": 20,
-                "order": [[3, "desc"]]
-            });
+        const rawData = {{ data|tojson }};
+        const countryMap = {};
+
+        rawData.forEach(item => {
+            if (!countryMap[item.country]) {
+                countryMap[item.country] = 0;
+            }
+            countryMap[item.country] += item.risk_score;
+        });
+
+        const labels = Object.keys(countryMap);
+        const scores = Object.values(countryMap);
+
+        const ctx = document.getElementById('riskChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Total Risk Score',
+                    data: scores,
+                    backgroundColor: 'rgba(211, 47, 47, 0.7)',
+                    borderColor: 'rgba(211, 47, 47, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Risk Score'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Country'
+                        }
+                    }
+                }
+            }
         });
     </script>
 </body>
