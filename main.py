@@ -1,89 +1,87 @@
 import os
 import sqlite3
-import requests
-from datetime import datetime, timezone, timedelta
-
-from flask import Flask, render_template
+from datetime import datetime, timedelta
+from flask import Flask, render_template, jsonify
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import io
+import base64
+from OTXv2 import OTXv2
+
+# -----------------------------
+# Configuration
+# -----------------------------
+DB_FILE = "indicators.db"
+OTX_API_KEY = os.getenv("OTX_API_KEY")  # Make sure this is set
+COUNTRY_FILTER = "MY"  # Malaysia
 
 app = Flask(__name__)
 
-DB_PATH = "data.db"
-OTX_API_KEY = os.getenv("OTX_API_KEY")
-
-# =========================
-# INIT DB
-# =========================
+# -----------------------------
+# Initialize Database
+# -----------------------------
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS indicators (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ip TEXT,
             country TEXT,
             risk_score INTEGER,
-            created_at TEXT
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+    ''')
     conn.commit()
     conn.close()
 
 init_db()
 
-# =========================
-# INSERT DATA
-# =========================
-def insert_indicator(ip, country, risk):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        INSERT INTO indicators (ip, country, risk_score, created_at)
-        VALUES (?, ?, ?, ?)
-    """, (ip, country, risk, datetime.utcnow().isoformat()))
+# -----------------------------
+# Insert Indicator
+# -----------------------------
+def insert_indicator(ip, country, risk_score):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO indicators (ip, country, risk_score, created_at) VALUES (?, ?, ?, ?)",
+        (ip, country, risk_score, datetime.utcnow())
+    )
     conn.commit()
     conn.close()
 
-# =========================
-# FETCH OTX
-# =========================
-def fetch_otx_data():
-    if not OTX_API_KEY:
-        return 0
-
-    url = "https://otx.alienvault.com/api/v1/indicators/IPv4/reputation"
-    headers = {"X-OTX-API-KEY": OTX_API_KEY}
-
-    inserted = 0
-
+# -----------------------------
+# Fetch OTX Pulses
+# -----------------------------
+@app.route("/fetch_otx")
+def fetch_otx():
     try:
-        # simple demo IP list to avoid heavy memory
-        test_ips = ["8.8.8.8", "1.1.1.1", "8.8.4.4"]
+        otx = OTXv2(OTX_API_KEY)
 
-        for ip in test_ips:
-            r = requests.get(f"{url}?ip={ip}", headers=headers, timeout=10)
-            if r.status_code != 200:
-                continue
+        # Get all pulses (limit for demo)
+        pulses = otx.getall(indicator_type="IPv4", limit=50)  
 
-            data = r.json()
-            risk = data.get("reputation", 10)
+        inserted = 0
+        for pulse in pulses:
+            for ind in pulse.get("indicators", []):
+                ip = ind.get("indicator")
+                country = ind.get("geo", {}).get("country")  # Some pulses include country
+                if country != COUNTRY_FILTER:
+                    continue  # Only Malaysia
+                risk_score = pulse.get("threat_score", 50)  # Approximation
+                insert_indicator(ip, country, risk_score)
+                inserted += 1
 
-            insert_indicator(ip, "Unknown", risk)
-            inserted += 1
+        return jsonify({"status": "ok", "inserted": inserted})
 
     except Exception as e:
-        print("OTX ERROR:", e)
+        return jsonify({"status": "error", "message": str(e)})
 
-    return inserted
-
-# =========================
-# TREND CHART
-# =========================
+# -----------------------------
+# Generate Trend Chart
+# -----------------------------
 def generate_trend_chart():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_FILE)
     df = pd.read_sql_query(
         "SELECT created_at, risk_score FROM indicators ORDER BY created_at ASC",
         conn
@@ -93,56 +91,31 @@ def generate_trend_chart():
     if df.empty:
         return None
 
-    df["created_at"] = pd.to_datetime(df["created_at"])
-
-    plt.figure(figsize=(6,3))
-    plt.plot(df["created_at"], df["risk_score"], color="orange", linewidth=3)
-    plt.title("Risk Trend")
-    plt.xticks(rotation=45)
+    plt.figure(figsize=(10,4))
+    plt.plot(pd.to_datetime(df["created_at"]), df["risk_score"], marker='o')
+    plt.title("Risk Score Trend")
+    plt.xlabel("Time")
+    plt.ylabel("Risk Score")
     plt.tight_layout()
 
-    path = "static/trend.png"
-    os.makedirs("static", exist_ok=True)
-    plt.savefig(path)
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    encoded = base64.b64encode(buf.read()).decode("utf-8")
     plt.close()
+    return encoded
 
-    return path
-
-# =========================
-# ROUTES
-# =========================
+# -----------------------------
+# Dashboard
+# -----------------------------
 @app.route("/")
 def dashboard():
     trend_image = generate_trend_chart()
+    timestamp = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    return render_template("dashboard.html", trend_image=trend_image, timestamp=timestamp)
 
-    tz = timezone(timedelta(hours=8))
-    now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
-
-    return render_template(
-        "dashboard.html",
-        trend_image=trend_image,
-        timestamp=now
-    )
-
-@app.route("/fetch_otx")
-def fetch_otx_route():
-    try:
-        rows = fetch_otx_data()
-        return f"FETCH OK - {rows} rows inserted"
-    except Exception as e:
-        return f"ERROR: {str(e)}"
-
-@app.route("/count")
-def count():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM indicators")
-    total = c.fetchone()[0]
-    conn.close()
-    return str(total)
-
-# =========================
-# RUN
-# =========================
+# -----------------------------
+# Run Flask
+# -----------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
