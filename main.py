@@ -21,7 +21,6 @@ import plotly.graph_objs as go
 import plotly.io as pio
 
 app = Flask(__name__)
-
 DB = "/tmp/threats.db"
 PAGE_SIZE = 50
 DISCLAIMER = "Information and analysis are derived from publicly available sources and developed by DarkGrid (darkgrid@redshark.my)."
@@ -81,7 +80,6 @@ def seed_data():
         mitre = random.choice(["T1566 Phishing","T1071 C2","T1059 Execution"])
         score = calculate_risk(classification, mitre)
         typ = random.choice(["domain","IPv4","URL"])
-
         if typ == "domain":
             indicator = f"malicious{i}.com"
             if not is_valid_domain(indicator): continue
@@ -91,7 +89,6 @@ def seed_data():
         else:
             indicator = f"http://malicious{i}.com"
             if not is_valid_url(indicator): continue
-
         hash_val = f"{random.getrandbits(128):032x}"
         c.execute("""
         INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,hash,created_at)
@@ -125,21 +122,6 @@ def executive_summary():
     return f"REDSHARK.MY identified {total} active indicators this week. {high} were High/Critical. Dominant technique: {mitre_text}. SecureNation Index: {risk_index()}."
 
 # ------------------ TREND CHART ------------------
-def get_top10_indicators_for_chart():
-    week_ago = datetime.utcnow() - timedelta(days=7)
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    top10 = c.execute("""
-        SELECT indicator, type, MAX(risk_score) as risk, COUNT(*) as c
-        FROM threats
-        WHERE created_at >= ?
-        GROUP BY indicator
-        ORDER BY risk DESC, c DESC
-        LIMIT 10
-    """,(week_ago.isoformat(),)).fetchall()
-    conn.close()
-    return top10
-
 def generate_trend_html():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -148,17 +130,8 @@ def generate_trend_html():
     dates = [d[0] for d in data]
     counts = [d[1] for d in data]
 
-    top10 = get_top10_indicators_for_chart()
-    top_indicators = [t[0] for t in top10]
-
     plt.figure(figsize=(10,4))
     plt.plot(dates, counts, color="crimson", marker="o", label="Total Indicators")
-    for i, date in enumerate(dates):
-        conn = sqlite3.connect(DB)
-        day_indicators = [x[0] for x in conn.execute("SELECT indicator FROM threats WHERE substr(created_at,1,10)=?",(date,)).fetchall()]
-        conn.close()
-        if any(ind in top_indicators for ind in day_indicators):
-            plt.scatter(date, counts[i], color="orange", s=100, zorder=5, label="Top 10 Weekly" if i==0 else "")
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.legend()
@@ -189,40 +162,6 @@ def generate_map():
     HeatMap(heat).add_to(m)
     return m._repr_html_()
 
-# ------------------ WEEKLY TOP 10 ------------------
-def get_weekly_top10():
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    week_ago = datetime.utcnow() - timedelta(days=7)
-    top_ipv4 = c.execute("""SELECT indicator, MAX(risk_score), COUNT(*) FROM threats WHERE type='IPv4' AND created_at>=? GROUP BY indicator ORDER BY MAX(risk_score) DESC LIMIT 10""",(week_ago.isoformat(),)).fetchall()
-    top_domain = c.execute("""SELECT indicator, MAX(risk_score), COUNT(*) FROM threats WHERE type='domain' AND created_at>=? GROUP BY indicator ORDER BY MAX(risk_score) DESC LIMIT 10""",(week_ago.isoformat(),)).fetchall()
-    top_url = c.execute("""SELECT indicator, MAX(risk_score), COUNT(*) FROM threats WHERE type='URL' AND created_at>=? GROUP BY indicator ORDER BY MAX(risk_score) DESC LIMIT 10""",(week_ago.isoformat(),)).fetchall()
-    top_hash = c.execute("""SELECT hash, MAX(risk_score), COUNT(*) FROM threats WHERE created_at>=? GROUP BY hash ORDER BY MAX(risk_score) DESC LIMIT 10""",(week_ago.isoformat(),)).fetchall()
-    conn.close()
-    return top_ipv4, top_domain, top_url, top_hash
-
-def add_top10_table(elements, title, rows, col_headers):
-    elements.append(Paragraph(title, getSampleStyleSheet()["Heading2"]))
-    elements.append(Spacer(1,6))
-    if rows:
-        table_data = [col_headers] + rows
-        table = Table(table_data, repeatRows=1)
-        style = TableStyle([
-            ("BACKGROUND",(0,0),(-1,0),colors.black),
-            ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-            ("GRID",(0,0),(-1,-1),0.5,colors.grey),
-            ("BACKGROUND",(0,1),(-1,-1),colors.whitesmoke)
-        ])
-        for idx, row_val in enumerate(rows, start=1):
-            score = row_val[1]
-            if score >= 90: style.add("TEXTCOLOR",(1,idx),(1,idx),colors.red)
-            elif score >= 70: style.add("TEXTCOLOR",(1,idx),(1,idx),colors.orange)
-            elif score >= 40: style.add("TEXTCOLOR",(1,idx),(1,idx),colors.yellow)
-            else: style.add("TEXTCOLOR",(1,idx),(1,idx),colors.green)
-        table.setStyle(style)
-        elements.append(table)
-        elements.append(Spacer(1,12))
-
 # ------------------ DASHBOARD ------------------
 @app.route("/")
 def dashboard():
@@ -244,67 +183,13 @@ def dashboard():
         trend=trend,map_html=generate_map(),disclaimer=DISCLAIMER,
         ipv4_count=ipv4_count,domain_count=domain_count,url_count=url_count,type_chart=type_chart)
 
-# ------------------ REPORTS ------------------
-@app.route("/report/pdf")
-def pdf_report():
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4))
-    elements = []
-    styles = getSampleStyleSheet()
-    elements.append(Paragraph("REDSHARK CYBER THREAT INTELLIGENCE REPORT", styles["Title"]))
-    elements.append(Spacer(1,12))
-    elements.append(Paragraph(executive_summary(), styles["Normal"]))
-    elements.append(Spacer(1,6))
-    elements.append(Paragraph(DISCLAIMER, styles["Normal"]))
+# ------------------ RUN SERVER ------------------
+def run_app():
+    app.run(host="0.0.0.0", port=5000, debug=True)
 
-    top_ipv4, top_domain, top_url, top_hash = get_weekly_top10()
-    add_top10_table(elements, "Weekly Top 10 IPv4 Threats", top_ipv4, ["IPv4","Risk Score","Count"])
-    add_top10_table(elements, "Weekly Top 10 Domain Threats", top_domain, ["Domain","Risk Score","Count"])
-    add_top10_table(elements, "Weekly Top 10 URL Threats", top_url, ["URL","Risk Score","Count"])
-    add_top10_table(elements, "Weekly Top 10 Hash Threats", top_hash, ["Hash","Risk Score","Count"])
-    elements.append(PageBreak())
-
-    conn = sqlite3.connect(DB)
-    rows = conn.execute("SELECT pulse,indicator,type,mitre,risk_score,hash,created_at FROM threats").fetchall()
-    conn.close()
-    header = ["Pulse","Indicator","Type","MITRE","Risk","Hash","Created"]
-    chunk = 40
-    for i in range(0,len(rows),chunk):
-        table_data = [header] + rows[i:i+chunk]
-        table = Table(table_data, repeatRows=1)
-        table.setStyle(TableStyle([
-            ("BACKGROUND",(0,0),(-1,0),colors.black),
-            ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-            ("GRID",(0,0),(-1,-1),0.5,colors.grey),
-            ("BACKGROUND",(0,1),(-1,-1),colors.whitesmoke)
-        ]))
-        elements.append(table)
-        elements.append(PageBreak())
-    elements.append(Paragraph(DISCLAIMER, styles["Normal"]))
-    doc.build(elements)
-    buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="darkgridatredsharkdotmy.pdf", mimetype="application/pdf")
-
-@app.route("/report/csv")
-def csv_report():
-    conn = sqlite3.connect(DB)
-    rows = conn.execute("SELECT * FROM threats").fetchall()
-    conn.close()
-    si = io.StringIO()
-    cw = csv.writer(si)
-    cw.writerow(["ID","Pulse","Indicator","Type","Classification","MITRE","Risk","Hash","Created"])
-    cw.writerows(rows)
-    output = io.BytesIO()
-    output.write(si.getvalue().encode())
-    output.seek(0)
-    return send_file(output, as_attachment=True, download_name="darkgridatredsharkdotmy.csv")
-
-@app.route("/report/json")
-def json_report():
-    conn = sqlite3.connect(DB)
-    rows = conn.execute("SELECT * FROM threats").fetchall()
-    conn.close()
-    return send_file(io.BytesIO(str(rows).encode()), as_attachment=True, download_name="darkgridatredsharkdotmy.json")
+if __name__ == "__main__":
+    print("Starting REDSHARK Cyber Threat Intelligence Dashboard...")
+    run_app()
 
 # ------------------ DASHBOARD TEMPLATE ------------------
 TEMPLATE = """
@@ -363,4 +248,10 @@ function sortTable(n) {
 {% for row in data %}
 <tr>
 <td>{{ row[0] }}</td><td>{{ row[1] }}</td><td>{{ row[2] }}</td><td>{{ row[3] }}</td>
-<td>{{ row[4] }}</td><td>{{ row[5] }}</td><td>{{ row[6] }}</td><
+<td>{{ row[4] }}</td><td>{{ row[5] }}</td><td>{{ row[6] }}</td><td>{{ row[7] }}</td>
+</tr>
+{% endfor %}
+</table>
+<p style="text-align:center;">{{ disclaimer }}</p>
+</body></html>
+"""
