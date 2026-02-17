@@ -1,106 +1,123 @@
-from flask import Flask, render_template, jsonify
+import os
 import sqlite3
-import pandas as pd
-import folium
-import io
-import base64
-import plotly.graph_objs as go
 from datetime import datetime, timedelta
+from flask import Flask, render_template, jsonify, send_file
+import requests
+import pandas as pd
+import matplotlib.pyplot as plt
+import geopandas as gpd
+import folium
+from ipwhois import IPWhois
 
 app = Flask(__name__)
 
-DB_PATH = 'data.db'  # Adjust to your SQLite DB path
+DB_FILE = "threats.db"
+OTX_API_KEY = os.getenv("OTX_API_KEY")  # set your OTX API key in environment
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def generate_heatmap():
-    conn = get_db_connection()
-    df = pd.read_sql_query("SELECT ip, latitude, longitude, risk_score FROM threats WHERE latitude IS NOT NULL AND longitude IS NOT NULL", conn)
+# ----------------------
+# DATABASE INIT
+# ----------------------
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS indicators (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            indicator TEXT,
+            type TEXT,
+            risk_score INTEGER,
+            mitre TEXT,
+            created_at TEXT
+        )
+    ''')
+    conn.commit()
     conn.close()
 
-    m = folium.Map(location=[0, 0], zoom_start=2, tiles="CartoDB dark_matter")
-    for _, row in df.iterrows():
-        folium.CircleMarker(
-            location=[row['latitude'], row['longitude']],
-            radius=5,
-            color='red' if row['risk_score'] > 5 else 'orange',
-            fill=True,
-            fill_opacity=0.7,
-        ).add_to(m)
+init_db()
 
-    return m._repr_html_()
-
-def generate_trend_chart():
-    conn = get_db_connection()
-    df = pd.read_sql_query("SELECT date(created_at) as day, COUNT(*) as count FROM threats GROUP BY day ORDER BY day ASC", conn)
+# ----------------------
+# OTX FETCH
+# ----------------------
+def fetch_otx_indicators():
+    headers = {"X-OTX-API-KEY": OTX_API_KEY}
+    types = ["IPv4", "domain", "file_hash"]
+    conn = sqlite3.connect(DB_FILE)
+    for t in types:
+        url = f"https://otx.alienvault.com/api/v1/indicators/{t}/reputation"
+        params = {"limit": 50}  # adjust as needed
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json().get("results", [])
+            for item in data:
+                indicator = item.get("indicator")
+                risk = item.get("reputation", 0)
+                mitre = ",".join(item.get("mitre", []))
+                created_at = datetime.utcnow().isoformat()
+                # Insert into DB if not exist
+                conn.execute(
+                    "INSERT OR IGNORE INTO indicators (indicator, type, risk_score, mitre, created_at) VALUES (?,?,?,?,?)",
+                    (indicator, t, risk, mitre, created_at)
+                )
+            conn.commit()
+        except Exception as e:
+            print(f"OTX fetch error for {t}: {e}")
     conn.close()
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df['day'],
-        y=df['count'],
-        mode='lines+markers',
-        line=dict(color='orange', width=4),
-        marker=dict(size=8)
-    ))
-    fig.update_layout(
-        title='Daily Threat Trend',
-        xaxis_title='Date',
-        yaxis_title='Count',
-        plot_bgcolor='#1b1b1b',
-        paper_bgcolor='#1b1b1b',
-        font=dict(color='#f1f1f1')
-    )
-    return fig.to_json()
-
-def get_top(table, col):
-    conn = get_db_connection()
-    week_ago = datetime.utcnow() - timedelta(days=7)
-    query = f"""
-        SELECT {col}, risk_score, COUNT(*) as c
-        FROM {table}
-        WHERE created_at >= ?
-        GROUP BY {col}, risk_score
-        ORDER BY c DESC
-        LIMIT 10
-    """
-    res = conn.execute(query, (week_ago.isoformat(),)).fetchall()
-    conn.close()
-    return res
-
-@app.route('/')
+# ----------------------
+# ROUTES
+# ----------------------
+@app.route("/")
 def dashboard():
-    heatmap_html = generate_heatmap()
-    trend_chart_json = generate_trend_chart()
-    top_ips = get_top('threats', 'ip')
-    top_domains = get_top('threats', 'domain')
-    top_hashes = get_top('threats', 'hash')
+    # Fetch latest OTX data first
+    fetch_otx_indicators()
 
-    return render_template(
-        'dashboard.html',
-        heatmap_html=heatmap_html,
-        trend_chart=trend_chart_json,
-        top_ips=top_ips,
-        top_domains=top_domains,
-        top_hashes=top_hashes
-    )
-
-@app.route('/report/json')
-def json_report():
-    conn = get_db_connection()
-    df = pd.read_sql_query("SELECT * FROM threats ORDER BY created_at DESC LIMIT 100", conn)
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT * FROM indicators ORDER BY created_at DESC LIMIT 1000", conn)
     conn.close()
-    return df.to_json(orient='records')
 
-@app.route('/report/csv')
-def csv_report():
-    conn = get_db_connection()
-    df = pd.read_sql_query("SELECT * FROM threats ORDER BY created_at DESC LIMIT 100", conn)
+    # Trend chart
+    trend = df.groupby([pd.to_datetime(df["created_at"]).dt.date, "type"])["indicator"].count().unstack(fill_value=0)
+    plt.figure(figsize=(8,4))
+    for col in trend.columns:
+        plt.plot(trend.index, trend[col], label=col, color='orange', linewidth=2)  # orange bold line
+    plt.legend()
+    plt.title("Indicators Trend")
+    plt.tight_layout()
+    plt.savefig("static/trend.png")
+    plt.close()
+
+    # Heat map
+    geo_map = folium.Map(location=[3.139, 101.6869], zoom_start=6)  # Malaysia center
+    for ip in df[df["type"]=="IPv4"]["indicator"]:
+        try:
+            obj = IPWhois(ip)
+            res = obj.lookup_rdap(asn_methods=["whois"])
+            lat = res.get("network", {}).get("latitude")
+            lon = res.get("network", {}).get("longitude")
+            if lat and lon:
+                folium.CircleMarker(location=[lat, lon], radius=5, color='red').add_to(geo_map)
+        except:
+            continue
+    geo_map.save("templates/heatmap.html")
+
+    return render_template("dashboard.html", trend_image="static/trend.png")
+
+@app.route("/report/json")
+def report_json():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT * FROM indicators ORDER BY created_at DESC", conn)
     conn.close()
-    return df.to_csv(index=False)
+    return jsonify(df.to_dict(orient="records"))
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000, debug=True)
+@app.route("/report/csv")
+def report_csv():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT * FROM indicators ORDER BY created_at DESC", conn)
+    conn.close()
+    csv_file = "report.csv"
+    df.to_csv(csv_file, index=False)
+    return send_file(csv_file, as_attachment=True)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
