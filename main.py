@@ -1,110 +1,82 @@
 import os
 import json
-import sqlite3
 import pandas as pd
 from flask import Flask, render_template, jsonify
+from sqlalchemy import create_engine, text
 from OTXv2 import OTXv2
 
 app = Flask(__name__)
 
-# --- Config ---
-DB_FILE = "ioc.db"
-SEED_FILE = "seed.json"
-OTX_API_KEY = os.getenv("OTX_API_KEY")  # Ensure you set this in Render env
+# PostgreSQL connection string from environment variable
+DB_URL = os.environ.get("DATABASE_URL") or "postgresql://threat_intel_user:jf0cGhfYYeCmTc9fpakD9xMpIz0Joma1@dpg-d6afq1rnv86c739lsmr0-a:5432/threat_intel"
+engine = create_engine(DB_URL)
 
-# --- Initialize Database ---
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS indicators (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            type TEXT,
-            indicator TEXT,
-            country TEXT,
-            risk_score INTEGER,
-            created_at TEXT
-        )
-    """)
+# OTX API key from env
+OTX_API_KEY = os.environ.get("OTX_API_KEY")
+otx = OTXv2(OTX_API_KEY)
+
+# Create table if not exists
+with engine.connect() as conn:
+    conn.execute(text("""
+    CREATE TABLE IF NOT EXISTS indicators (
+        id SERIAL PRIMARY KEY,
+        type VARCHAR(50),
+        indicator VARCHAR(255),
+        country VARCHAR(100),
+        risk_score FLOAT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """))
     conn.commit()
-    conn.close()
 
-init_db()
 
-# --- Load Seed JSON if exists ---
-def load_seed():
-    if os.path.exists(SEED_FILE):
-        with open(SEED_FILE, "r") as f:
-            data = json.load(f)
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        for i in data:
-            cursor.execute("""
-                INSERT INTO indicators (type, indicator, country, risk_score, created_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                i.get("type"),
-                i.get("indicator"),
-                i.get("country"),
-                i.get("risk_score"),
-                i.get("created_at")
-            ))
-        conn.commit()
-        conn.close()
-
-# Uncomment to load seed once
-# load_seed()
-
-# --- Dashboard ---
 @app.route("/")
 def dashboard():
-    conn = sqlite3.connect(DB_FILE)
     try:
-        df = pd.read_sql_query(
-            "SELECT type, indicator, country, risk_score, created_at FROM indicators ORDER BY created_at DESC",
-            conn
-        )
-        chart_data = df.to_dict(orient="records") if not df.empty else []
+        with engine.connect() as conn:
+            df = pd.read_sql_query(
+                "SELECT type, indicator, country, risk_score, created_at FROM indicators ORDER BY created_at DESC",
+                conn
+            )
+        data = df.to_dict(orient="records")
+        return render_template("dashboard.html", data=data)
     except Exception as e:
-        print(f"Dashboard read failed: {e}")
-        chart_data = []
-    finally:
-        conn.close()
-    return render_template("dashboard.html", chart_data=chart_data)
+        print("Dashboard read failed:", e)
+        return "Dashboard read failed", 500
 
-# --- Fetch OTX manually ---
+
 @app.route("/fetch_otx")
 def fetch_otx():
-    if not OTX_API_KEY:
-        return jsonify({"status": "error", "message": "OTX_API_KEY not set"}), 400
-
     try:
-        otx = OTXv2(OTX_API_KEY)
-        pulses = otx.getall(limit=50)  # adjust limit
+        pulses = otx.getall(limit=50)  # fetch latest pulses
+        rows_inserted = 0
+
+        with engine.begin() as conn:
+            for pulse in pulses:
+                for ioc in pulse.get("indicators", []):
+                    if ioc.get("type") not in ["IPv4", "domain", "hash"]:
+                        continue
+
+                    conn.execute(
+                        text("""
+                        INSERT INTO indicators (type, indicator, country, risk_score)
+                        VALUES (:type, :indicator, :country, :risk_score)
+                        ON CONFLICT DO NOTHING
+                        """),
+                        {
+                            "type": ioc.get("type"),
+                            "indicator": ioc.get("indicator"),
+                            "country": ioc.get("country", "Unknown"),
+                            "risk_score": float(ioc.get("risk_score", 0))
+                        }
+                    )
+                    rows_inserted += 1
+
+        return jsonify({"message": f"{rows_inserted} rows inserted"}), 200
     except Exception as e:
+        print("Fetch OTX failed:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    rows_inserted = 0
-
-    for pulse in pulses:
-        for ioc in pulse.get("indicators", []):
-            cursor.execute("""
-                INSERT INTO indicators (type, indicator, country, risk_score, created_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                ioc.get("type"),
-                ioc.get("indicator"),
-                ioc.get("country", ""),
-                ioc.get("risk_score", 0),
-                ioc.get("created_at")
-            ))
-            rows_inserted += 1
-    conn.commit()
-    conn.close()
-
-    return jsonify({"status": "ok", "rows_inserted": rows_inserted})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
