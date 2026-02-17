@@ -12,3 +12,4 @@ plotly
 pytz
 geopandas
 ipwhois
+OTXv2
