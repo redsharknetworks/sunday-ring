@@ -14,3 +14,4 @@ plotly
 geoip2
 gunicorn
 apscheduler
+folium
