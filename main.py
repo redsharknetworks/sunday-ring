@@ -1,151 +1,135 @@
-import os
-import sqlite3
-import json
-from datetime import datetime, timezone, timedelta
-from flask import Flask, render_template, send_file
-import pandas as pd
+from flask import Flask, render_template, send_file, jsonify
 import requests
+import pandas as pd
+import sqlite3
+import os
+from datetime import datetime, timedelta, timezone
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import base64
-from io import BytesIO
-import folium
 from reportlab.pdfgen import canvas
-from OTXv2 import OTXv2
+import csv
+import json
+import pytz
 
 app = Flask(__name__)
 
-# =========================
-# DATABASE INIT
-# =========================
-conn = sqlite3.connect("threats.db", check_same_thread=False)
-cursor = conn.cursor()
+DB = "threats.db"
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS indicators (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    indicator TEXT,
-    type TEXT,
-    country TEXT,
-    city TEXT,
-    risk_score INTEGER,
-    mitre TEXT,
-    created_at TEXT
-)
-""")
-conn.commit()
-
-# =========================
-# OTX INIT
-# =========================
-OTX_API_KEY = os.getenv("OTX_API_KEY", "")
-otx = OTXv2(OTX_API_KEY) if OTX_API_KEY else None
-
-def fetch_otx():
-    if not otx:
-        return
-    try:
-        pulses = otx.getall()
-        for pulse in pulses.get("results", [])[:5]:
-            for ind in pulse.get("indicators", [])[:5]:
-                value = ind.get("indicator")
-                if not value:
-                    continue
-
-                now = datetime.utcnow().isoformat()
-                cursor.execute("""
-                INSERT INTO indicators
-                (indicator, type, country, city, risk_score, mitre, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    value,
-                    ind.get("type", "IP"),
-                    "Malaysia",
-                    "Kuala Lumpur",
-                    50,
-                    "T1059",
-                    now
-                ))
-        conn.commit()
-    except Exception as e:
-        print("OTX fetch error:", e)
-
-# =========================
-# TREND CHART
-# =========================
-def generate_trend_chart():
-    try:
-        df = pd.read_sql_query(
-            "SELECT created_at, risk_score FROM indicators ORDER BY created_at ASC",
-            conn
+# ---------------- DB INIT ----------------
+def init_db():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS indicators(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip TEXT,
+            risk INTEGER,
+            mitre TEXT,
+            created_at TEXT
         )
-        if df.empty:
-            return ""
+    """)
+    conn.commit()
+    conn.close()
 
-        plt.figure(figsize=(6, 3))
-        plt.plot(df["risk_score"], color="orange", linewidth=3)
-        plt.title("Risk Trend")
-        plt.tight_layout()
+init_db()
 
-        img = BytesIO()
-        plt.savefig(img, format="png")
-        img.seek(0)
-        return base64.b64encode(img.getvalue()).decode()
+# ---------------- OTX FETCH (LIMITED) ----------------
+def fetch_otx():
+    try:
+        url = "https://otx.alienvault.com/api/v1/pulses/subscribed?limit=3"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+
+        for pulse in data.get("results", []):
+            for ind in pulse.get("indicators", [])[:3]:
+                ip = ind.get("indicator", "")
+                risk = 50
+                mitre = "T1046"
+
+                c.execute("""
+                    INSERT INTO indicators(ip,risk,mitre,created_at)
+                    VALUES (?,?,?,?)
+                """, (
+                    ip,
+                    risk,
+                    mitre,
+                    datetime.utcnow().isoformat()
+                ))
+
+        conn.commit()
+        conn.close()
+        return "OK"
     except:
-        return ""
+        return "FAILED"
 
-# =========================
-# HEAT MAP
-# =========================
-def generate_heatmap():
-    m = folium.Map(location=[4.21, 101.97], zoom_start=6)
-    folium.CircleMarker([3.14, 101.69], radius=20, color="red").add_to(m)
-    file_name = "templates/heatmap.html"
-    m.save(file_name)
-    return "heatmap.html"
+@app.route("/fetch_otx")
+def manual_otx():
+    return fetch_otx()
 
-# =========================
-# EXPORT REPORTS
-# =========================
-def export_reports():
+# ---------------- TREND CHART ----------------
+def generate_trend():
+    conn = sqlite3.connect(DB)
+    df = pd.read_sql_query("""
+        SELECT DATE(created_at) d, AVG(risk) r
+        FROM indicators
+        GROUP BY d
+    """, conn)
+    conn.close()
+
+    if df.empty:
+        return None
+
+    plt.figure(figsize=(6,3))
+    plt.plot(df["d"], df["r"], color="orange", linewidth=3)
+    plt.title("Risk Trend")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig("static/trend.png")
+    plt.close()
+
+    return "trend.png"
+
+# ---------------- EXPORT REPORT ----------------
+@app.route("/generate_report")
+def export_report():
+    conn = sqlite3.connect(DB)
     df = pd.read_sql_query("SELECT * FROM indicators", conn)
+    conn.close()
+
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M")
+    base = f"darkgrid_redshark_{ts}"
 
-    csv_name = f"darkgrid_redshark_{ts}.csv"
-    json_name = f"darkgrid_redshark_{ts}.json"
-    pdf_name = f"darkgrid_redshark_{ts}.pdf"
+    # CSV
+    df.to_csv(f"{base}.csv", index=False)
 
-    df.to_csv(csv_name, index=False)
-    df.to_json(json_name, orient="records")
+    # JSON
+    df.to_json(f"{base}.json", orient="records")
 
-    c = canvas.Canvas(pdf_name)
-    c.drawString(100, 800, "RedShark Threat Report")
-    c.drawString(100, 780, f"Records: {len(df)}")
+    # PDF
+    c = canvas.Canvas(f"{base}.pdf")
+    c.drawString(50, 800, "Threat Report")
+    c.drawString(50, 780, f"Records: {len(df)}")
     c.save()
 
-    return {
-        "csv": csv_name,
-        "json": json_name,
-        "pdf": pdf_name
-    }
+    return jsonify({"status": "generated", "file": base})
 
-# =========================
-# DASHBOARD ROUTE
-# =========================
+# ---------------- DASHBOARD ----------------
 @app.route("/")
 def dashboard():
-    fetch_otx()
+    trend_img = generate_trend()
 
-    trend_image = generate_trend_chart()
-    heatmap_file = generate_heatmap()
-    exports = export_reports()
-
-    df = pd.read_sql_query(
-        "SELECT * FROM indicators ORDER BY created_at DESC LIMIT 200",
-        conn
-    )
-    table_html = df.to_html(classes="table table-striped", index=False)
+    conn = sqlite3.connect(DB)
+    df = pd.read_sql_query("""
+        SELECT ip,risk,mitre,created_at
+        FROM indicators
+        ORDER BY created_at DESC
+        LIMIT 200
+    """, conn)
+    conn.close()
 
     malaysia_time = (
         datetime.utcnow().replace(tzinfo=timezone.utc)
@@ -154,22 +138,10 @@ def dashboard():
 
     return render_template(
         "dashboard.html",
-        trend_image=trend_image,
-        heatmap_file=heatmap_file,
-        table_html=table_html,
-        export_files=exports,
+        table=df.to_dict(orient="records"),
+        trend=trend_img,
         malaysia_time=malaysia_time
     )
 
-# =========================
-# DOWNLOAD ROUTE
-# =========================
-@app.route("/download/<path:filename>")
-def download(filename):
-    return send_file(filename, as_attachment=True)
-
-# =========================
-# RUN
-# =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run()
