@@ -15,3 +15,4 @@ geoip2
 gunicorn
 apscheduler
 folium
+reportlab
