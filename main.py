@@ -1,118 +1,79 @@
 import os
 import sqlite3
-import pandas as pd
 from flask import Flask, render_template, jsonify
-from datetime import datetime, timedelta
-from matplotlib import pyplot as plt
 from OTXv2 import OTXv2
-import pdfkit
-import folium
-
-# ===== CONFIG =====
-DB_FILE = os.path.join(os.getcwd(), "indicators.db")  # Absolute path
-OTX_API_KEY = os.environ.get("OTX_API_KEY")
-COUNTRY_FILTER = "MY"
-ROWS_PER_PAGE = 20
+import pandas as pd
 
 app = Flask(__name__)
 
-# ===== DATABASE =====
+# Database file
+DB_FILE = "indicators.db"
+
+# Get OTX API key from environment
+OTX_API_KEY = os.environ.get("OTX_API_KEY")
+if not OTX_API_KEY:
+    raise ValueError("OTX_API_KEY not set in environment variables")
+
+# Initialize OTX
+otx = OTXv2(OTX_API_KEY)
+
+# Ensure the indicators table exists
 def init_db():
-    """Ensure DB and table exist."""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS indicators (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ip TEXT UNIQUE,
-            country TEXT,
-            risk_score INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-def insert_indicator(ip, country, risk_score):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    try:
-        c.execute('''
-            INSERT OR IGNORE INTO indicators (ip, country, risk_score) 
-            VALUES (?, ?, ?)
-        ''', (ip, country, risk_score))
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS indicators (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip TEXT,
+                country TEXT,
+                risk_score INTEGER,
+                created_at TEXT
+            )
+        """)
         conn.commit()
-    except Exception as e:
-        print("DB insert error:", e)
-    finally:
-        conn.close()
 
-# ===== OTX FETCH =====
+init_db()
+
+@app.route("/")
+def dashboard():
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            df = pd.read_sql_query(
+                "SELECT ip, country, risk_score, created_at FROM indicators ORDER BY created_at DESC",
+                conn
+            )
+        # Convert to dict for charts in dashboard.html
+        data = df.to_dict(orient="records")
+        return render_template("dashboard.html", data=data)
+    except Exception as e:
+        return f"Error loading dashboard: {str(e)}", 500
+
 @app.route("/fetch_otx")
 def fetch_otx():
     try:
-        init_db()  # Ensure table exists before fetch
-        otx = OTXv2(OTX_API_KEY)
-        pulses = otx.getall(limit=50)
+        # Fetch latest pulses (low limit to prevent memory crash)
+        pulses = otx.getall(limit=10)
+        if not pulses:
+            return jsonify({"status": "ok", "message": "No new pulses found"})
+
         inserted = 0
+        with sqlite3.connect(DB_FILE) as conn:
+            for pulse in pulses:
+                for indicator in pulse.get("indicators", []):
+                    ip = indicator.get("indicator")
+                    country = indicator.get("country") or "Unknown"
+                    risk_score = indicator.get("risk_score") or 0
+                    created_at = indicator.get("created") or pulse.get("created") or ""
+                    conn.execute(
+                        "INSERT INTO indicators (ip, country, risk_score, created_at) VALUES (?, ?, ?, ?)",
+                        (ip, country, risk_score, created_at)
+                    )
+                    inserted += 1
+            conn.commit()
 
-        for pulse in pulses:
-            indicators = pulse.get("indicators", [])
-            for ind in indicators:
-                ip = ind.get("indicator")
-                if not ip or len(ip.split(".")) != 4:
-                    continue
-                geo = ind.get("geo", {})
-                country = geo.get("country")
-                if country != COUNTRY_FILTER:
-                    continue
-                risk_score = pulse.get("threat_score", 50)
-                insert_indicator(ip, country, risk_score)
-                inserted += 1
-
-        return jsonify({"status": "ok", "inserted": inserted})
+        return jsonify({"status": "ok", "message": f"{inserted} rows inserted"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-# ===== TREND CHART =====
-def generate_trend_chart():
-    init_db()  # ensure table exists
-    conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query(
-        "SELECT created_at, risk_score FROM indicators ORDER BY created_at ASC", conn
-    )
-    conn.close()
-    if df.empty:
-        return None
-    plt.figure(figsize=(10,5))
-    plt.plot(pd.to_datetime(df['created_at']), df['risk_score'], marker='o')
-    plt.title("Risk Score Trend")
-    plt.xlabel("Time")
-    plt.ylabel("Risk Score")
-    plt.grid(True)
-    plt.tight_layout()
-    img_path = os.path.join("static", "trend_chart.png")
-    plt.savefig(img_path)
-    plt.close()
-    return img_path
-
-# ===== DASHBOARD =====
-@app.route("/")
-def dashboard():
-    init_db()
-    conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query(
-        "SELECT ip, country, risk_score, created_at FROM indicators ORDER BY created_at DESC", conn
-    )
-    conn.close()
-    trend_image = generate_trend_chart()
-    malaysia_time = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-    return render_template("dashboard.html",
-                           indicators=df.to_dict(orient="records"),
-                           trend_image=trend_image,
-                           timestamp=malaysia_time)
-
-# ===== MAIN =====
 if __name__ == "__main__":
-    init_db()  # Ensure DB ready before first request
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
