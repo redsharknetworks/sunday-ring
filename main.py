@@ -1,26 +1,28 @@
 import os
 import json
 import sqlite3
-from datetime import datetime
 from flask import Flask, render_template, jsonify
-from OTXv2 import OTXv2  # make sure OTXv2.py is in your project
+from OTXv2 import OTXv2
 import pandas as pd
-import matplotlib.pyplot as plt
-import io
-import base64
 
-# ---------- CONFIG ----------
-OTX_API_KEY = os.getenv("OTX_API_KEY")
-DB_FILE = "otx.db"
-SEED_FILE = "otx_seed.json"  # optional manual seed JSON
 # ----------------------------
+# Configuration
+# ----------------------------
+OTX_API_KEY = os.getenv("OTX_API_KEY", "")
+SEED_FILE = "otx_seed.json"  # stored in root of repo
+DB_FILE = "indicators.db"
 
 app = Flask(__name__)
 
-# ---------- DATABASE ----------
-def init_db():
-    """Create indicators table if not exists"""
+# ----------------------------
+# Database helpers
+# ----------------------------
+def get_db_connection():
     conn = sqlite3.connect(DB_FILE)
+    return conn
+
+def create_table_if_not_exists():
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS indicators (
@@ -28,107 +30,106 @@ def init_db():
             type TEXT,
             indicator TEXT,
             country TEXT,
-            risk_score INTEGER,
+            risk_score REAL,
             created_at TEXT
         )
     """)
     conn.commit()
     conn.close()
 
-init_db()
+# Initialize DB at startup
+create_table_if_not_exists()
 
-def insert_indicator(ind_type, indicator, country, risk_score, created_at):
-    conn = sqlite3.connect(DB_FILE)
+# ----------------------------
+# Helper to insert indicators
+# ----------------------------
+def insert_indicators(indicators):
+    if not indicators:
+        return 0
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO indicators (type, indicator, country, risk_score, created_at)
-        VALUES (?, ?, ?, ?, ?)
-    """, (ind_type, indicator, country, risk_score, created_at))
+    rows = 0
+    for ind in indicators:
+        cursor.execute("""
+            INSERT INTO indicators (type, indicator, country, risk_score, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            ind.get("type"),
+            ind.get("indicator"),
+            ind.get("country"),
+            ind.get("risk_score"),
+            ind.get("created_at")
+        ))
+        rows += 1
     conn.commit()
     conn.close()
+    return rows
 
-# ---------- MANUAL SEED ----------
-def populate_from_seed():
+# ----------------------------
+# Load manual seed file
+# ----------------------------
+def load_seed_file():
     if os.path.exists(SEED_FILE):
         with open(SEED_FILE, "r") as f:
             data = json.load(f)
-        inserted = 0
-        for ioc in data.get("indicators", []):
-            insert_indicator(
-                ioc.get("type", ""),
-                ioc.get("indicator", ""),
-                ioc.get("country", ""),
-                ioc.get("risk_score", 0),
-                ioc.get("created_at", datetime.utcnow().isoformat())
-            )
-            inserted += 1
+        inserted = insert_indicators(data)
         return inserted
     return 0
 
-# ---------- FETCH FROM OTX ----------
-@app.route("/fetch_otx")
-def fetch_otx():
+# ----------------------------
+# Fetch from OTX
+# ----------------------------
+def fetch_otx(limit=50):
     if not OTX_API_KEY:
-        return jsonify({"status": "error", "message": "OTX_API_KEY not set"}), 400
+        return {"message": "OTX API key not set", "status": "error"}
 
+    otx = OTXv2(OTX_API_KEY)
     try:
-        otx = OTXv2(OTX_API_KEY)
-        # Example: get last 50 pulses
-        pulses = otx.getall(limit=50)
-        count = 0
-        for pulse in pulses:
-            for ind in pulse.get("indicators", []):
-                insert_indicator(
-                    ind.get("type", ""),
-                    ind.get("indicator", ""),
-                    ind.get("country", ""),
-                    ind.get("risk_score", 0),
-                    ind.get("created_at", datetime.utcnow().isoformat())
-                )
-                count += 1
-        return jsonify({"status": "ok", "inserted": count})
+        pulses = otx.getall(limit=limit)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return {"message": str(e), "status": "error"}
 
-# ---------- DASHBOARD ----------
+    indicators = []
+    for pulse in pulses:
+        for ind in pulse.get("indicators", []):
+            indicators.append({
+                "type": ind.get("type"),
+                "indicator": ind.get("indicator"),
+                "country": ind.get("country"),
+                "risk_score": ind.get("risk_score"),
+                "created_at": ind.get("created_at")
+            })
+    rows = insert_indicators(indicators)
+    return {"message": f"{rows} rows inserted", "status": "ok"}
+
+# ----------------------------
+# Routes
+# ----------------------------
 @app.route("/")
 def dashboard():
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         df = pd.read_sql_query(
             "SELECT type, indicator, country, risk_score, created_at FROM indicators ORDER BY created_at DESC",
             conn
         )
         conn.close()
-
-        # Generate chart
-        if not df.empty:
-            plt.figure(figsize=(6,4))
-            df_group = df.groupby("type").size()
-            df_group.plot(kind="bar")
-            plt.title("Indicators by Type")
-            plt.xlabel("Type")
-            plt.ylabel("Count")
-            img = io.BytesIO()
-            plt.tight_layout()
-            plt.savefig(img, format='png')
-            img.seek(0)
-            chart_url = base64.b64encode(img.getvalue()).decode()
-            plt.close()
-        else:
-            chart_url = None
-
-        return render_template("dashboard.html", data=df.to_dict(orient="records"), chart_url=chart_url)
+        return render_template("dashboard.html", data=df.to_dict(orient="records"))
     except Exception as e:
-        return f"Dashboard read failed: {e}"
+        return f"Dashboard read failed: {str(e)}"
 
-# ---------- POPULATE SEED ON STARTUP ----------
-@app.before_first_request
-def startup_seed():
-    inserted = populate_from_seed()
-    if inserted:
-        print(f"Seeded {inserted} indicators from {SEED_FILE}")
+@app.route("/fetch_otx")
+def fetch_otx_route():
+    # First, load manual seed file if exists
+    seed_rows = load_seed_file()
 
-# ---------- RUN ----------
+    # Then fetch latest OTX
+    result = fetch_otx(limit=50)
+    result["seed_rows"] = seed_rows
+    return jsonify(result)
+
+# ----------------------------
+# Run app
+# ----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
