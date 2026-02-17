@@ -13,3 +13,4 @@ pytz
 geopandas
 ipwhois
 OTXv2
+fpdf
