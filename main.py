@@ -1,151 +1,133 @@
 import os
 import sqlite3
+from datetime import datetime, timezone, timedelta
+import io
+import base64
+import requests
 import pandas as pd
 import matplotlib.pyplot as plt
-from datetime import datetime
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 from flask import Flask, render_template, send_file
-from io import BytesIO
+from ipwhois import IPWhois
 from OTXv2 import OTXv2
-import geopandas as gpd
 import folium
-from folium.plugins import MarkerCluster
-from fpdf import FPDF
+from folium.plugins import HeatMap
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 import json
 
-# ---------------------------
-# Configuration
-# ---------------------------
-DB_PATH = "indicators.db"
-BOXING_RING_IMG = "static/boxing_ring.png"
-OTX_API_KEY = os.getenv("OTX_API_KEY")  # set in environment
-COUNTRY = "MY"
-
+# Flask app
 app = Flask(__name__)
+
+# Database
+DB_FILE = "indicators.db"
+conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+
+# OTX API key
+OTX_API_KEY = os.getenv("OTX_API_KEY")
 otx = OTXv2(OTX_API_KEY)
 
-# ---------------------------
-# Helper Functions
-# ---------------------------
-def fetch_otx_indicators(country="MY"):
-    """
-    Fetch recent malicious IPs from OTX targeting Malaysia.
-    Returns a DataFrame.
-    """
-    records = []
-    pulses = otx.getall()
-    for pulse in pulses:
-        for indicator in pulse['indicators']:
-            if indicator['type'] == 'IPv4':
-                records.append({
-                    "created_at": pulse['modified'],
-                    "source_ip": indicator['indicator'],
-                    "source_country": indicator.get('country', 'Other'),
-                    "target_city": "Unknown",
-                    "target_country": "Malaysia",
-                    "risk_score": pulse.get('threat_level', 3)
-                })
-    return pd.DataFrame(records)
+# Malaysia cities coordinates (sample)
+MALAYSIA_CITIES = {
+    "Kuala Lumpur": [3.1390, 101.6869],
+    "Penang": [5.4164, 100.3327],
+    "Johor Bahru": [1.4927, 103.7414],
+    "Kota Kinabalu": [5.9804, 116.0735],
+    "Kuching": [1.5533, 110.3593],
+}
 
-def fetch_local_indicators():
-    """Fetch indicators from local SQLite DB."""
-    if not os.path.exists(DB_PATH):
-        return pd.DataFrame(columns=['created_at', 'source_ip', 'source_country', 'target_city', 'target_country', 'risk_score'])
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT * FROM indicators ORDER BY created_at DESC", conn)
-    conn.close()
-    return df
+def fetch_otx_malaysia():
+    """Fetch latest OTX indicators targeting Malaysia"""
+    try:
+        pulses = otx.getall(indicator_type="IPv4", limit=50)
+        for pulse in pulses:
+            for indicator in pulse.get("indicators", []):
+                ip = indicator.get("indicator")
+                source = indicator.get("source", "OTX")
+                risk = indicator.get("risk", 5)
+                created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                conn.execute(
+                    "INSERT OR IGNORE INTO indicators (ip, source, risk_score, created_at) VALUES (?, ?, ?, ?)",
+                    (ip, source, risk, created_at),
+                )
+        conn.commit()
+    except Exception as e:
+        print("OTX fetch error:", e)
 
-def generate_trend_chart(df):
-    """Generate trend chart of risk_score over time with boxing_ring background."""
-    plt.figure(figsize=(10,6))
-    if os.path.exists(BOXING_RING_IMG):
-        img = plt.imread(BOXING_RING_IMG)
-        plt.imshow(img, extent=[0, len(df), df['risk_score'].min(), df['risk_score'].max()], aspect='auto', alpha=0.3)
-    plt.plot(range(len(df)), df['risk_score'], marker='o', color='red', linewidth=2)
-    plt.title("Threat Risk Trend")
-    plt.xlabel("Indicators")
+def generate_trend_chart():
+    """Generate trend chart with boxing_ring.png background"""
+    df = pd.read_sql_query("SELECT created_at, risk_score FROM indicators ORDER BY created_at ASC", conn)
+    plt.figure(figsize=(10,5))
+    img = plt.imread("boxing_ring.png")
+    plt.imshow(img, extent=[0, len(df), 0, df['risk_score'].max()], aspect='auto', alpha=0.2)
+    plt.plot(df['risk_score'], color='red', marker='o')
+    plt.xticks(range(len(df)), df['created_at'], rotation=45)
     plt.ylabel("Risk Score")
     plt.tight_layout()
-    buf = BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png")
     plt.close()
-    return buf
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("utf-8")
 
-def generate_geo_map(df):
-    """Generate Malaysia-focused map with source to city lines."""
-    malaysia_coords = [4.2105, 101.9758]  # center
-    m = folium.Map(location=malaysia_coords, zoom_start=5)
-    cluster = MarkerCluster().add_to(m)
-    for _, row in df.iterrows():
-        if row['target_country'] == "Malaysia":
-            folium.Marker(
-                location=malaysia_coords,
-                popup=f"{row['source_ip']} ({row['source_country']}) Risk: {row['risk_score']}"
-            ).add_to(cluster)
-    return m._repr_html_()
+def generate_malaysia_heatmap():
+    """Generate Malaysia heatmap for attack locations"""
+    df = pd.read_sql_query("SELECT ip FROM indicators", conn)
+    coords = []
+    for ip in df['ip']:
+        try:
+            obj = IPWhois(ip).lookup_rdap()
+            country = obj.get("network", {}).get("country", "")
+            if country.upper() == "MY":
+                lat, lon = MALAYSIA_CITIES.get("Kuala Lumpur", [3.1390, 101.6869])
+                coords.append([lat, lon])
+        except:
+            continue
+    m = folium.Map(location=[4.2105, 101.9758], zoom_start=6)
+    HeatMap(coords).add_to(m)
+    heatmap_file = "static/malaysia_heatmap.html"
+    m.save(heatmap_file)
+    return heatmap_file
 
-def save_reports(df):
-    """Save CSV, JSON, PDF with timestamp."""
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    base_filename = f"dsrkgrid_redshark_{timestamp}"
-
-    # CSV
-    df.to_csv(f"static/{base_filename}.csv", index=False)
-
-    # JSON
-    df.to_json(f"static/{base_filename}.json", orient='records', indent=2)
-
+def export_reports():
+    """Export CSV, JSON, PDF with Malaysia timestamp"""
+    df = pd.read_sql_query("SELECT * FROM indicators", conn)
+    malaysia_time = datetime.utcnow().replace(tzinfo=timezone.utc) + timedelta(hours=8)
+    timestamp = malaysia_time.strftime("%Y%m%d_%H%M%S")
+    csv_file = f"dsrkgrid_redshark_{timestamp}.csv"
+    json_file = f"dsrkgrid_redshark_{timestamp}.json"
+    pdf_file = f"dsrkgrid_redshark_{timestamp}.pdf"
+    df.to_csv(csv_file, index=False)
+    df.to_json(json_file, orient="records")
+    
     # PDF
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, txt="DarkGrid RedShark Threat Report", ln=True, align="C")
-    pdf.cell(200, 10, txt=f"Generated: {datetime.now()}", ln=True, align="C")
-    pdf.ln(10)
-    for _, row in df.iterrows():
-        pdf.multi_cell(0, 8, txt=f"{row['created_at']} | {row['source_ip']} | {row['source_country']} | {row['risk_score']}")
-    pdf.output(f"static/{base_filename}.pdf")
+    c = canvas.Canvas(pdf_file, pagesize=letter)
+    c.drawString(100, 750, f"RedShark Threat Indicators - Malaysia {malaysia_time}")
+    for i, row in df.iterrows():
+        c.drawString(50, 700 - i*15, f"{row['created_at']} | {row['ip']} | {row['risk_score']}")
+        if i >= 40:
+            break  # Limit rows per page
+    c.save()
+    return {"csv": csv_file, "json": json_file, "pdf": pdf_file}
 
-    return base_filename
-
-# ---------------------------
-# Routes
-# ---------------------------
 @app.route("/")
 def dashboard():
-    # Fetch local + OTX
-    df_local = fetch_local_indicators()
-    df_otx = fetch_otx_indicators(COUNTRY)
-    df = pd.concat([df_local, df_otx], ignore_index=True)
-    df['created_at'] = pd.to_datetime(df['created_at'])
-    df = df.sort_values(by='created_at', ascending=False)
+    fetch_otx_malaysia()
+    trend_image = generate_trend_chart()
+    heatmap_file = generate_malaysia_heatmap()
+    df_table = pd.read_sql_query("SELECT * FROM indicators ORDER BY created_at DESC LIMIT 100", conn)
+    table_html = df_table.to_html(classes="table table-striped table-bordered", index=False)
+    
+    malaysia_time = datetime.utcnow().replace(tzinfo=timezone.utc) + timedelta(hours=8)
+    malaysia_time_str = malaysia_time.strftime("%Y-%m-%d %H:%M:%S %Z+8")
+    
+    export_files = export_reports()
+    
+    return render_template("dashboard.html", trend_image=trend_image,
+                           heatmap_file=heatmap_file,
+                           table_html=table_html,
+                           export_files=export_files,
+                           malaysia_time=malaysia_time_str)
 
-    # Generate chart and map
-    trend_buf = generate_trend_chart(df)
-    geo_map = generate_geo_map(df)
-
-    # Save reports
-    report_base = save_reports(df)
-
-    # Executive summary
-    exec_summary = {
-        "total_indicators": len(df),
-        "average_risk": df['risk_score'].mean(),
-        "high_risk_count": len(df[df['risk_score']>=4]),
-    }
-
-    return render_template(
-        "dashboard.html",
-        table_data=df.to_dict(orient='records'),
-        trend_chart=trend_buf.getvalue(),
-        geo_map=geo_map,
-        report_base=report_base,
-        exec_summary=exec_summary
-    )
-
-# ---------------------------
-# Run App
-# ---------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
