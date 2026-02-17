@@ -17,8 +17,6 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.pagesizes import A4, landscape
 import ipaddress
 import re
-import plotly.graph_objs as go
-import plotly.io as pio
 
 app = Flask(__name__)
 DB = "/tmp/threats.db"
@@ -38,7 +36,17 @@ def init_db():
         classification TEXT,
         mitre TEXT,
         risk_score INTEGER,
+        created_at TEXT
+    )
+    """)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS threat_hashes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pulse TEXT,
         hash TEXT,
+        classification TEXT,
+        mitre TEXT,
+        risk_score INTEGER,
         created_at TEXT
     )
     """)
@@ -71,29 +79,43 @@ def calculate_risk(classification, mitre):
 def seed_data():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    count = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
-    if count > 0:
+    count_main = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
+    count_hash = c.execute("SELECT COUNT(*) FROM threat_hashes").fetchone()[0]
+    if count_main > 0 and count_hash > 0:
         conn.close()
         return
     for i in range(120):
         classification = random.choice(["Low","Medium","High"])
         mitre = random.choice(["T1566 Phishing","T1071 C2","T1059 Execution"])
         score = calculate_risk(classification, mitre)
-        typ = random.choice(["domain","IPv4","URL"])
+        typ = random.choice(["domain","IPv4","URL","hash"])
         if typ == "domain":
             indicator = f"malicious{i}.com"
             if not is_valid_domain(indicator): continue
+            c.execute("""
+                INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at)
+                VALUES (?,?,?,?,?,?,?)
+            """,(f"Campaign {i%6}",indicator,typ,classification,mitre,score,datetime.utcnow().isoformat()))
         elif typ == "IPv4":
             indicator = f"192.168.{i%255}.{i%255}"
             if not is_valid_ipv4(indicator): continue
-        else:
+            c.execute("""
+                INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at)
+                VALUES (?,?,?,?,?,?,?)
+            """,(f"Campaign {i%6}",indicator,typ,classification,mitre,score,datetime.utcnow().isoformat()))
+        elif typ == "URL":
             indicator = f"http://malicious{i}.com"
             if not is_valid_url(indicator): continue
-        hash_val = f"{random.getrandbits(128):032x}"
-        c.execute("""
-        INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,hash,created_at)
-        VALUES (?,?,?,?,?,?,?,?)
-        """,(f"Campaign {i%6}",indicator,typ,classification,mitre,score,hash_val,datetime.utcnow().isoformat()))
+            c.execute("""
+                INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at)
+                VALUES (?,?,?,?,?,?,?)
+            """,(f"Campaign {i%6}",indicator,typ,classification,mitre,score,datetime.utcnow().isoformat()))
+        else: # hash
+            hash_val = f"{random.getrandbits(128):032x}"
+            c.execute("""
+                INSERT INTO threat_hashes (pulse,hash,classification,mitre,risk_score,created_at)
+                VALUES (?,?,?,?,?,?)
+            """,(f"Campaign {i%6}",hash_val,classification,mitre,score,datetime.utcnow().isoformat()))
     conn.commit()
     conn.close()
 
@@ -108,6 +130,7 @@ def risk_index():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     scores = [x[0] for x in c.execute("SELECT risk_score FROM threats").fetchall()]
+    scores += [x[0] for x in c.execute("SELECT risk_score FROM threat_hashes").fetchall()]
     conn.close()
     return int(sum(scores)/len(scores)) if scores else 0
 
@@ -115,7 +138,9 @@ def executive_summary():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     total = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
+    total += c.execute("SELECT COUNT(*) FROM threat_hashes").fetchone()[0]
     high = c.execute("SELECT COUNT(*) FROM threats WHERE risk_score >=70").fetchone()[0]
+    high += c.execute("SELECT COUNT(*) FROM threat_hashes WHERE risk_score >=70").fetchone()[0]
     top_mitre = c.execute("SELECT mitre, COUNT(*) FROM threats GROUP BY mitre ORDER BY COUNT(*) DESC LIMIT 1").fetchone()
     conn.close()
     mitre_text = top_mitre[0] if top_mitre else "N/A"
@@ -125,7 +150,9 @@ def executive_summary():
 def generate_trend_html():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    data = c.execute("SELECT substr(created_at,1,10), COUNT(*) FROM threats GROUP BY substr(created_at,1,10) ORDER BY substr(created_at,1,10)").fetchall()
+    data = c.execute("""
+        SELECT substr(created_at,1,10), COUNT(*) FROM threats GROUP BY substr(created_at,1,10) ORDER BY substr(created_at,1,10)
+    """).fetchall()
     conn.close()
     if not data: return ""
     dates = [d[0] for d in data]
@@ -134,6 +161,12 @@ def generate_trend_html():
     plt.figure(figsize=(10,4))
     ax = plt.gca()
     ax.set_facecolor('#2a2a2a')
+
+    # Boxing ring background if exists
+    if os.path.exists("boxing_ring.png"):
+        bg = plt.imread("boxing_ring.png")
+        ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
+
     plt.plot(dates, counts, color="crimson", marker="o", linewidth=2, label="Total Indicators")
     plt.fill_between(dates, counts, color="crimson", alpha=0.1)
     plt.grid(color='white', linestyle='--', linewidth=0.3, alpha=0.5)
@@ -145,20 +178,6 @@ def generate_trend_html():
     plt.close()
     img.seek(0)
     return base64.b64encode(img.read()).decode()
-
-# ------------------ TYPE COUNT CHART ------------------
-def generate_type_count_chart(ipv4_count, domain_count, url_count):
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=["IPv4","Domain","URL"],
-        y=[ipv4_count, domain_count, url_count],
-        marker_color=["crimson","orange","#7fb77e"],
-        text=[ipv4_count, domain_count, url_count],
-        textposition="auto",
-        hovertemplate='%{x}: %{y} indicators<extra></extra>'
-    ))
-    fig.update_layout(title="Active Indicators by Type", template="plotly_dark", height=300, margin=dict(l=50,r=50,t=40,b=20))
-    return pio.to_html(fig, full_html=False)
 
 # ------------------ MAP ------------------
 def generate_map():
@@ -175,22 +194,25 @@ def dashboard():
     offset = (page-1)*PAGE_SIZE
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    total = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
-    ipv4_count = c.execute("SELECT COUNT(*) FROM threats WHERE type='IPv4'").fetchone()[0]
-    domain_count = c.execute("SELECT COUNT(*) FROM threats WHERE type='domain'").fetchone()[0]
-    url_count = c.execute("SELECT COUNT(*) FROM threats WHERE type='URL'").fetchone()[0]
+    total = c.execute("SELECT COUNT(*) FROM threats WHERE type IN ('domain','IPv4','URL')").fetchone()[0]
     data = c.execute(f"""
-        SELECT pulse,indicator,type,classification,mitre,risk_score,hash,created_at
+        SELECT pulse,indicator,type,classification,mitre,risk_score,created_at
         FROM threats
+        WHERE type IN ('domain','IPv4','URL')
         ORDER BY {sort} DESC LIMIT ? OFFSET ?
     """,(PAGE_SIZE, offset)).fetchall()
     conn.close()
-    type_chart = generate_type_count_chart(ipv4_count, domain_count, url_count)
     trend = generate_trend_html()
     return render_template_string(TEMPLATE,
-        data=data,total=total,page=page,risk_index=risk_index(),summary=executive_summary(),
-        trend=trend,map_html=generate_map(),disclaimer=DISCLAIMER,
-        ipv4_count=ipv4_count,domain_count=domain_count,url_count=url_count,type_chart=type_chart)
+        data=data,
+        total=total,
+        page=page,
+        risk_index=risk_index(),
+        summary=executive_summary(),
+        trend=trend,
+        map_html=generate_map(),
+        disclaimer=DISCLAIMER
+    )
 
 # ------------------ REPORTS ------------------
 def get_weekly_top10():
@@ -200,17 +222,16 @@ def get_weekly_top10():
     result = {}
     for typ in ["IPv4","domain","URL"]:
         result[typ] = c.execute(f"""
-            SELECT pulse,indicator,type,classification,mitre,risk_score,hash,created_at
+            SELECT pulse,indicator,type,classification,mitre,risk_score,created_at
             FROM threats
             WHERE type='{typ}' AND created_at >= ?
             ORDER BY risk_score DESC
             LIMIT 10
         """,(week_ago,)).fetchall()
-    # Top 10 hashes
     result["hash"] = c.execute("""
-        SELECT pulse,indicator,type,classification,mitre,risk_score,hash,created_at
-        FROM threats
-        WHERE hash IS NOT NULL AND created_at >= ?
+        SELECT pulse,hash AS indicator,'hash' AS type,classification,mitre,risk_score,created_at
+        FROM threat_hashes
+        WHERE created_at >= ?
         ORDER BY risk_score DESC
         LIMIT 10
     """,(week_ago,)).fetchall()
@@ -228,11 +249,10 @@ def pdf_report():
     elements.append(Paragraph(executive_summary(), styles["Normal"]))
     elements.append(Spacer(1,12))
 
-    # Weekly top 10
     weekly_top = get_weekly_top10()
     for typ, rows in weekly_top.items():
         elements.append(Paragraph(f"Weekly Top 10 {typ} Threats", styles["Heading2"]))
-        header = ["Pulse","Indicator","Type","Classification","MITRE","Risk","Hash","Created"]
+        header = ["Pulse","Indicator","Type","Classification","MITRE","Risk","Created"]
         table_data = [header] + rows
         table = Table(table_data, repeatRows=1)
         table.setStyle(TableStyle([
@@ -243,24 +263,6 @@ def pdf_report():
         ]))
         elements.append(table)
         elements.append(Spacer(1,12))
-
-    # Full report
-    conn = sqlite3.connect(DB)
-    rows = conn.execute("SELECT pulse,indicator,type,classification,mitre,risk_score,hash,created_at FROM threats").fetchall()
-    conn.close()
-    header = ["Pulse","Indicator","Type","Classification","MITRE","Risk","Hash","Created"]
-    chunk = 40
-    for i in range(0,len(rows),chunk):
-        table_data = [header] + rows[i:i+chunk]
-        table = Table(table_data, repeatRows=1)
-        table.setStyle(TableStyle([
-            ("BACKGROUND",(0,0),(-1,0),colors.black),
-            ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-            ("GRID",(0,0),(-1,-1),0.5,colors.grey),
-            ("BACKGROUND",(0,1),(-1,-1),colors.whitesmoke)
-        ]))
-        elements.append(table)
-        elements.append(PageBreak())
     elements.append(Paragraph(DISCLAIMER, styles["Italic"]))
     doc.build(elements)
     buffer.seek(0)
@@ -270,11 +272,13 @@ def pdf_report():
 def csv_report():
     conn = sqlite3.connect(DB)
     rows = conn.execute("SELECT * FROM threats").fetchall()
+    hash_rows = conn.execute("SELECT id,pulse,hash,type,classification,mitre,risk_score,created_at FROM threat_hashes").fetchall()
     conn.close()
+    all_rows = rows + hash_rows
     si = io.StringIO()
     cw = csv.writer(si)
-    cw.writerow(["ID","Pulse","Indicator","Type","Classification","MITRE","Risk","Hash","Created"])
-    cw.writerows(rows)
+    cw.writerow(["ID","Pulse","Indicator","Type","Classification","MITRE","Risk","Created"])
+    cw.writerows(all_rows)
     output = io.BytesIO()
     output.write(si.getvalue().encode())
     output.seek(0)
@@ -284,12 +288,13 @@ def csv_report():
 def json_report():
     conn = sqlite3.connect(DB)
     rows = conn.execute("SELECT * FROM threats").fetchall()
+    hash_rows = conn.execute("SELECT id,pulse,hash,type,classification,mitre,risk_score,created_at FROM threat_hashes").fetchall()
     conn.close()
-    return jsonify(rows)
+    combined = rows + hash_rows
+    return jsonify(combined)
 
 # ------------------ RUN ------------------
 if __name__ == "__main__":
-    print("Starting REDSHARK Cyber Threat Intelligence Dashboard...")
     app.run(host="0.0.0.0", port=5000, debug=True)
 
 # ------------------ DASHBOARD TEMPLATE ------------------
@@ -332,7 +337,6 @@ function sortTable(n) {
 <div class="container">{{ map_html|safe }}</div>
 <p style="text-align:center;">{{ summary }}</p>
 <div class="container"><img src="data:image/png;base64,{{ trend }}"></div>
-<div class="container">{{ type_chart|safe }}</div>
 <h3>Total Indicators: {{ total }}</h3>
 <table id="threatTable">
 <tr>
@@ -342,8 +346,7 @@ function sortTable(n) {
 <th onclick="sortTable(3)">Classification</th>
 <th onclick="sortTable(4)">MITRE</th>
 <th onclick="sortTable(5)">Risk Score</th>
-<th onclick="sortTable(6)">Hash</th>
-<th onclick="sortTable(7)">Created</th>
+<th onclick="sortTable(6)">Created</th>
 </tr>
 {% for row in data %}
 <tr>
@@ -354,7 +357,6 @@ function sortTable(n) {
 <td>{{ row[4] }}</td>
 <td>{{ row[5] }}</td>
 <td>{{ row[6] }}</td>
-<td>{{ row[7] }}</td>
 </tr>
 {% endfor %}
 </table>
