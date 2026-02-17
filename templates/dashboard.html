@@ -1,17 +1,49 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>RedShark Threat Dashboard</title>
+    <title>Sunday Ring Red Shark Dashboard</title>
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.5/css/jquery.dataTables.min.css">
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.5/js/jquery.dataTables.min.js"></script>
 </head>
 <body>
-    <h1>RedShark Threat Dashboard</h1>
-    <p>Timestamp (MY Time +8): {{ timestamp }}</p>
+    <h1>Sunday Ring Red Shark Dashboard</h1>
+    <p>Malaysia Time: {{ timestamp }}</p>
 
     {% if trend_image %}
-        <h2>Risk Score Trend</h2>
-        <img src="data:image/png;base64,{{ trend_image }}" alt="Trend Chart">
-    {% else %}
-        <p>No data available. Run <a href="/fetch_otx">Fetch OTX</a>.</p>
+    <h2>Trend Chart</h2>
+    <img src="{{ trend_image }}" alt="Trend Chart">
     {% endif %}
+
+    <h2>Indicators Table</h2>
+    <table id="indicators" class="display">
+        <thead>
+            <tr>
+                <th>IP</th>
+                <th>Country</th>
+                <th>Risk Score</th>
+                <th>Created At</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ind in indicators %}
+            <tr>
+                <td>{{ ind.ip }}</td>
+                <td>{{ ind.country }}</td>
+                <td>{{ ind.risk_score }}</td>
+                <td>{{ ind.created_at }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <script>
+        $(document).ready(function () {
+            $('#indicators').DataTable({
+                "pageLength": 20,
+                "order": [[3, "desc"]]
+            });
+        });
+    </script>
 </body>
 </html>
