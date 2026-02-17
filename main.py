@@ -15,6 +15,10 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 import pytz
 
+# For geo heat map
+import geopandas as gpd
+from ipwhois import IPWhois
+
 app = Flask(__name__)
 
 DB = "/tmp/threats.db"
@@ -75,7 +79,7 @@ def fetch_otx():
         indicator_type = item.get("type")
         indicator = item.get("indicator")
         pulse = item.get("pulse_name","OTX")
-        mitre = item.get("mitre","")
+        mitre = item.get("mitre") or "N/A"
         classification = item.get("classification","Medium")
         risk_score = item.get("risk_score",50)
         created_at = item.get("created_at",datetime.utcnow().isoformat())
@@ -119,7 +123,7 @@ def executive_summary():
 def generate_trend(pdf=False):
     conn = sqlite3.connect(DB)
     data = conn.execute("""
-        SELECT substr(created_at,1,10), COUNT(*) FROM threats GROUP BY substr(created_at,1,10)
+        SELECT substr(created_at,1,10), COUNT(*) FROM threats GROUP BY substr(created_at,1,10) ORDER BY substr(created_at,1,10)
     """).fetchall()
     conn.close()
     dates = [d[0] for d in data]
@@ -129,19 +133,19 @@ def generate_trend(pdf=False):
     if os.path.exists(BOXING_RING):
         img = plt.imread(BOXING_RING)
         plt.imshow(img, extent=[-1,len(dates),0,max(counts)*1.2], aspect='auto', alpha=0.2, zorder=-1)
-    
-    # Bold line, thicker for PDF
+
     line_width = 5 if pdf else 3
-    plt.plot(dates, counts, color="#2a3d6a", linewidth=line_width, label="Total Indicators")
+    plt.plot(dates, counts, color="#FF8000", linewidth=line_width, marker='o', markersize=5, label="Total Indicators")
+    
     plt.xticks(rotation=45)
     plt.grid(True, linestyle='--', alpha=0.5)
     plt.tight_layout()
 
-    img_buf = io.BytesIO()
-    plt.savefig(img_buf, format="png", facecolor="#2a3d6a")
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", facecolor="#2a3d6a")
     plt.close()
-    img_buf.seek(0)
-    return base64.b64encode(img_buf.read()).decode()
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode()
 
 # --------------------------
 # TYPE CHART → LINE CHART
@@ -154,9 +158,9 @@ def generate_type_chart():
     values = [c[1] for c in counts]
 
     plt.figure(figsize=(8,4))
-    colors = ["#7fbf7f","#ffb366","#80d4ff","#dc143c","#ffa07a","#8a2be2"]
+    colors_list = ["#7fbf7f","#ffb366","#80d4ff","#dc143c","#ffa07a","#8a2be2"]
     for i, v in enumerate(values):
-        plt.plot([0,1], [v,v], color=colors[i % len(colors)], linewidth=2, label=labels[i])
+        plt.plot([0,1], [v,v], color=colors_list[i % len(colors_list)], linewidth=2, label=labels[i])
     plt.xticks([])
     plt.ylabel("Count")
     plt.legend(loc="upper right", fontsize=8)
@@ -170,34 +174,47 @@ def generate_type_chart():
     return base64.b64encode(buf.read()).decode()
 
 # --------------------------
-# HEAT MAP
+# GEO HEAT MAP DASHBOARD ONLY
 # --------------------------
-def generate_heatmap():
+def get_country(ip):
+    try:
+        obj = IPWhois(ip)
+        res = obj.lookup_rdap(asn_methods=["whois"])
+        return res.get("network",{}).get("country","Unknown")
+    except:
+        return "Unknown"
+
+def generate_geo_heatmap():
     conn = sqlite3.connect(DB)
-    data = conn.execute("""
-        SELECT type, substr(created_at,1,10), COUNT(*) FROM threats GROUP BY type, substr(created_at,1,10)
-    """).fetchall()
+    ipv4_list = [row[1] for row in conn.execute("SELECT indicator FROM threats WHERE type='IPv4'").fetchall()]
     conn.close()
 
-    types = list(sorted(set([d[0] for d in data])))
-    dates = list(sorted(set([d[1] for d in data])))
+    country_counts = {}
+    for ip in ipv4_list:
+        country = get_country(ip)
+        country_counts[country] = country_counts.get(country,0)+1
 
-    heat_values = [[0]*len(dates) for _ in types]
-    type_idx = {t:i for i,t in enumerate(types)}
-    date_idx = {d:i for i,d in enumerate(dates)}
+    world = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
+    world['counts'] = world['name'].map(lambda x: country_counts.get(x,0))
 
-    for t,d,c in data:
-        heat_values[type_idx[t]][date_idx[d]] = c
+    fig, ax = plt.subplots(1,1,figsize=(10,4))
+    
+    # Draw all countries light grey
+    world.plot(ax=ax, color='lightgrey', edgecolor='white')
 
-    plt.figure(figsize=(10,4))
-    plt.imshow(heat_values, aspect='auto', cmap="YlOrRd")
-    plt.yticks(range(len(types)), types)
-    plt.xticks(range(len(dates)), dates, rotation=45)
-    plt.colorbar(label="Indicator Count")
-    plt.tight_layout()
+    # Highlight countries with counts
+    world[world['counts']>0].plot(ax=ax, column='counts', cmap='OrRd', legend=True, legend_kwds={'label':"Threat Count"})
+
+    # Highlight Malaysia
+    malaysia = world[world['name']=="Malaysia"]
+    if not malaysia.empty:
+        malaysia.plot(ax=ax, facecolor='crimson', edgecolor='red', linewidth=2)
+
+    ax.set_title("Threat Indicators by Country (Malaysia Highlighted)", fontsize=14, color='white')
+    ax.axis('off')
 
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", facecolor="#0a1f44")
+    plt.savefig(buf, format="png", facecolor="#0a1f44", bbox_inches='tight')
     plt.close()
     buf.seek(0)
     return base64.b64encode(buf.read()).decode()
@@ -224,7 +241,7 @@ a { color:orange; }
 <h3>SecureNation Index: {{ risk_index }}</h3>
 <p>{{ summary }}</p>
 
-<img src="data:image/png;base64,{{ heatmap }}"><br><br>
+<img src="data:image/png;base64,{{ geo_heatmap }}"><br><br>
 <img src="data:image/png;base64,{{ trend }}"><br><br>
 <img src="data:image/png;base64,{{ type_chart }}"><br><br>
 
@@ -267,11 +284,11 @@ def dashboard():
 
     return render_template_string(TEMPLATE, data=rows, total=total, trend=generate_trend(),
                                   type_chart=generate_type_chart(), risk_index=risk_index(),
-                                  summary=executive_summary(), heatmap=generate_heatmap(),
+                                  summary=executive_summary(), geo_heatmap=generate_geo_heatmap(),
                                   current_time=current_time)
 
 # --------------------------
-# REPORTS
+# PDF REPORT
 # --------------------------
 def report_filename(base):
     tz = pytz.timezone("Asia/Kuala_Lumpur")
@@ -288,7 +305,6 @@ def pdf_report():
     tz = pytz.timezone("Asia/Kuala_Lumpur")
     current_time = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
-    # Title & summary
     elements.append(Paragraph("REDSHARK DARKGRID REPORT", styles["Title"]))
     elements.append(Spacer(1,12))
     elements.append(Paragraph(f"Report generated on: {current_time}", styles["Normal"]))
@@ -297,11 +313,7 @@ def pdf_report():
     elements.append(Spacer(1,20))
 
     def add_chart(chart_func, title):
-        # Use thicker line for trend chart in PDF
-        if title == "Trend Chart":
-            img_data = base64.b64decode(chart_func(pdf=True))
-        else:
-            img_data = base64.b64decode(chart_func())
+        img_data = base64.b64decode(chart_func(pdf=True) if title=="Trend Chart" else chart_func())
         img_buf = io.BytesIO(img_data)
         elements.append(Paragraph(title, styles["Heading2"]))
         elements.append(Paragraph(f"Snapshot: {current_time}", styles["Normal"]))
@@ -309,7 +321,6 @@ def pdf_report():
         elements.append(Image(img_buf, width=0.9*page_width, height=0.35*page_width))
         elements.append(Spacer(1,20))
 
-    add_chart(generate_heatmap, "Heat Map of Threat Indicators")
     add_chart(generate_trend, "Trend Chart")
     add_chart(generate_type_chart, "Type Chart")
 
@@ -339,15 +350,17 @@ def pdf_report():
     # Page numbers
     def add_page_number(canvas, doc):
         page_num = canvas.getPageNumber()
-        text = f"Page {page_num}"
         canvas.setFont("Helvetica", 9)
         canvas.setFillColor(colors.white)
-        canvas.drawRightString(landscape(A4)[0] - 20, 15, text)
+        canvas.drawRightString(landscape(A4)[0] - 20, 15, f"Page {page_num}")
 
     doc.build(elements, onFirstPage=add_page_number, onLaterPages=add_page_number)
     buffer.seek(0)
     return send_file(buffer, as_attachment=True, download_name=report_filename("sunday-ring-redshark")+".pdf", mimetype="application/pdf")
 
+# --------------------------
+# CSV / JSON Reports
+# --------------------------
 @app.route("/report/csv")
 def csv_report():
     conn = sqlite3.connect(DB)
