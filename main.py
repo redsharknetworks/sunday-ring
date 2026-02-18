@@ -1,21 +1,16 @@
 import os
 import io
-import csv
 import sqlite3
 import threading
 import time
 import random
 from datetime import datetime
-from flask import Flask, render_template_string, send_file, jsonify
+from flask import Flask, render_template_string
 from OTXv2 import OTXv2
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import base64
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
-from reportlab.lib.pagesizes import landscape, A4
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
 DB = "threats.db"
@@ -26,8 +21,22 @@ otx = OTXv2(OTX_KEY) if OTX_KEY else None
 if not OTX_KEY:
     print("⚠️ WARNING: OTX_KEY not set. Using dummy data.")
 
-# ---------------- GLOBALS ----------------
-charts = {"trend": None, "type_chart": None, "top10": None, "heatmap": None}
+# ---------------- GLOBAL CHARTS ----------------
+def generate_dummy_image():
+    buf = io.BytesIO()
+    plt.figure(figsize=(1,1))
+    plt.plot([0,1],[0,1])
+    plt.axis("off")
+    plt.savefig(buf, format="png")
+    plt.close()
+    return base64.b64encode(buf.getvalue()).decode()
+
+charts = {
+    "trend": generate_dummy_image(),
+    "type_chart": generate_dummy_image(),
+    "top10": generate_dummy_image(),
+    "heatmap": generate_dummy_image()
+}
 
 # ---------------- DATABASE ----------------
 def ensure_database():
@@ -67,12 +76,10 @@ def fetch_otx_data():
                 if not val: continue
                 score = random.randint(50,95)
                 try:
-                    if typ in ["IPv4","domain","URL"]:
-                        c.execute("INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                                  (name,val,typ,"Medium","OTX",score,created))
-                    if "Hash" in typ:
-                        c.execute("INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                                  (name,val,"hash","Medium","OTX",score,created))
+                    c.execute(
+                        "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
+                        (name,val,typ,"Medium","OTX",score,created)
+                    )
                 except: pass
     else:
         # Dummy data
@@ -84,8 +91,10 @@ def fetch_otx_data():
             typ = random.choice(dummy_types)
             score = random.randint(50,95)
             try:
-                c.execute("INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                          (pulse,indicator,typ,random.choice(["Low","Medium","High"]),"N/A",score,created))
+                c.execute(
+                    "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (pulse,indicator,typ,random.choice(["Low","Medium","High"]),"N/A",score,created)
+                )
             except: pass
     conn.commit()
     conn.close()
@@ -96,6 +105,7 @@ def generate_charts_bg():
     while True:
         conn = sqlite3.connect(DB)
         c = conn.cursor()
+
         # Trend chart
         trend = c.execute("SELECT date(created_at), COUNT(*) FROM threats GROUP BY date(created_at) ORDER BY date(created_at)").fetchall()
         if trend:
@@ -104,8 +114,10 @@ def generate_charts_bg():
             plt.figure(figsize=(6,3))
             ax = plt.gca()
             if os.path.exists("boxing_ring.png"):
-                bg = plt.imread("boxing_ring.png")
-                ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
+                try:
+                    bg = plt.imread("boxing_ring.png")
+                    ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
+                except: pass
             plt.plot(dates, counts, marker="o", color="crimson")
             plt.xticks(rotation=45)
             plt.title("Threat Trend")
@@ -114,6 +126,7 @@ def generate_charts_bg():
             plt.savefig(buf, format="png")
             plt.close()
             charts["trend"] = base64.b64encode(buf.getvalue()).decode()
+
         # Type chart
         types = c.execute("SELECT type, COUNT(*) FROM threats GROUP BY type").fetchall()
         if types:
@@ -127,6 +140,7 @@ def generate_charts_bg():
             plt.savefig(buf, format="png")
             plt.close()
             charts["type_chart"] = base64.b64encode(buf.getvalue()).decode()
+
         # Top10 chart
         top10 = c.execute("SELECT pulse, COUNT(*) as cnt FROM threats GROUP BY pulse ORDER BY cnt DESC LIMIT 10").fetchall()
         if top10:
@@ -140,12 +154,13 @@ def generate_charts_bg():
             plt.savefig(buf, format="png")
             plt.close()
             charts["top10"] = base64.b64encode(buf.getvalue()).decode()
-        # Malaysia heatmap
+
+        # Malaysia heatmap (cities + Seremban)
         cities = [
-            (3.1390,101.6869), (1.4927,103.7414), (5.4164,100.3327), (2.1896,102.2501),
-            (6.1254,102.2381), (2.9216,101.6509), (2.9264,101.6998), (1.5533,110.3592),
-            (5.9804,116.0735), (6.1203,100.3660), (5.3289,103.1403), (4.5975,101.0901),
-            (6.4383,100.2002), (3.8070,103.3255), (2.7295,101.9385)  # Seremban
+            (3.1390,101.6869),(1.4927,103.7414),(5.4164,100.3327),(2.1896,102.2501),
+            (6.1254,102.2381),(2.9216,101.6509),(2.9264,101.6998),(1.5533,110.3592),
+            (5.9804,116.0735),(6.1203,100.3660),(5.3289,103.1403),(4.5975,101.0901),
+            (6.4383,100.2002),(3.8070,103.3255),(2.7295,101.9385)
         ]
         lats,lons = zip(*cities)
         plt.figure(figsize=(6,6))
@@ -156,8 +171,9 @@ def generate_charts_bg():
         plt.savefig(buf,format="png")
         plt.close()
         charts["heatmap"] = base64.b64encode(buf.getvalue()).decode()
+
         conn.close()
-        time.sleep(600)  # regenerate every 10 min
+        time.sleep(600)
 
 def start_background():
     t = threading.Thread(target=generate_charts_bg, daemon=True)
@@ -186,3 +202,7 @@ def dashboard():
 ensure_database()
 fetch_otx_data()
 start_background()
+
+# Note: DO NOT call app.run() on Railway
+# Use the start command:
+# gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --threads 2
