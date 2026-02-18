@@ -17,3 +17,7 @@ apscheduler
 folium
 reportlab
 psycopg2
+fastapi
+uvicorn
+pydantic
+
