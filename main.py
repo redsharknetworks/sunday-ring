@@ -28,10 +28,8 @@ app = Flask(__name__)
 DB = "/data/threats.db" if os.path.exists("/data") else "threats.db"
 
 OTX_KEY = os.getenv("OTX_KEY")
-if OTX_KEY:
-    otx = OTXv2(OTX_KEY)
-else:
-    otx = None
+otx = OTXv2(OTX_KEY) if OTX_KEY else None
+if not OTX_KEY:
     print("⚠️ WARNING: OTX_KEY not set. Dummy threats will be generated.")
 
 scheduler_started = False
@@ -153,7 +151,6 @@ def start_scheduler_once():
 
 # ---------------- CHARTS ----------------
 def generate_charts():
-    ensure_database()
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     try:
@@ -210,9 +207,8 @@ def generate_charts():
 
     return trend_img, type_img
 
-# ---------------- TOP 10 THREATS ----------------
+# ---------------- TOP 10 ----------------
 def generate_top10_chart():
-    ensure_database()
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     try:
@@ -255,128 +251,26 @@ def generate_top10_chart():
 
 # ---------------- HEATMAP ----------------
 def generate_heatmap():
-    m = folium.Map(location=[4.2105, 101.9758], zoom_start=6)
+    m = folium.Map(location=[4.2105,101.9758], zoom_start=6)
     heat_data = [
-        [3.1390, 101.6869, 5],   # Kuala Lumpur
-        [1.4927, 103.7414, 4],   # Johor
-        [5.4164, 100.3327, 3],   # Penang
-        [2.1896, 102.2501, 2],   # Melaka
-        [6.1254, 102.2381, 2],   # Kelantan
-        [2.9216, 101.6509, 3],   # Cyberjaya
-        [2.9264, 101.6998, 3],   # Putrajaya
-        [1.5533, 110.3592, 2],   # Kuching
-        [5.9804, 116.0735, 2],   # Kota Kinabalu
-        [6.1203, 100.3660, 2],   # Alor Setar
-        [5.3289, 103.1403, 2],   # Kuala Terengganu
-        [4.5975, 101.0901, 2],   # Ipoh
-        [6.4383, 100.2002, 2],   # Kangar
-        [3.8070, 103.3255, 2],   # Kuantan
-        [2.7295, 101.9385, 2],   # Seremban
+        [3.1390,101.6869,5],   # Kuala Lumpur
+        [1.4927,103.7414,4],   # Johor
+        [5.4164,100.3327,3],   # Penang
+        [2.1896,102.2501,2],   # Melaka
+        [6.1254,102.2381,2],   # Kelantan
+        [2.9216,101.6509,3],   # Cyberjaya
+        [2.9264,101.6998,3],   # Putrajaya
+        [1.5533,110.3592,2],   # Kuching
+        [5.9804,116.0735,2],   # Kota Kinabalu
+        [6.1203,100.3660,2],   # Alor Setar
+        [5.3289,103.1403,2],   # Kuala Terengganu
+        [4.5975,101.0901,2],   # Ipoh
+        [6.4383,100.2002,2],   # Kangar
+        [3.8070,103.3255,2],   # Kuantan
+        [2.7295,101.9385,2],   # Seremban
     ]
-    HeatMap(heat_data, radius=25).add_to(m)
+    HeatMap(heat_data,radius=25).add_to(m)
     return m._repr_html_()
-
-# ---------------- REPORTS ----------------
-@app.route("/report/pdf")
-def pdf_report():
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4),
-                            rightMargin=20, leftMargin=20, topMargin=30, bottomMargin=20)
-    styles = getSampleStyleSheet()
-    elements = []
-
-    if os.path.exists("redshark.png"):
-        elements.append(Image("redshark.png", width=120, height=40))
-        elements.append(Spacer(1,12))
-
-    elements.append(Paragraph("Threat Intelligence Report", styles["Title"]))
-    elements.append(Spacer(1,12))
-
-    trend_img, type_chart_img = generate_charts()
-    top10_img = generate_top10_chart()
-
-    if trend_img:
-        elements.append(Image(io.BytesIO(base64.b64decode(trend_img)), width=500, height=200))
-        elements.append(Spacer(1,12))
-    if type_chart_img:
-        elements.append(Image(io.BytesIO(base64.b64decode(type_chart_img)), width=400, height=200))
-        elements.append(Spacer(1,12))
-    if top10_img:
-        elements.append(Image(io.BytesIO(base64.b64decode(top10_img)), width=500, height=200))
-        elements.append(Spacer(1,12))
-
-    # Table
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    threats = c.execute("SELECT * FROM threats").fetchall()
-    hashes = c.execute("""
-        SELECT id, pulse, hash as indicator,
-               'hash' as type, classification,
-               mitre, risk_score, created_at
-        FROM threat_hashes
-    """).fetchall()
-    conn.close()
-    rows = threats + hashes
-
-    data = [["ID","Pulse","Indicator","Type","Classification","MITRE","Risk","Created"]]
-    for r in rows:
-        pulse = Paragraph(str(r["pulse"]), ParagraphStyle(name='Normal', wordWrap='CJK'))
-        indicator = Paragraph(str(r["indicator"]), ParagraphStyle(name='Normal', wordWrap='CJK'))
-        data.append([r["id"], pulse, indicator, r["type"], r["classification"],
-                     r["mitre"], r["risk_score"], r["created_at"]])
-
-    table = Table(data, repeatRows=1, hAlign='LEFT')
-    table.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
-        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
-        ('GRID',(0,0),(-1,-1),0.5,colors.grey),
-        ('VALIGN',(0,0),(-1,-1),'TOP'),
-        ('ALIGN',(0,0),(-1,-1),'CENTER'),
-    ]))
-    elements.append(table)
-
-    doc.build(elements)
-    buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="report.pdf")
-
-@app.route("/report/csv")
-def csv_report():
-    ensure_database()
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    threats = c.execute("SELECT * FROM threats").fetchall()
-    hashes = c.execute("""
-        SELECT id, pulse, hash as indicator, 'hash' as type,
-               classification, mitre, risk_score, created_at
-        FROM threat_hashes
-    """).fetchall()
-    conn.close()
-    rows = threats + hashes
-    si = io.StringIO()
-    cw = csv.writer(si)
-    cw.writerow(["ID","Pulse","Indicator","Type","Classification","MITRE","Risk","Created"])
-    for r in rows:
-        cw.writerow(r)
-    output = io.BytesIO()
-    output.write(si.getvalue().encode())
-    output.seek(0)
-    return send_file(output, as_attachment=True, download_name="report.csv")
-
-@app.route("/report/json")
-def json_report():
-    ensure_database()
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    threats = c.execute("SELECT * FROM threats").fetchall()
-    hashes = c.execute("""
-        SELECT id, pulse, hash as indicator, 'hash' as type,
-               classification, mitre, risk_score, created_at
-        FROM threat_hashes
-    """).fetchall()
-    conn.close()
-    return jsonify([dict(x) for x in threats] + [dict(x) for x in hashes])
 
 # ---------------- DASHBOARD ----------------
 TEMPLATE = """
@@ -439,6 +333,43 @@ def dashboard():
     heatmap = generate_heatmap()
     return render_template_string(TEMPLATE, trend=trend, type_chart=type_chart,
                                   top10_chart=top10_chart, heatmap=heatmap)
+
+# ---------------- REPORTS ----------------
+@app.route("/report/csv")
+def csv_report():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    threats = c.execute("SELECT * FROM threats").fetchall()
+    hashes = c.execute("""
+        SELECT id, pulse, hash as indicator, 'hash' as type,
+               classification, mitre, risk_score, created_at
+        FROM threat_hashes
+    """).fetchall()
+    conn.close()
+    rows = threats + hashes
+    si = io.StringIO()
+    cw = csv.writer(si)
+    cw.writerow(["ID","Pulse","Indicator","Type","Classification","MITRE","Risk","Created"])
+    for r in rows:
+        cw.writerow(r)
+    output = io.BytesIO()
+    output.write(si.getvalue().encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name="report.csv")
+
+@app.route("/report/json")
+def json_report():
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    threats = c.execute("SELECT * FROM threats").fetchall()
+    hashes = c.execute("""
+        SELECT id, pulse, hash as indicator, 'hash' as type,
+               classification, mitre, risk_score, created_at
+        FROM threat_hashes
+    """).fetchall()
+    conn.close()
+    return jsonify([dict(x) for x in threats]+[dict(x) for x in hashes])
 
 # ---------------- INITIALIZE ----------------
 ensure_database()
