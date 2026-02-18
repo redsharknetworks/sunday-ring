@@ -22,74 +22,62 @@ import matplotlib.pyplot as plt
 import folium
 from folium.plugins import HeatMap
 
-
-# -------------------------------------------------
-# CONFIG
-# -------------------------------------------------
+# ---------------- CONFIG ----------------
 
 app = Flask(__name__)
 
-# Use persistent disk on Render if available
-if os.path.exists("/data"):
-    DB = "/data/threats.db"
-else:
-    DB = "threats.db"
+# Persistent DB if available
+DB = "/data/threats.db" if os.path.exists("/data") else "threats.db"
 
 OTX_KEY = os.getenv("OTX_KEY")
-otx = OTXv2(OTX_KEY) if OTX_KEY else None
+if OTX_KEY:
+    otx = OTXv2(OTX_KEY)
+else:
+    otx = None
+    print("⚠️ WARNING: OTX_KEY not set. Threats will not update.")
 
 scheduler_started = False
 
-
-# -------------------------------------------------
-# DATABASE
-# -------------------------------------------------
+# ---------------- DATABASE ----------------
 
 def ensure_database():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-
     c.execute("""
-    CREATE TABLE IF NOT EXISTS threats (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        pulse TEXT,
-        indicator TEXT UNIQUE,
-        type TEXT,
-        classification TEXT,
-        mitre TEXT,
-        risk_score INTEGER,
-        created_at TEXT
-    )
+        CREATE TABLE IF NOT EXISTS threats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pulse TEXT,
+            indicator TEXT UNIQUE,
+            type TEXT,
+            classification TEXT,
+            mitre TEXT,
+            risk_score INTEGER,
+            created_at TEXT
+        )
     """)
-
     c.execute("""
-    CREATE TABLE IF NOT EXISTS threat_hashes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        pulse TEXT,
-        hash TEXT UNIQUE,
-        classification TEXT,
-        mitre TEXT,
-        risk_score INTEGER,
-        created_at TEXT
-    )
+        CREATE TABLE IF NOT EXISTS threat_hashes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pulse TEXT,
+            hash TEXT UNIQUE,
+            classification TEXT,
+            mitre TEXT,
+            risk_score INTEGER,
+            created_at TEXT
+        )
     """)
-
     conn.commit()
     conn.close()
 
-
-# -------------------------------------------------
-# OTX FETCH
-# -------------------------------------------------
+# ---------------- OTX FETCH ----------------
 
 def fetch_otx_data():
     if not otx:
-        print("OTX key not set")
+        print("OTX key missing, skipping fetch.")
         return
 
     try:
-        response = otx.getsubscribed()
-        pulses = response.get("results", [])
+        pulses = otx.getall(limit=10)  # Correct OTXv2 method
     except Exception as e:
         print("OTX fetch error:", e)
         return
@@ -97,19 +85,16 @@ def fetch_otx_data():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
 
-    for pulse in pulses[:10]:
+    for pulse in pulses:
         name = pulse.get("name", "OTX")
-
-        for ind in pulse.get("indicators", []):
+        indicators = pulse.get("indicators", [])
+        for ind in indicators:
             val = ind.get("indicator")
             typ = ind.get("type", "domain")
-
             if not val:
                 continue
-
             created = datetime.utcnow().isoformat()
             score = random.randint(50, 95)
-
             try:
                 if typ in ["IPv4", "domain", "URL"]:
                     c.execute("""
@@ -117,14 +102,12 @@ def fetch_otx_data():
                         (pulse, indicator, type, classification, mitre, risk_score, created_at)
                         VALUES (?,?,?,?,?,?,?)
                     """, (name, val, typ, "Medium", "OTX", score, created))
-
                 if "Hash" in typ:
                     c.execute("""
                         INSERT OR IGNORE INTO threat_hashes
                         (pulse, hash, classification, mitre, risk_score, created_at)
                         VALUES (?,?,?,?,?,?)
                     """, (name, val, "Medium", "OTX", score, created))
-
             except Exception as e:
                 print("Insert error:", e)
 
@@ -132,10 +115,7 @@ def fetch_otx_data():
     conn.close()
     print("OTX Updated")
 
-
-# -------------------------------------------------
-# SCHEDULER
-# -------------------------------------------------
+# ---------------- SCHEDULER ----------------
 
 def scheduler():
     while True:
@@ -145,22 +125,17 @@ def scheduler():
             print("Scheduler error:", e)
         time.sleep(3600)
 
-
 def start_scheduler_once():
     global scheduler_started
-    if not scheduler_started:
+    if not scheduler_started and otx:
         scheduler_started = True
         thread = threading.Thread(target=scheduler, daemon=True)
         thread.start()
 
-
-# -------------------------------------------------
-# CHARTS
-# -------------------------------------------------
+# ---------------- CHARTS ----------------
 
 def generate_charts():
     ensure_database()
-
     conn = sqlite3.connect(DB)
     c = conn.cursor()
 
@@ -191,10 +166,9 @@ def generate_charts():
         counts = [x[1] for x in trend]
 
         plt.figure(figsize=(6,3))
-        plt.plot(dates, counts, marker="o")
+        plt.plot(dates, counts, marker="o", color="crimson")
         plt.xticks(rotation=45)
         plt.title("Threat Trend")
-
         buf = io.BytesIO()
         plt.tight_layout()
         plt.savefig(buf, format="png")
@@ -206,9 +180,8 @@ def generate_charts():
         values = [x[1] for x in types]
 
         plt.figure(figsize=(4,3))
-        plt.bar(labels, values)
+        plt.bar(labels, values, color="darkblue")
         plt.title("Indicator Types")
-
         buf = io.BytesIO()
         plt.tight_layout()
         plt.savefig(buf, format="png")
@@ -217,27 +190,21 @@ def generate_charts():
 
     return trend_img, type_img
 
-
-# -------------------------------------------------
-# HEATMAP
-# -------------------------------------------------
+# ---------------- HEATMAP ----------------
 
 def generate_heatmap():
     m = folium.Map(location=[4.2105, 101.9758], zoom_start=6)
     heat_data = [
-        [3.1390,101.6869,5],
-        [1.4927,103.7414,4],
-        [5.4164,100.3327,3],
-        [2.1896,102.2501,2],
-        [6.1254,102.2381,2],
+        [3.1390,101.6869,5],  # KL
+        [1.4927,103.7414,4],  # Johor
+        [5.4164,100.3327,3],  # Penang
+        [2.1896,102.2501,2],  # Melaka
+        [6.1254,102.2381,2],  # Kelantan
     ]
     HeatMap(heat_data, radius=25).add_to(m)
     return m._repr_html_()
 
-
-# -------------------------------------------------
-# ROUTES
-# -------------------------------------------------
+# ---------------- ROUTES ----------------
 
 @app.route("/")
 def dashboard():
@@ -247,7 +214,6 @@ def dashboard():
                                   trend=trend,
                                   type_chart=type_chart,
                                   heatmap=heatmap)
-
 
 @app.route("/report/json")
 def json_report():
@@ -263,12 +229,8 @@ def json_report():
                mitre, risk_score, created_at
         FROM threat_hashes
     """).fetchall()
-
     conn.close()
-
-    return jsonify([dict(x) for x in threats] +
-                   [dict(x) for x in hashes])
-
+    return jsonify([dict(x) for x in threats] + [dict(x) for x in hashes])
 
 @app.route("/report/pdf")
 def pdf_report():
@@ -276,16 +238,13 @@ def pdf_report():
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     styles = getSampleStyleSheet()
     elements = []
-
     elements.append(Paragraph("Threat Intelligence Report", styles["Title"]))
     elements.append(Spacer(1,12))
 
     trend, type_chart = generate_charts()
-
     if trend:
         img = io.BytesIO(base64.b64decode(trend))
         elements.append(Image(img, width=420, height=200))
-
     if type_chart:
         img2 = io.BytesIO(base64.b64decode(type_chart))
         elements.append(Spacer(1,12))
@@ -293,15 +252,9 @@ def pdf_report():
 
     doc.build(elements)
     buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name="report.pdf")
 
-    return send_file(buffer,
-                     as_attachment=True,
-                     download_name="report.pdf")
-
-
-# -------------------------------------------------
-# TEMPLATE
-# -------------------------------------------------
+# ---------------- TEMPLATE ----------------
 
 TEMPLATE = """
 <!DOCTYPE html>
@@ -348,10 +301,7 @@ a { color:orange; font-weight:bold; text-decoration:none; }
 </html>
 """
 
-
-# -------------------------------------------------
-# INITIALIZE ON IMPORT (CRITICAL FOR RENDER)
-# -------------------------------------------------
+# ---------------- INITIALIZE ----------------
 
 ensure_database()
 start_scheduler_once()
@@ -361,10 +311,7 @@ try:
 except Exception as e:
     print("Initial fetch error:", e)
 
-
-# -------------------------------------------------
-# RUN (Local Only)
-# -------------------------------------------------
+# ---------------- RUN LOCAL ----------------
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
