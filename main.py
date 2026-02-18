@@ -5,12 +5,16 @@ import threading
 import time
 import random
 from datetime import datetime
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, send_file, jsonify
 from OTXv2 import OTXv2
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import base64
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet
+import csv
 
 app = Flask(__name__)
 DB = "threats.db"
@@ -199,6 +203,10 @@ TEMPLATE = """
 {% if charts.type_chart %}<img src="data:image/png;base64,{{ charts.type_chart }}"><br>{% endif %}
 {% if charts.top10 %}<img src="data:image/png;base64,{{ charts.top10 }}"><br>{% endif %}
 {% if charts.heatmap %}<img src="data:image/png;base64,{{ charts.heatmap }}"><br>{% endif %}
+<br>
+<a href="/report/pdf">PDF</a> |
+<a href="/report/csv">CSV</a> |
+<a href="/report/json">JSON</a>
 </body>
 </html>
 """
@@ -207,11 +215,58 @@ TEMPLATE = """
 def dashboard():
     return render_template_string(TEMPLATE, charts=charts)
 
+# ---------------- CSV ----------------
+@app.route("/report/csv")
+def csv_report():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    data = c.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    si = io.StringIO()
+    cw = csv.writer(si)
+    cw.writerow(["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"])
+    cw.writerows(data)
+    output = io.BytesIO()
+    output.write(si.getvalue().encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name="report.csv")
+
+# ---------------- JSON ----------------
+@app.route("/report/json")
+def json_report():
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    data = c.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    return jsonify([dict(x) for x in data])
+
+# ---------------- PDF ----------------
+@app.route("/report/pdf")
+def pdf_report():
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer,pagesize=letter)
+    styles = getSampleStyleSheet()
+    elements = []
+    elements.append(Paragraph("Threat Intelligence Report",styles["Title"]))
+    elements.append(Spacer(1,12))
+
+    for key in ["trend","type_chart","top10","heatmap"]:
+        if charts.get(key):
+            img = io.BytesIO(base64.b64decode(charts[key]))
+            elements.append(RLImage(img, width=420, height=200))
+            elements.append(Spacer(1,12))
+
+    doc.build(elements)
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name="report.pdf")
+
 # ---------------- INIT ----------------
 ensure_database()
 fetch_otx_data()
 seed_dummy_data()
 start_background()
 
-# Note: Railway/Gunicorn usage:
+# ---------------- Railway Start Command ----------------
+# Use this in Railway:
 # gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --threads 2
