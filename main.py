@@ -1,115 +1,122 @@
 import os
 import json
-import threading
 import pandas as pd
-import psycopg2
+import matplotlib.pyplot as plt
 from flask import Flask, jsonify, render_template
+from datetime import datetime
 from OTXv2 import OTXv2
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-# -----------------------------
-# Configuration
-# -----------------------------
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@host:5432/threat_intel")
+# ----------------------------
+# Config
+# ----------------------------
+DATABASE_URL = os.getenv("DATABASE_URL")
 OTX_API_KEY = os.getenv("OTX_API_KEY")
-OTX_SEED_FILE = os.path.join(os.path.dirname(__file__), "otx_seed.json")
-OTX_FETCH_LIMIT = 20  # small batches for memory safety
+SEED_FILE = "otx_seed.json"  # optional seed JSON in repo
 
-# -----------------------------
-# Initialize Flask
-# -----------------------------
 app = Flask(__name__)
 
-# -----------------------------
-# DB connection
-# -----------------------------
-def get_db_connection():
-    conn = psycopg2.connect(DATABASE_URL)
-    return conn
+# ----------------------------
+# Database setup
+# ----------------------------
+def get_conn():
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
-# -----------------------------
-# Load seed file
-# -----------------------------
-def load_seed():
-    if os.path.exists(OTX_SEED_FILE):
-        with open(OTX_SEED_FILE, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return []
-    return []
-
-# -----------------------------
-# Fetch OTX pulses (background)
-# -----------------------------
-def fetch_otx_background():
-    if not OTX_API_KEY:
-        print("OTX API key not set, skipping live fetch.")
-        return
-
-    otx = OTXv2(OTX_API_KEY)
-    try:
-        pulses = otx.getall(limit=OTX_FETCH_LIMIT)
-        conn = get_db_connection()
-        cur = conn.cursor()
-        for pulse in pulses:
-            for indicator in pulse.get("indicators", []):
-                cur.execute("""
-                    INSERT INTO threat_intel (type, indicator, country, risk_score, created_at)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT DO NOTHING
-                """, (
-                    indicator.get("type"),
-                    indicator.get("indicator"),
-                    indicator.get("country", None),
-                    indicator.get("risk_score", None),
-                    indicator.get("created_at", None)
-                ))
+def init_db():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Create database table if it does not exist
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS threat_intel (
+                    id SERIAL PRIMARY KEY,
+                    type TEXT,
+                    indicator TEXT UNIQUE,
+                    country TEXT,
+                    risk_score REAL,
+                    created_at TIMESTAMP
+                )
+            """)
         conn.commit()
-        cur.close()
-        conn.close()
-        print(f"Fetched {len(pulses)} OTX pulses.")
-    except Exception as e:
-        print(f"Error fetching OTX: {e}")
 
-# -----------------------------
-# Routes
-# -----------------------------
+# Initialize DB and table
+init_db()
+
+# ----------------------------
+# OTX fetch
+# ----------------------------
+otx = OTXv2(OTX_API_KEY)
+
+def fetch_otx(limit=50):
+    pulses = []
+    try:
+        pulses = otx.getall(limit=limit)
+    except Exception as e:
+        print("OTX fetch failed:", e)
+        if os.path.exists(SEED_FILE):
+            with open(SEED_FILE, "r") as f:
+                pulses = json.load(f)
+    
+    inserted = 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for pulse in pulses:
+                for ioc in pulse.get("indicators", []):
+                    try:
+                        cur.execute("""
+                            INSERT INTO threat_intel (type, indicator, country, risk_score, created_at)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (indicator) DO NOTHING
+                        """, (
+                            ioc.get("type"),
+                            ioc.get("indicator"),
+                            ioc.get("country", None),
+                            ioc.get("risk_score", None),
+                            datetime.utcnow()
+                        ))
+                        inserted += cur.rowcount
+                    except Exception as e:
+                        print("Insert error:", e)
+        conn.commit()
+    return {"inserted": inserted, "total": len(pulses)}
+
+# ----------------------------
+# Dashboard
+# ----------------------------
 @app.route("/")
 def dashboard():
-    conn = get_db_connection()
     try:
-        df = pd.read_sql_query(
-            "SELECT type, indicator, country, risk_score, created_at "
-            "FROM threat_intel ORDER BY created_at DESC LIMIT 100",
-            conn
-        )
-        data = df.to_dict(orient="records")
+        with get_conn() as conn:
+            df = pd.read_sql("SELECT type, indicator, country, risk_score, created_at FROM threat_intel ORDER BY created_at DESC", conn)
+        
+        chart_path = None
+        if not df.empty:
+            chart_path = "static/top10.png"
+            top10 = df.sort_values("risk_score", ascending=False).head(10)
+            plt.figure(figsize=(10,6))
+            plt.barh(top10["indicator"], top10["risk_score"], color="red")
+            plt.xlabel("Risk Score")
+            plt.title("Top 10 Threat Indicators")
+            plt.tight_layout()
+            plt.savefig(chart_path)
+            plt.close()
+
+        return render_template("dashboard.html", table=df.to_dict(orient="records"), chart=chart_path)
     except Exception as e:
-        print(f"Dashboard read failed: {e}")
-        data = load_seed()  # fallback to seed
-    finally:
-        conn.close()
-    return jsonify(data)
+        print("Dashboard read failed:", e)
+        return "Dashboard read failed: " + str(e), 500
 
+# ----------------------------
+# Fetch OTX route
+# ----------------------------
 @app.route("/fetch_otx")
-def fetch_otx():
-    thread = threading.Thread(target=fetch_otx_background)
-    thread.start()
-    return jsonify({"status": "OTX fetch started in background"})
+def fetch_route():
+    result = fetch_otx()
+    return jsonify(result)
 
-
-# -----------------------------
-# Start background fetch on first request
-# -----------------------------
-@app.before_request
-def start_background_fetch():
-    if not hasattr(app, "otx_thread_started"):
-        app.otx_thread_started = True
-        threading.Thread(target=fetch_otx_background).start()
-
-# -----------------------------
+# ----------------------------
 # Run
-# -----------------------------
+# ----------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 33212))
     app.run(host="0.0.0.0", port=port)
