@@ -2,41 +2,44 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Threat Intelligence Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <title>Sunday Ring Threat Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #1a1a1a; color: #f0f0f0; }
+        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+        th, td { padding: 10px; border: 1px solid #444; text-align: left; }
+        th { background-color: #333; }
+        tr:nth-child(even) { background-color: #2a2a2a; }
+        h1 { text-align: center; margin-top: 20px; }
+    </style>
 </head>
 <body>
-    <h1>Threat Intelligence Dashboard</h1>
-    <canvas id="riskChart" width="800" height="400"></canvas>
+    <h1>Sunday Ring Threat Intelligence Dashboard</h1>
 
-    <script>
-        const data = {{ data|tojson }};
-        
-        const labels = data.map(d => d.indicator);
-        const scores = data.map(d => d.risk_score);
-
-        const ctx = document.getElementById('riskChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: 'Risk Score',
-                    data: scores,
-                    backgroundColor: 'rgba(255, 99, 132, 0.6)'
-                }]
-            },
-            options: {
-                responsive: true,
-                plugins: {
-                    legend: { display: false },
-                    title: {
-                        display: true,
-                        text: 'Top Threat Indicators'
-                    }
-                }
-            }
-        });
-    </script>
+    {% if indicators and indicators|length > 0 %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Indicator</th>
+                    <th>Country</th>
+                    <th>Risk Score</th>
+                    <th>Created At</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for ind in indicators %}
+                <tr>
+                    <td>{{ ind.type or 'N/A' }}</td>
+                    <td>{{ ind.indicator or 'N/A' }}</td>
+                    <td>{{ ind.country or 'N/A' }}</td>
+                    <td>{{ ind.risk_score or '0' }}</td>
+                    <td>{{ ind.created_at or 'N/A' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p style="text-align:center; margin-top: 50px;">No threat indicators available.</p>
+    {% endif %}
 </body>
 </html>
