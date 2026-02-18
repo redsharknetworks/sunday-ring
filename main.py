@@ -1,107 +1,115 @@
 import os
 import json
-import sqlite3
+import threading
 import pandas as pd
+import psycopg2
 from flask import Flask, jsonify, render_template
 from OTXv2 import OTXv2
 
-DB_PATH = "threat_intel.db"
-SEED_FILE = "otx_seed.json"
-OTX_API_KEY = os.environ.get("OTX_API_KEY")
+# -----------------------------
+# Configuration
+# -----------------------------
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@host:5432/threat_intel")
+OTX_API_KEY = os.getenv("OTX_API_KEY")
+OTX_SEED_FILE = os.path.join(os.path.dirname(__file__), "otx_seed.json")
+OTX_FETCH_LIMIT = 20  # small batches for memory safety
 
+# -----------------------------
+# Initialize Flask
+# -----------------------------
 app = Flask(__name__)
 
-# Initialize DB
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS indicators (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            type TEXT,
-            indicator TEXT,
-            country TEXT,
-            risk_score INTEGER,
-            created_at TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+# -----------------------------
+# DB connection
+# -----------------------------
+def get_db_connection():
+    conn = psycopg2.connect(DATABASE_URL)
+    return conn
 
-# Load seed JSON if exists
+# -----------------------------
+# Load seed file
+# -----------------------------
 def load_seed():
-    if os.path.exists(SEED_FILE):
-        with open(SEED_FILE, "r") as f:
-            data = json.load(f)
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        for entry in data.get("indicators", []):
-            cursor.execute("""
-                INSERT INTO indicators (type, indicator, country, risk_score, created_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                entry.get("type"),
-                entry.get("indicator"),
-                entry.get("country"),
-                entry.get("risk_score"),
-                entry.get("created_at")
-            ))
-        conn.commit()
-        conn.close()
-        print(f"Loaded {len(data.get('indicators', []))} rows from seed JSON.")
-    else:
-        print("No seed JSON found, skipping.")
+    if os.path.exists(OTX_SEED_FILE):
+        with open(OTX_SEED_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
+    return []
 
-# Fetch from OTX if key exists
-def fetch_otx(limit=50):
+# -----------------------------
+# Fetch OTX pulses (background)
+# -----------------------------
+def fetch_otx_background():
     if not OTX_API_KEY:
-        print("OTX_API_KEY not set, skipping OTX fetch.")
-        return {"status": "skipped", "message": "OTX key not set"}
+        print("OTX API key not set, skipping live fetch.")
+        return
+
     otx = OTXv2(OTX_API_KEY)
     try:
-        pulses = otx.getall(limit=limit)
+        pulses = otx.getall(limit=OTX_FETCH_LIMIT)
+        conn = get_db_connection()
+        cur = conn.cursor()
+        for pulse in pulses:
+            for indicator in pulse.get("indicators", []):
+                cur.execute("""
+                    INSERT INTO threat_intel (type, indicator, country, risk_score, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                """, (
+                    indicator.get("type"),
+                    indicator.get("indicator"),
+                    indicator.get("country", None),
+                    indicator.get("risk_score", None),
+                    indicator.get("created_at", None)
+                ))
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"Fetched {len(pulses)} OTX pulses.")
     except Exception as e:
-        print("OTX fetch failed:", e)
-        return {"status": "error", "message": str(e)}
-    
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    count = 0
-    for pulse in pulses:
-        for ind in pulse.get("indicators", []):
-            cursor.execute("""
-                INSERT INTO indicators (type, indicator, country, risk_score, created_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                ind.get("type"),
-                ind.get("indicator"),
-                ind.get("country", ""),
-                ind.get("risk_score", 0),
-                ind.get("created_at")
-            ))
-            count += 1
-    conn.commit()
-    conn.close()
-    print(f"Inserted {count} indicators from OTX.")
-    return {"status": "ok", "inserted": count}
+        print(f"Error fetching OTX: {e}")
 
-@app.route("/fetch_otx")
-def fetch_route():
-    result = fetch_otx()
-    return jsonify(result)
-
+# -----------------------------
+# Routes
+# -----------------------------
 @app.route("/")
 def dashboard():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     try:
-        df = pd.read_sql_query("SELECT type, indicator, country, risk_score, created_at FROM indicators ORDER BY created_at DESC", conn)
+        df = pd.read_sql_query(
+            "SELECT type, indicator, country, risk_score, created_at "
+            "FROM threat_intel ORDER BY created_at DESC LIMIT 100",
+            conn
+        )
         data = df.to_dict(orient="records")
     except Exception as e:
-        data = {"error": str(e)}
-    conn.close()
-    return render_template("dashboard.html", indicators=data)
+        print(f"Dashboard read failed: {e}")
+        data = load_seed()  # fallback to seed
+    finally:
+        conn.close()
+    return jsonify(data)
 
+@app.route("/fetch_otx")
+def fetch_otx():
+    thread = threading.Thread(target=fetch_otx_background)
+    thread.start()
+    return jsonify({"status": "OTX fetch started in background"})
+
+
+# -----------------------------
+# Start background fetch on first request
+# -----------------------------
+@app.before_request
+def start_background_fetch():
+    if not hasattr(app, "otx_thread_started"):
+        app.otx_thread_started = True
+        threading.Thread(target=fetch_otx_background).start()
+
+# -----------------------------
+# Run
+# -----------------------------
 if __name__ == "__main__":
-    init_db()
-    load_seed()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.getenv("PORT", 33212))
+    app.run(host="0.0.0.0", port=port)
