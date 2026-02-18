@@ -23,34 +23,34 @@ import folium
 from folium.plugins import HeatMap
 
 app = Flask(__name__)
-DB = "threats.db"
+DB = os.getenv("DB_PATH", "threats.db")
 
 # ---------------- DATABASE ----------------
 def ensure_database():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     c.execute("""
-CREATE TABLE IF NOT EXISTS threats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    pulse TEXT,
-    indicator TEXT,
-    type TEXT,
-    classification TEXT,
-    mitre TEXT,
-    risk_score INTEGER,
-    created_at TEXT
-)
+    CREATE TABLE IF NOT EXISTS threats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pulse TEXT,
+        indicator TEXT,
+        type TEXT,
+        classification TEXT,
+        mitre TEXT,
+        risk_score INTEGER,
+        created_at TEXT
+    )
     """)
     c.execute("""
-CREATE TABLE IF NOT EXISTS threat_hashes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    pulse TEXT,
-    hash TEXT,
-    classification TEXT,
-    mitre TEXT,
-    risk_score INTEGER,
-    created_at TEXT
-)
+    CREATE TABLE IF NOT EXISTS threat_hashes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pulse TEXT,
+        hash TEXT,
+        classification TEXT,
+        mitre TEXT,
+        risk_score INTEGER,
+        created_at TEXT
+    )
     """)
     conn.commit()
     conn.close()
@@ -83,6 +83,7 @@ OTX_KEY = os.getenv("OTX_KEY")
 OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
 
 def fetch_otx_data():
+    ensure_database()
     if not OTX_KEY:
         print("OTX key missing, inserting dummy data...")
         insert_dummy_data()
@@ -137,10 +138,17 @@ def generate_charts():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-
-    trend = c.execute("SELECT substr(created_at,1,10) as date, COUNT(*) as cnt FROM threats GROUP BY date ORDER BY date").fetchall()
-    types = c.execute("SELECT type, COUNT(*) as cnt FROM threats GROUP BY type").fetchall()
-    conn.close()
+    try:
+        trend = c.execute(
+            "SELECT substr(created_at,1,10) as date, COUNT(*) as cnt FROM threats GROUP BY date ORDER BY date"
+        ).fetchall()
+        types = c.execute(
+            "SELECT type, COUNT(*) as cnt FROM threats GROUP BY type"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None, None
+    finally:
+        conn.close()
 
     trend_img = None
     type_img = None
@@ -204,9 +212,59 @@ def generate_heatmap():
     HeatMap(heat_data,radius=25).add_to(m)
     return m._repr_html_()
 
-# ---------------- DASHBOARD ----------------
-TEMPLATE = """[Use previous TEMPLATE with table included, see previous snippet]"""
+# ---------------- DASHBOARD TEMPLATE ----------------
+TEMPLATE = """
+<html>
+<head>
+<title>RedShark Threat Dashboard</title>
+</head>
+<body>
+<h2>RedShark Threat Dashboard</h2>
+<div>
+    <h3>Heatmap</h3>
+    {{ heatmap | safe }}
+</div>
+<div>
+    <h3>Trend Chart</h3>
+    {% if trend %}
+        <img src="data:image/png;base64,{{ trend }}">
+    {% else %}
+        <p>No trend data</p>
+    {% endif %}
+</div>
+<div>
+    <h3>Type Chart</h3>
+    {% if type_chart %}
+        <img src="data:image/png;base64,{{ type_chart }}">
+    {% else %}
+        <p>No type data</p>
+    {% endif %}
+</div>
+<div>
+    <h3>Latest Threats</h3>
+    <table border="1" cellpadding="5">
+        <tr>
+            <th>ID</th><th>Pulse</th><th>Indicator</th><th>Type</th><th>Class</th><th>MITRE</th><th>Risk</th><th>Created</th>
+        </tr>
+        {% for row in table_data %}
+        <tr>
+            <td>{{ row['id'] }}</td>
+            <td>{{ row['pulse'] }}</td>
+            <td>{{ row['indicator'] }}</td>
+            <td>{{ row['type'] }}</td>
+            <td>{{ row['classification'] }}</td>
+            <td>{{ row['mitre'] }}</td>
+            <td>{{ row['risk_score'] }}</td>
+            <td>{{ row['created_at'] }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+</body>
+</html>
+"""
 
+# ---------------- DASHBOARD ----------------
 @app.route("/")
 def dashboard():
     trend,type_chart = generate_charts()
@@ -279,5 +337,5 @@ def pdf_report():
 if __name__ == "__main__":
     ensure_database()
     fetch_otx_data()
-    threading.Thread(target=scheduler,daemon=True).start()
+    threading.Thread(target=scheduler, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
