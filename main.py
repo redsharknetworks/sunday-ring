@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import base64
 import csv
 
+# Optional OTX integration
 try:
     from OTXv2 import OTXv2
     OTX_AVAILABLE = True
@@ -49,14 +50,13 @@ def ensure_database():
     conn.commit()
     conn.close()
 
-# ---------------- OTX Fetch / Dummy ----------------
+# ---------------- OTX / Dummy Fetch ----------------
 def fetch_otx_data():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     created = datetime.utcnow().isoformat()
-
-    if otx:
-        try:
+    try:
+        if otx:
             pulses = otx.getall(limit=10)
             for pulse in pulses:
                 name = pulse.get("name","OTX")
@@ -69,90 +69,97 @@ def fetch_otx_data():
                         "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
                         (name,val,typ,"Medium","OTX",score,created)
                     )
-        except Exception as e:
-            print("OTX fetch error:", e)
+        # Dummy data if table empty
+        count = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
+        if count == 0:
+            dummy_pulses = ["Red Shark Attack","Silent Hunter","Ghost Spider","Dark Wave","Cyber Kraken","Phantom Tiger"]
+            dummy_types = ["IPv4","domain","URL","FileHash-MD5","FileHash-SHA256"]
+            for _ in range(100):
+                pulse = random.choice(dummy_pulses)
+                indicator = f"dummy-{random.randint(1000,9999)}.com"
+                typ = random.choice(dummy_types)
+                score = random.randint(50,95)
+                created = datetime.utcnow().isoformat()
+                c.execute(
+                    "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (pulse,indicator,typ,random.choice(["Low","Medium","High"]),"N/A",score,created)
+                )
+    except Exception as e:
+        print("Error fetching OTX / generating dummy:", e)
+    finally:
+        conn.commit()
+        conn.close()
 
-    # Dummy data if no OTX
-    count = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
-    if count == 0:
-        dummy_pulses = ["Red Shark Attack","Silent Hunter","Ghost Spider","Dark Wave","Cyber Kraken","Phantom Tiger"]
-        dummy_types = ["IPv4","domain","URL","FileHash-MD5","FileHash-SHA256"]
-        for _ in range(100):
-            pulse = random.choice(dummy_pulses)
-            indicator = f"dummy-{random.randint(1000,9999)}.com"
-            typ = random.choice(dummy_types)
-            score = random.randint(50,95)
-            created = datetime.utcnow().isoformat()
-            c.execute(
-                "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                (pulse,indicator,typ,random.choice(["Low","Medium","High"]),"N/A",score,created)
-            )
-    conn.commit()
-    conn.close()
-
-# ---------------- Charts ----------------
+# ---------------- Safe Chart Utilities ----------------
 def plot_chart_to_base64(fig):
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return base64.b64encode(buf.getvalue()).decode()
+    try:
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception as e:
+        print("Chart generation failed:", e)
+        return None
 
 def generate_charts():
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
     charts = {}
+    try:
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
 
-    # Trend chart
-    trend_data = c.execute("SELECT date(created_at), COUNT(*) FROM threats GROUP BY date(created_at) ORDER BY date(created_at)").fetchall()
-    if trend_data:
-        dates = [x[0] for x in trend_data]
-        counts = [x[1] for x in trend_data]
-        fig, ax = plt.subplots(figsize=(6,3), dpi=100)
-        if os.path.exists("boxing_ring.png"):
-            try:
-                bg = plt.imread("boxing_ring.png")
-                ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
-            except: pass
-        ax.plot(dates, counts, marker="o", color="crimson")
-        ax.set_title("Threat Trend")
-        plt.xticks(rotation=45)
-        charts["trend"] = plot_chart_to_base64(fig)
+        # Trend chart
+        trend_data = c.execute("SELECT date(created_at), COUNT(*) FROM threats GROUP BY date(created_at) ORDER BY date(created_at)").fetchall()
+        if trend_data:
+            dates = [x[0] for x in trend_data]
+            counts = [x[1] for x in trend_data]
+            fig, ax = plt.subplots(figsize=(6,3), dpi=100)
+            if os.path.exists("boxing_ring.png"):
+                try:
+                    bg = plt.imread("boxing_ring.png")
+                    ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
+                except: pass
+            ax.plot(dates, counts, marker="o", color="crimson")
+            ax.set_title("Threat Trend")
+            plt.xticks(rotation=45)
+            charts["trend"] = plot_chart_to_base64(fig)
 
-    # Type chart
-    type_data = c.execute("SELECT type, COUNT(*) FROM threats GROUP BY type").fetchall()
-    if type_data:
-        labels = [x[0] for x in type_data]
-        values = [x[1] for x in type_data]
-        fig, ax = plt.subplots(figsize=(4,3), dpi=100)
-        ax.bar(labels, values, color="darkblue")
-        ax.set_title("Indicator Types")
-        charts["type_chart"] = plot_chart_to_base64(fig)
+        # Type chart
+        type_data = c.execute("SELECT type, COUNT(*) FROM threats GROUP BY type").fetchall()
+        if type_data:
+            labels = [x[0] for x in type_data]
+            values = [x[1] for x in type_data]
+            fig, ax = plt.subplots(figsize=(4,3), dpi=100)
+            ax.bar(labels, values, color="darkblue")
+            ax.set_title("Indicator Types")
+            charts["type_chart"] = plot_chart_to_base64(fig)
 
-    # Top 10 pulses
-    top10_data = c.execute("SELECT pulse, COUNT(*) FROM threats GROUP BY pulse ORDER BY COUNT(*) DESC LIMIT 10").fetchall()
-    if top10_data:
-        pulses = [x[0] for x in top10_data]
-        counts = [x[1] for x in top10_data]
-        fig, ax = plt.subplots(figsize=(6,3), dpi=100)
-        ax.barh(pulses[::-1], counts[::-1], color="red")
-        ax.set_title("Top 10 Threat Pulses")
-        charts["top10"] = plot_chart_to_base64(fig)
+        # Top 10 pulses
+        top10_data = c.execute("SELECT pulse, COUNT(*) FROM threats GROUP BY pulse ORDER BY COUNT(*) DESC LIMIT 10").fetchall()
+        if top10_data:
+            pulses = [x[0] for x in top10_data]
+            counts = [x[1] for x in top10_data]
+            fig, ax = plt.subplots(figsize=(6,3), dpi=100)
+            ax.barh(pulses[::-1], counts[::-1], color="red")
+            ax.set_title("Top 10 Threat Pulses")
+            charts["top10"] = plot_chart_to_base64(fig)
 
-    # Malaysia heatmap with requested cities
-    cities = [
-        (3.1390,101.6869),(1.4927,103.7414),(5.4164,100.3327),(2.1896,102.2501),
-        (6.1254,102.2381),(2.9216,101.6509),(2.9264,101.6998),(1.5533,110.3592),
-        (5.9804,116.0735),(6.1203,100.3660),(5.3289,103.1403),(4.5975,101.0901),
-        (6.4383,100.2002),(3.8070,103.3255),(2.7295,101.9385)  # Seremban
-    ]
-    lats,lons = zip(*cities)
-    fig, ax = plt.subplots(figsize=(6,6), dpi=100)
-    ax.scatter(lons,lats,s=100,c="red",alpha=0.6)
-    ax.set_title("Malaysia Threat Heatmap")
-    charts["heatmap"] = plot_chart_to_base64(fig)
+        # Malaysia heatmap with cities
+        cities = [
+            (3.1390,101.6869),(1.4927,103.7414),(5.4164,100.3327),(2.1896,102.2501),
+            (6.1254,102.2381),(2.9216,101.6509),(2.9264,101.6998),(1.5533,110.3592),
+            (5.9804,116.0735),(6.1203,100.3660),(5.3289,103.1403),(4.5975,101.0901),
+            (6.4383,100.2002),(3.8070,103.3255),(2.7295,101.9385)  # Seremban
+        ]
+        lats,lons = zip(*cities)
+        fig, ax = plt.subplots(figsize=(6,6), dpi=100)
+        ax.scatter(lons,lats,s=100,c="red",alpha=0.6)
+        ax.set_title("Malaysia Threat Heatmap")
+        charts["heatmap"] = plot_chart_to_base64(fig)
 
-    conn.close()
+        conn.close()
+    except Exception as e:
+        print("Error generating charts:", e)
     return charts
 
 # ---------------- Dashboard ----------------
@@ -182,46 +189,56 @@ def dashboard():
 # ---------------- Reports ----------------
 @app.route("/report/csv")
 def csv_report():
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    data = c.execute("SELECT * FROM threats").fetchall()
-    conn.close()
-    si = io.StringIO()
-    cw = csv.writer(si)
-    cw.writerow(["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"])
-    cw.writerows(data)
-    output = io.BytesIO()
-    output.write(si.getvalue().encode())
-    output.seek(0)
-    return send_file(output, as_attachment=True, download_name="report.csv")
+    try:
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        data = c.execute("SELECT * FROM threats").fetchall()
+        conn.close()
+        si = io.StringIO()
+        cw = csv.writer(si)
+        cw.writerow(["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"])
+        cw.writerows(data)
+        output = io.BytesIO()
+        output.write(si.getvalue().encode())
+        output.seek(0)
+        return send_file(output, as_attachment=True, download_name="report.csv")
+    except Exception as e:
+        return f"Error generating CSV: {e}",500
 
 @app.route("/report/json")
 def json_report():
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    data = c.execute("SELECT * FROM threats").fetchall()
-    conn.close()
-    return jsonify([dict(x) for x in data])
+    try:
+        conn = sqlite3.connect(DB)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        data = c.execute("SELECT * FROM threats").fetchall()
+        conn.close()
+        return jsonify([dict(x) for x in data])
+    except Exception as e:
+        return jsonify({"error":str(e)}),500
 
 @app.route("/report/pdf")
 def pdf_report():
-    charts = generate_charts()
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer,pagesize=letter)
-    styles = getSampleStyleSheet()
-    elements = [Paragraph("Threat Intelligence Report", styles["Title"]), Spacer(1,12)]
-    for key in ["trend","type_chart","top10","heatmap"]:
-        if charts.get(key):
-            img = io.BytesIO(base64.b64decode(charts[key]))
-            elements.append(RLImage(img,width=420,height=200))
-            elements.append(Spacer(1,12))
-    doc.build(elements)
-    buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="report.pdf")
+    try:
+        charts = generate_charts()
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer,pagesize=letter)
+        styles = getSampleStyleSheet()
+        elements = [Paragraph("Threat Intelligence Report", styles["Title"]), Spacer(1,12)]
+        for key in ["trend","type_chart","top10","heatmap"]:
+            if charts.get(key):
+                img = io.BytesIO(base64.b64decode(charts[key]))
+                elements.append(RLImage(img,width=420,height=200))
+                elements.append(Spacer(1,12))
+        doc.build(elements)
+        buffer.seek(0)
+        return send_file(buffer, as_attachment=True, download_name="report.pdf")
+    except Exception as e:
+        return f"Error generating PDF: {e}",500
 
 # ---------------- Startup ----------------
 if __name__ == "__main__":
     ensure_database()
     fetch_otx_data()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
