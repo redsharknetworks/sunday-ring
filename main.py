@@ -2,31 +2,37 @@ import os
 import io
 import sqlite3
 import random
-from datetime import datetime
-from flask import Flask, render_template_string, send_file, jsonify
+from datetime import datetime, timedelta
+import asyncio
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+
 from OTXv2 import OTXv2
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
-
 import base64
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 import csv
 
-app = Flask(__name__)
+# ---------------- FastAPI Setup ----------------
+app = FastAPI()
+templates = Jinja2Templates(directory="templates")
 DB = "threats.db"
 
-# ---------------- OTX ----------------
+# ---------------- OTX Setup ----------------
 OTX_KEY = os.getenv("OTX_KEY")
 otx = OTXv2(OTX_KEY) if OTX_KEY else None
 if not OTX_KEY:
     print("⚠️ WARNING: OTX_KEY not set. Using dummy data.")
 
-# ---------------- DATABASE ----------------
+# ---------------- Database ----------------
 def ensure_database():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -45,8 +51,16 @@ def ensure_database():
     conn.commit()
     conn.close()
 
-# ---------------- FETCH OTX OR DUMMY ----------------
-def fetch_data():
+# ---------------- OTX Fetch (Async) ----------------
+async def fetch_otx_loop():
+    while True:
+        try:
+            await fetch_otx_data()
+        except Exception as e:
+            print("OTX fetch error:", e)
+        await asyncio.sleep(3600)  # every hour
+
+async def fetch_otx_data():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     created = datetime.utcnow().isoformat()
@@ -71,10 +85,9 @@ def fetch_data():
         except Exception as e:
             print("OTX fetch error:", e)
 
-    # Seed dummy data if empty
+    # Dummy data if empty
     count = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
     if count == 0:
-        print("Seeding dummy threat data...")
         dummy_pulses = ["Red Shark Attack","Silent Hunter","Ghost Spider","Dark Wave","Cyber Kraken","Phantom Tiger"]
         dummy_types = ["IPv4","domain","URL","FileHash-MD5","FileHash-SHA256"]
         for _ in range(100):
@@ -93,7 +106,7 @@ def fetch_data():
     conn.commit()
     conn.close()
 
-# ---------------- CHART GENERATION ----------------
+# ---------------- Chart Helpers ----------------
 def plot_chart_to_base64(fig):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight")
@@ -104,10 +117,9 @@ def plot_chart_to_base64(fig):
 def generate_charts():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-
     charts = {}
 
-    # Trend
+    # Trend chart
     trend_data = c.execute("SELECT date(created_at), COUNT(*) FROM threats GROUP BY date(created_at) ORDER BY date(created_at)").fetchall()
     if trend_data:
         dates = [x[0] for x in trend_data]
@@ -159,7 +171,7 @@ def generate_charts():
     conn.close()
     return charts
 
-# ---------------- DASHBOARD ----------------
+# ---------------- Dashboard ----------------
 TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -178,14 +190,14 @@ TEMPLATE = """
 </html>
 """
 
-@app.route("/")
-def dashboard():
+@app.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request):
     charts = generate_charts()
-    return render_template_string(TEMPLATE, charts=charts)
+    return templates.TemplateResponse(TEMPLATE, {"request": request, "charts": charts})
 
-# ---------------- REPORTS ----------------
-@app.route("/report/csv")
-def csv_report():
+# ---------------- Reports ----------------
+@app.get("/report/csv")
+async def csv_report():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     data = c.execute("SELECT * FROM threats").fetchall()
@@ -197,19 +209,19 @@ def csv_report():
     output = io.BytesIO()
     output.write(si.getvalue().encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name="report.csv")
+    return StreamingResponse(output, media_type="text/csv", headers={"Content-Disposition":"attachment; filename=report.csv"})
 
-@app.route("/report/json")
-def json_report():
+@app.get("/report/json")
+async def json_report():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     data = c.execute("SELECT * FROM threats").fetchall()
     conn.close()
-    return jsonify([dict(x) for x in data])
+    return JSONResponse([dict(x) for x in data])
 
-@app.route("/report/pdf")
-def pdf_report():
+@app.get("/report/pdf")
+async def pdf_report():
     charts = generate_charts()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer,pagesize=letter)
@@ -222,12 +234,19 @@ def pdf_report():
             elements.append(Spacer(1,12))
     doc.build(elements)
     buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="report.pdf")
+    return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition":"attachment; filename=report.pdf"})
 
-# ---------------- INIT ----------------
+# ---------------- Startup ----------------
 ensure_database()
-fetch_data()
+# Start OTX fetch background task
+if otx:
+    loop = asyncio.get_event_loop()
+    loop.create_task(fetch_otx_loop())
+else:
+    # Populate dummy data immediately
+    import asyncio
+    asyncio.run(fetch_otx_data())
 
-# ---------------- Railway Start ----------------
+# ---------------- Notes for Railway ----------------
 # Run with:
-# gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --threads 2
+#   gunicorn main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --workers 1
