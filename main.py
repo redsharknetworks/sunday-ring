@@ -7,12 +7,13 @@ from flask import Flask, jsonify, request, render_template_string, send_file
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
 import io
 import csv
 import base64
 import folium
 from folium.plugins import HeatMap
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.pagesizes import A4, landscape
@@ -22,7 +23,7 @@ import re
 # For OTX
 from OTXv2 import OTXv2
 
-OTX_KEY = os.environ.get("OTX_API_KEY")  # set your OTX API key in Render secrets
+OTX_KEY = os.environ.get("OTX_API_KEY")
 otx = OTXv2(OTX_KEY) if OTX_KEY else None
 
 app = Flask(__name__)
@@ -140,7 +141,7 @@ def fetch_otx_data():
     pulses = otx.getall()
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    for pulse in pulses[:20]:  # limit to 20 for speed
+    for pulse in pulses[:20]:
         pulse_name = pulse.get("name")
         for indicator in pulse.get("indicators", []):
             typ = indicator.get("type")
@@ -163,7 +164,6 @@ def fetch_otx_data():
     conn.close()
     print(f"[{datetime.utcnow().isoformat()}] OTX fetch complete.")
 
-# Auto fetch every hour
 def start_otx_scheduler():
     fetch_otx_data()
     threading.Timer(3600, start_otx_scheduler).start()
@@ -191,43 +191,70 @@ def executive_summary():
     mitre_text = top_mitre[0] if top_mitre else "N/A"
     return f"Redshark observed {total} active indicators this week. {high} were High/Critical. Dominant technique: {mitre_text}. SecureNation Index: {risk_index()}."
 
-# ------------------ TREND CHART ------------------
-def generate_trend_html():
+# ------------------ TREND & TYPE CHART ------------------
+def generate_charts():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     data = c.execute("""
-        SELECT substr(created_at,1,10), COUNT(*) FROM threats GROUP BY substr(created_at,1,10) ORDER BY substr(created_at,1,10)
+        SELECT substr(created_at,1,10), COUNT(*) 
+        FROM threats 
+        GROUP BY substr(created_at,1,10) 
+        ORDER BY substr(created_at,1,10)
     """).fetchall()
+    type_counts = c.execute("""
+        SELECT type, COUNT(*) FROM threats GROUP BY type
+    """).fetchall()
+    hash_count = c.execute("SELECT COUNT(*) FROM threat_hashes").fetchone()[0]
     conn.close()
-    if not data: return ""
+
+    if not data: 
+        return "", ""
+
+    # Trend chart
     dates = [d[0] for d in data]
     counts = [d[1] for d in data]
 
-    plt.figure(figsize=(10,4))
+    plt.figure(figsize=(12,5))
     ax = plt.gca()
     ax.set_facecolor('#2a2a2a')
-
-    # Boxing ring background
     if os.path.exists("boxing_ring.png"):
-        bg = plt.imread("boxing_ring.png")
-        ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
+        bg = mpimg.imread("boxing_ring.png")
+        ax.imshow(bg, extent=[-0.5,len(dates)-0.5,0,max(counts)+5], aspect='auto', alpha=0.2)
 
     plt.plot(dates, counts, color="crimson", marker="o", linewidth=2, label="Total Indicators")
     plt.fill_between(dates, counts, color="crimson", alpha=0.1)
     plt.grid(color='white', linestyle='--', linewidth=0.3, alpha=0.5)
-    plt.xticks(rotation=45)
+    plt.xticks(rotation=45, ha='right')
+    ax.set_xticks(range(0, len(dates), max(1, len(dates)//10)))
+    ax.set_xticklabels([dates[i] for i in range(0, len(dates), max(1, len(dates)//10))])
     plt.tight_layout()
     plt.legend()
     img = io.BytesIO()
     plt.savefig(img, format="png", facecolor=ax.get_facecolor())
     plt.close()
     img.seek(0)
-    return base64.b64encode(img.read()).decode()
+    trend_b64 = base64.b64encode(img.read()).decode()
+
+    # Type chart
+    plt.figure(figsize=(6,4))
+    types = [t[0] for t in type_counts] + ["hash"]
+    counts_type = [t[1] for t in type_counts] + [hash_count]
+    plt.bar(types, counts_type, color="orange")
+    plt.title("Indicators by Type")
+    plt.ylabel("Count")
+    plt.tight_layout()
+    img2 = io.BytesIO()
+    plt.savefig(img2, format="png", facecolor="#0a1f44")
+    plt.close()
+    img2.seek(0)
+    type_chart_b64 = base64.b64encode(img2.read()).decode()
+
+    return trend_b64, type_chart_b64
 
 # ------------------ MAP ------------------
 def generate_map():
     m = folium.Map(location=[4.21,101.97], zoom_start=6)
-    heat = [[3.139,101.6869,5],[1.49,103.74,4],[5.41,100.33,3]]  # example points
+    heat = [[3.139,101.6869,5],[1.49,103.74,4],[5.41,100.33,3]]
     HeatMap(heat).add_to(m)
     return m._repr_html_()
 
@@ -247,16 +274,17 @@ def dashboard():
         ORDER BY {sort} DESC LIMIT ? OFFSET ?
     """,(PAGE_SIZE, offset)).fetchall()
     conn.close()
-    trend = generate_trend_html()
+    trend, type_chart = generate_charts()
     return render_template_string(TEMPLATE,
         data=data,
         total=total,
-        page=page,
         risk_index=risk_index(),
         summary=executive_summary(),
         trend=trend,
+        type_chart=type_chart,
         map_html=generate_map(),
-        disclaimer=DISCLAIMER
+        disclaimer=DISCLAIMER,
+        page=page
     )
 
 # ------------------ REPORTS ------------------
@@ -283,67 +311,10 @@ def get_weekly_top10():
     conn.close()
     return result
 
-@app.route("/report/pdf")
-def pdf_report():
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4))
-    elements = []
-    styles = getSampleStyleSheet()
-    elements.append(Paragraph("REDSHARK DARKGRID REPORT", styles["Title"]))
-    elements.append(Spacer(1,12))
-    elements.append(Paragraph(executive_summary(), styles["Normal"]))
-    elements.append(Spacer(1,12))
-
-    weekly_top = get_weekly_top10()
-    for typ, rows in weekly_top.items():
-        elements.append(Paragraph(f"Weekly Top 10 {typ} Threats", styles["Heading2"]))
-        header = ["Pulse","Indicator","Type","Classification","MITRE","Risk","Created"]
-        table_data = [header] + rows
-        table = Table(table_data, repeatRows=1)
-        table.setStyle(TableStyle([
-            ("BACKGROUND",(0,0),(-1,0),colors.black),
-            ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-            ("GRID",(0,0),(-1,-1),0.5,colors.grey),
-            ("BACKGROUND",(0,1),(-1,-1),colors.whitesmoke)
-        ]))
-        elements.append(table)
-        elements.append(Spacer(1,12))
-    elements.append(Paragraph(DISCLAIMER, styles["Italic"]))
-    doc.build(elements)
-    buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="darkgridatredsharkdotmy.pdf", mimetype="application/pdf")
-
-@app.route("/report/csv")
-def csv_report():
-    conn = sqlite3.connect(DB)
-    rows = conn.execute("SELECT * FROM threats").fetchall()
-    hash_rows = conn.execute("SELECT id,pulse,hash,type,classification,mitre,risk_score,created_at FROM threat_hashes").fetchall()
-    conn.close()
-    all_rows = rows + hash_rows
-    si = io.StringIO()
-    cw = csv.writer(si)
-    cw.writerow(["ID","Pulse","Indicator","Type","Classification","MITRE","Risk","Created"])
-    cw.writerows(all_rows)
-    output = io.BytesIO()
-    output.write(si.getvalue().encode())
-    output.seek(0)
-    return send_file(output, as_attachment=True, download_name="darkgridatredsharkdotmy.csv")
-
-@app.route("/report/json")
-def json_report():
-    conn = sqlite3.connect(DB)
-    rows = conn.execute("SELECT * FROM threats").fetchall()
-    hash_rows = conn.execute("SELECT id,pulse,hash,type,classification,mitre,risk_score,created_at FROM threat_hashes").fetchall()
-    conn.close()
-    combined = rows + hash_rows
-    return jsonify(combined)
-
-# ------------------ RUN ------------------
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)), debug=True)
-
-# ================= DASHBOARD TEMPLATE =================
-TEMPLATE = """<html><head>
+# ------------------ DASHBOARD TEMPLATE ------------------
+TEMPLATE = """<!DOCTYPE html>
+<html>
+<head>
 <style>
 body { background:#0a1f44; color:white; font-family:Arial; margin:0 auto; max-width:1200px; }
 h1 { color:crimson; text-align:center; }
@@ -382,6 +353,7 @@ function sortTable(n) {
 <div class="container">{{ map_html|safe }}</div>
 <p style="text-align:center;">{{ summary }}</p>
 <div class="container"><img src="data:image/png;base64,{{ trend }}"></div>
+<div class="container"><img src="data:image/png;base64,{{ type_chart }}"></div>
 <h3>Total Indicators: {{ total }}</h3>
 <table id="threatTable">
 <tr>
@@ -391,7 +363,7 @@ function sortTable(n) {
 <th onclick="sortTable(3)">Classification</th>
 <th onclick="sortTable(4)">MITRE</th>
 <th onclick="sortTable(5)">Risk Score</th>
-<th onclick="sortTable(6)">Created</th>
+<th onclick="sortTable(6)">Created At</th>
 </tr>
 {% for row in data %}
 <tr>
@@ -406,9 +378,6 @@ function sortTable(n) {
 {% endfor %}
 </table>
 <p style="text-align:center;">{{ disclaimer }}</p>
-<p style="text-align:center;">
-<a href="/report/pdf">Download PDF</a> |
-<a href="/report/csv">Download CSV</a> |
-<a href="/report/json">Download JSON</a>
-</p>
-</body></html>"""
+</body>
+</html>
+"""
