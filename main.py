@@ -3,34 +3,32 @@ import io
 import sqlite3
 import random
 from datetime import datetime
-import asyncio
-
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
-
-from OTXv2 import OTXv2
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
-plt.rcParams['axes.unicode_minus'] = False
-import base64
+from flask import Flask, render_template_string, send_file, jsonify
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import base64
 import csv
 
-# ---------------- FastAPI Setup ----------------
-app = FastAPI()
-templates = Jinja2Templates(directory="templates")
+try:
+    from OTXv2 import OTXv2
+    OTX_AVAILABLE = True
+except ImportError:
+    OTX_AVAILABLE = False
+
+app = Flask(__name__)
 DB = "threats.db"
 
 # ---------------- OTX Setup ----------------
 OTX_KEY = os.getenv("OTX_KEY")
-otx = OTXv2(OTX_KEY) if OTX_KEY else None
-if not OTX_KEY:
-    print("⚠️ WARNING: OTX_KEY not set. Using dummy data.")
+if OTX_AVAILABLE and OTX_KEY:
+    otx = OTXv2(OTX_KEY)
+else:
+    otx = None
+    print("⚠️ OTX key missing or OTXv2 not installed. Using dummy data.")
 
 # ---------------- Database ----------------
 def ensure_database():
@@ -51,16 +49,8 @@ def ensure_database():
     conn.commit()
     conn.close()
 
-# ---------------- OTX Fetch (Async) ----------------
-async def fetch_otx_loop():
-    while True:
-        try:
-            await fetch_otx_data()
-        except Exception as e:
-            print("OTX fetch error:", e)
-        await asyncio.sleep(3600)  # every hour
-
-async def fetch_otx_data():
+# ---------------- OTX Fetch / Dummy ----------------
+def fetch_otx_data():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     created = datetime.utcnow().isoformat()
@@ -82,7 +72,7 @@ async def fetch_otx_data():
         except Exception as e:
             print("OTX fetch error:", e)
 
-    # Dummy data fallback
+    # Dummy data if no OTX
     count = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
     if count == 0:
         dummy_pulses = ["Red Shark Attack","Silent Hunter","Ghost Spider","Dark Wave","Cyber Kraken","Phantom Tiger"]
@@ -97,11 +87,10 @@ async def fetch_otx_data():
                 "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
                 (pulse,indicator,typ,random.choice(["Low","Medium","High"]),"N/A",score,created)
             )
-
     conn.commit()
     conn.close()
 
-# ---------------- Chart Helpers ----------------
+# ---------------- Charts ----------------
 def plot_chart_to_base64(fig):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight")
@@ -150,7 +139,7 @@ def generate_charts():
         ax.set_title("Top 10 Threat Pulses")
         charts["top10"] = plot_chart_to_base64(fig)
 
-    # Malaysia heatmap
+    # Malaysia heatmap with requested cities
     cities = [
         (3.1390,101.6869),(1.4927,103.7414),(5.4164,100.3327),(2.1896,102.2501),
         (6.1254,102.2381),(2.9216,101.6509),(2.9264,101.6998),(1.5533,110.3592),
@@ -171,7 +160,7 @@ TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head><title>DarkGrid Dashboard</title></head>
-<body>
+<body style="text-align:center;font-family:sans-serif">
 <h1>DarkGrid Threat Dashboard</h1>
 {% if charts.trend %}<img src="data:image/png;base64,{{ charts.trend }}"><br>{% endif %}
 {% if charts.type_chart %}<img src="data:image/png;base64,{{ charts.type_chart }}"><br>{% endif %}
@@ -185,14 +174,14 @@ TEMPLATE = """
 </html>
 """
 
-@app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
+@app.route("/")
+def dashboard():
     charts = generate_charts()
-    return templates.TemplateResponse(TEMPLATE, {"request": request, "charts": charts})
+    return render_template_string(TEMPLATE, charts=charts)
 
 # ---------------- Reports ----------------
-@app.get("/report/csv")
-async def csv_report():
+@app.route("/report/csv")
+def csv_report():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     data = c.execute("SELECT * FROM threats").fetchall()
@@ -204,19 +193,19 @@ async def csv_report():
     output = io.BytesIO()
     output.write(si.getvalue().encode())
     output.seek(0)
-    return StreamingResponse(output, media_type="text/csv", headers={"Content-Disposition":"attachment; filename=report.csv"})
+    return send_file(output, as_attachment=True, download_name="report.csv")
 
-@app.get("/report/json")
-async def json_report():
+@app.route("/report/json")
+def json_report():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     data = c.execute("SELECT * FROM threats").fetchall()
     conn.close()
-    return JSONResponse([dict(x) for x in data])
+    return jsonify([dict(x) for x in data])
 
-@app.get("/report/pdf")
-async def pdf_report():
+@app.route("/report/pdf")
+def pdf_report():
     charts = generate_charts()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer,pagesize=letter)
@@ -225,18 +214,14 @@ async def pdf_report():
     for key in ["trend","type_chart","top10","heatmap"]:
         if charts.get(key):
             img = io.BytesIO(base64.b64decode(charts[key]))
-            elements.append(RLImage(img, width=420, height=200))
+            elements.append(RLImage(img,width=420,height=200))
             elements.append(Spacer(1,12))
     doc.build(elements)
     buffer.seek(0)
-    return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition":"attachment; filename=report.pdf"})
+    return send_file(buffer, as_attachment=True, download_name="report.pdf")
 
 # ---------------- Startup ----------------
-ensure_database()
-# Background OTX fetch task
-if otx:
-    loop = asyncio.get_event_loop()
-    loop.create_task(fetch_otx_loop())
-else:
-    # Populate dummy data immediately
-    asyncio.run(fetch_otx_data())
+if __name__ == "__main__":
+    ensure_database()
+    fetch_otx_data()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
