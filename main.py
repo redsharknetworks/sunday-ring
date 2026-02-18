@@ -8,8 +8,11 @@ from datetime import datetime
 from flask import Flask, render_template_string, send_file, jsonify
 from OTXv2 import OTXv2
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # headless backend
 import matplotlib.pyplot as plt
+plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
+
 import base64
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
 from reportlab.lib.pagesizes import letter
@@ -61,7 +64,7 @@ def ensure_database():
     conn.commit()
     conn.close()
 
-# ---------------- FETCH DATA ----------------
+# ---------------- FETCH OTX DATA ----------------
 def fetch_otx_data():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -94,7 +97,7 @@ def seed_dummy_data():
     c = conn.cursor()
     existing = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
     if existing == 0:
-        print("Seeding database with dummy threat data...")
+        print("Seeding dummy threat data...")
         dummy_pulses = ["Red Shark Attack","Silent Hunter","Ghost Spider","Dark Wave","Cyber Kraken","Phantom Tiger"]
         dummy_types = ["IPv4","domain","URL","FileHash-MD5","FileHash-SHA256"]
         for _ in range(100):
@@ -124,7 +127,7 @@ def generate_charts_bg():
         if trend:
             dates = [x[0] for x in trend]
             counts = [x[1] for x in trend]
-            plt.figure(figsize=(6,3))
+            plt.figure(figsize=(6,3), dpi=100)
             ax = plt.gca()
             if os.path.exists("boxing_ring.png"):
                 try:
@@ -145,7 +148,7 @@ def generate_charts_bg():
         if types:
             labels = [x[0] for x in types]
             values = [x[1] for x in types]
-            plt.figure(figsize=(4,3))
+            plt.figure(figsize=(4,3), dpi=100)
             plt.bar(labels, values, color="darkblue")
             plt.title("Indicator Types")
             buf = io.BytesIO()
@@ -159,7 +162,7 @@ def generate_charts_bg():
         if top10:
             pulses = [x[0] for x in top10]
             counts = [x[1] for x in top10]
-            plt.figure(figsize=(6,3))
+            plt.figure(figsize=(6,3), dpi=100)
             plt.barh(pulses[::-1], counts[::-1], color="red")
             plt.title("Top 10 Threat Pulses")
             plt.tight_layout()
@@ -168,7 +171,7 @@ def generate_charts_bg():
             plt.close()
             charts["top10"] = base64.b64encode(buf.getvalue()).decode()
 
-        # Malaysia heatmap with all requested cities + Seremban
+        # Malaysia heatmap (all requested cities + Seremban)
         cities = [
             (3.1390,101.6869),(1.4927,103.7414),(5.4164,100.3327),(2.1896,102.2501),
             (6.1254,102.2381),(2.9216,101.6509),(2.9264,101.6998),(1.5533,110.3592),
@@ -176,7 +179,7 @@ def generate_charts_bg():
             (6.4383,100.2002),(3.8070,103.3255),(2.7295,101.9385)  # Seremban
         ]
         lats,lons = zip(*cities)
-        plt.figure(figsize=(6,6))
+        plt.figure(figsize=(6,6), dpi=100)
         plt.scatter(lons,lats,s=100,c="red",alpha=0.6)
         plt.title("Malaysia Threat Heatmap")
         buf = io.BytesIO()
@@ -268,4 +271,5 @@ seed_dummy_data()
 start_background()
 
 # ---------------- Railway Start Command ----------------
+# Use in Railway dashboard:
 # gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --threads 2
