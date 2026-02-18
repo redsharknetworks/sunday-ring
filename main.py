@@ -81,22 +81,31 @@ def fetch_otx_data():
                         (name,val,typ,"Medium","OTX",score,created)
                     )
                 except: pass
-    else:
-        # Dummy data
+    conn.commit()
+    conn.close()
+
+# ---------------- SEED DUMMY DATA ----------------
+def seed_dummy_data():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    existing = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
+    if existing == 0:
+        print("Seeding database with dummy threat data...")
         dummy_pulses = ["Red Shark Attack","Silent Hunter","Ghost Spider","Dark Wave","Cyber Kraken","Phantom Tiger"]
         dummy_types = ["IPv4","domain","URL","FileHash-MD5","FileHash-SHA256"]
-        for _ in range(30):
+        for _ in range(100):
             pulse = random.choice(dummy_pulses)
             indicator = f"dummy-{random.randint(1000,9999)}.com"
             typ = random.choice(dummy_types)
             score = random.randint(50,95)
+            created = datetime.utcnow().isoformat()
             try:
                 c.execute(
                     "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
                     (pulse,indicator,typ,random.choice(["Low","Medium","High"]),"N/A",score,created)
                 )
             except: pass
-    conn.commit()
+        conn.commit()
     conn.close()
 
 # ---------------- BACKGROUND CHARTS ----------------
@@ -155,12 +164,12 @@ def generate_charts_bg():
             plt.close()
             charts["top10"] = base64.b64encode(buf.getvalue()).decode()
 
-        # Malaysia heatmap (cities + Seremban)
+        # Malaysia heatmap with all cities + Seremban
         cities = [
             (3.1390,101.6869),(1.4927,103.7414),(5.4164,100.3327),(2.1896,102.2501),
             (6.1254,102.2381),(2.9216,101.6509),(2.9264,101.6998),(1.5533,110.3592),
             (5.9804,116.0735),(6.1203,100.3660),(5.3289,103.1403),(4.5975,101.0901),
-            (6.4383,100.2002),(3.8070,103.3255),(2.7295,101.9385)
+            (6.4383,100.2002),(3.8070,103.3255),(2.7295,101.9385)  # Seremban
         ]
         lats,lons = zip(*cities)
         plt.figure(figsize=(6,6))
@@ -201,8 +210,8 @@ def dashboard():
 # ---------------- INIT ----------------
 ensure_database()
 fetch_otx_data()
+seed_dummy_data()
 start_background()
 
-# Note: DO NOT call app.run() on Railway
-# Use the start command:
+# Note: Railway/Gunicorn usage:
 # gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --threads 2
