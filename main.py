@@ -2,6 +2,7 @@ import os
 import io
 import sqlite3
 import random
+import threading
 from datetime import datetime
 from flask import Flask, render_template_string, send_file, jsonify
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
@@ -52,43 +53,48 @@ def ensure_database():
 
 # ---------------- OTX / Dummy Fetch ----------------
 def fetch_otx_data():
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    created = datetime.utcnow().isoformat()
-    try:
-        if otx:
-            pulses = otx.getall(limit=10)
-            for pulse in pulses:
-                name = pulse.get("name","OTX")
-                for ind in pulse.get("indicators", []):
-                    val = ind.get("indicator")
-                    typ = ind.get("type","domain")
-                    if not val: continue
+    while True:
+        try:
+            conn = sqlite3.connect(DB)
+            c = conn.cursor()
+            created = datetime.utcnow().isoformat()
+
+            if otx:
+                # Fetch pulses
+                pulses = otx.getall(limit=10)
+                for pulse in pulses:
+                    name = pulse.get("name","OTX")
+                    for ind in pulse.get("indicators", []):
+                        val = ind.get("indicator")
+                        typ = ind.get("type","domain")
+                        if not val: continue
+                        score = random.randint(50,95)
+                        c.execute(
+                            "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
+                            (name,val,typ,"Medium","OTX",score,created)
+                        )
+
+            # Dummy data if table empty
+            count = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
+            if count == 0:
+                dummy_pulses = ["Red Shark Attack","Silent Hunter","Ghost Spider","Dark Wave","Cyber Kraken","Phantom Tiger"]
+                dummy_types = ["IPv4","domain","URL","FileHash-MD5","FileHash-SHA256"]
+                for _ in range(100):
+                    pulse = random.choice(dummy_pulses)
+                    indicator = f"dummy-{random.randint(1000,9999)}.com"
+                    typ = random.choice(dummy_types)
                     score = random.randint(50,95)
+                    created = datetime.utcnow().isoformat()
                     c.execute(
                         "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                        (name,val,typ,"Medium","OTX",score,created)
+                        (pulse,indicator,typ,random.choice(["Low","Medium","High"]),"N/A",score,created)
                     )
-        # Dummy data if table empty
-        count = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
-        if count == 0:
-            dummy_pulses = ["Red Shark Attack","Silent Hunter","Ghost Spider","Dark Wave","Cyber Kraken","Phantom Tiger"]
-            dummy_types = ["IPv4","domain","URL","FileHash-MD5","FileHash-SHA256"]
-            for _ in range(100):
-                pulse = random.choice(dummy_pulses)
-                indicator = f"dummy-{random.randint(1000,9999)}.com"
-                typ = random.choice(dummy_types)
-                score = random.randint(50,95)
-                created = datetime.utcnow().isoformat()
-                c.execute(
-                    "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                    (pulse,indicator,typ,random.choice(["Low","Medium","High"]),"N/A",score,created)
-                )
-    except Exception as e:
-        print("Error fetching OTX / generating dummy:", e)
-    finally:
-        conn.commit()
-        conn.close()
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print("Error fetching OTX / dummy:", e)
+        # Sleep 1 hour before next fetch
+        threading.Event().wait(3600)
 
 # ---------------- Safe Chart Utilities ----------------
 def plot_chart_to_base64(fig):
@@ -238,6 +244,8 @@ def pdf_report():
 
 # ---------------- Startup ----------------
 ensure_database()
-fetch_otx_data()
-# ---------------- Railway / Gunicorn safe startup ----------------
-# Do NOT call app.run() when using Gunicorn
+
+# Start OTX fetch in background thread (non-blocking)
+threading.Thread(target=fetch_otx_data, daemon=True).start()
+
+# Note: Do NOT call app.run() — Gunicorn will serve the app
