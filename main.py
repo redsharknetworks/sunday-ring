@@ -32,7 +32,7 @@ if OTX_KEY:
     otx = OTXv2(OTX_KEY)
 else:
     otx = None
-    print("⚠️ WARNING: OTX_KEY not set. Threats will not update.")
+    print("⚠️ WARNING: OTX_KEY not set. Dummy threats will be generated.")
 
 scheduler_started = False
 
@@ -66,28 +66,54 @@ def ensure_database():
     conn.commit()
     conn.close()
 
-# ---------------- OTX FETCH ----------------
+# ---------------- OTX / DUMMY FETCH ----------------
 def fetch_otx_data():
-    if not otx:
-        print("OTX key missing, skipping fetch.")
-        return
-    try:
-        pulses = otx.getall(limit=10)
-    except Exception as e:
-        print("OTX fetch error:", e)
-        return
-
     conn = sqlite3.connect(DB)
     c = conn.cursor()
+    created = datetime.utcnow().isoformat()
 
-    for pulse in pulses:
-        name = pulse.get("name", "OTX")
-        for ind in pulse.get("indicators", []):
-            val = ind.get("indicator")
-            typ = ind.get("type", "domain")
-            if not val:
-                continue
-            created = datetime.utcnow().isoformat()
+    if otx:
+        try:
+            pulses = otx.getall(limit=10)
+        except Exception as e:
+            print("OTX fetch error:", e)
+            pulses = []
+        for pulse in pulses:
+            name = pulse.get("name", "OTX")
+            for ind in pulse.get("indicators", []):
+                val = ind.get("indicator")
+                typ = ind.get("type", "domain")
+                if not val:
+                    continue
+                score = random.randint(50, 95)
+                try:
+                    if typ in ["IPv4", "domain", "URL"]:
+                        c.execute("""
+                            INSERT OR IGNORE INTO threats
+                            (pulse, indicator, type, classification, mitre, risk_score, created_at)
+                            VALUES (?,?,?,?,?,?,?)
+                        """, (name, val, typ, "Medium", "OTX", score, created))
+                    if "Hash" in typ:
+                        c.execute("""
+                            INSERT OR IGNORE INTO threat_hashes
+                            (pulse, hash, classification, mitre, risk_score, created_at)
+                            VALUES (?,?,?,?,?,?)
+                        """, (name, val, "Medium", "OTX", score, created))
+                except:
+                    pass
+        print("OTX Updated")
+    else:
+        # Dummy data generation
+        print("Generating dummy threat data...")
+        dummy_pulses = [
+            "Red Shark Attack", "Silent Hunter", "Ghost Spider", 
+            "Dark Wave", "Cyber Kraken", "Phantom Tiger"
+        ]
+        dummy_types = ["IPv4", "domain", "URL", "FileHash-MD5", "FileHash-SHA256"]
+        for _ in range(20):
+            pulse = random.choice(dummy_pulses)
+            indicator = f"dummy-{random.randint(1000,9999)}.com"
+            typ = random.choice(dummy_types)
             score = random.randint(50, 95)
             try:
                 if typ in ["IPv4", "domain", "URL"]:
@@ -95,19 +121,19 @@ def fetch_otx_data():
                         INSERT OR IGNORE INTO threats
                         (pulse, indicator, type, classification, mitre, risk_score, created_at)
                         VALUES (?,?,?,?,?,?,?)
-                    """, (name, val, typ, "Medium", "OTX", score, created))
+                    """, (pulse, indicator, typ, random.choice(["Low","Medium","High"]), "N/A", score, created))
                 if "Hash" in typ:
                     c.execute("""
                         INSERT OR IGNORE INTO threat_hashes
                         (pulse, hash, classification, mitre, risk_score, created_at)
                         VALUES (?,?,?,?,?,?)
-                    """, (name, val, "Medium", "OTX", score, created))
-            except Exception as e:
-                print("Insert error:", e)
+                    """, (pulse, indicator, random.choice(["Low","Medium","High"]), "N/A", score, created))
+            except:
+                pass
+        print("Dummy data generated.")
 
     conn.commit()
     conn.close()
-    print("OTX Updated")
 
 # ---------------- SCHEDULER ----------------
 def scheduler():
@@ -120,7 +146,7 @@ def scheduler():
 
 def start_scheduler_once():
     global scheduler_started
-    if not scheduler_started and otx:
+    if not scheduler_started:
         scheduler_started = True
         thread = threading.Thread(target=scheduler, daemon=True)
         thread.start()
@@ -231,16 +257,26 @@ def generate_top10_chart():
 def generate_heatmap():
     m = folium.Map(location=[4.2105, 101.9758], zoom_start=6)
     heat_data = [
-        [3.1390, 101.6869, 5], [1.4927, 103.7414, 4], [5.4164, 100.3327, 3],
-        [2.1896, 102.2501, 2], [6.1254, 102.2381, 2], [2.9216, 101.6509, 3],
-        [2.9264, 101.6998, 3], [1.5533, 110.3592, 2], [5.9804, 116.0735, 2],
-        [6.1203, 100.3660, 2], [5.3289, 103.1403, 2], [4.5975, 101.0901, 2],
-        [6.4383, 100.2002, 2], [3.8070, 103.3255, 2], [2.7295, 101.9385, 2],
+        [3.1390, 101.6869, 5],   # Kuala Lumpur
+        [1.4927, 103.7414, 4],   # Johor
+        [5.4164, 100.3327, 3],   # Penang
+        [2.1896, 102.2501, 2],   # Melaka
+        [6.1254, 102.2381, 2],   # Kelantan
+        [2.9216, 101.6509, 3],   # Cyberjaya
+        [2.9264, 101.6998, 3],   # Putrajaya
+        [1.5533, 110.3592, 2],   # Kuching
+        [5.9804, 116.0735, 2],   # Kota Kinabalu
+        [6.1203, 100.3660, 2],   # Alor Setar
+        [5.3289, 103.1403, 2],   # Kuala Terengganu
+        [4.5975, 101.0901, 2],   # Ipoh
+        [6.4383, 100.2002, 2],   # Kangar
+        [3.8070, 103.3255, 2],   # Kuantan
+        [2.7295, 101.9385, 2],   # Seremban
     ]
     HeatMap(heat_data, radius=25).add_to(m)
     return m._repr_html_()
 
-# ---------------- PDF ----------------
+# ---------------- REPORTS ----------------
 @app.route("/report/pdf")
 def pdf_report():
     buffer = io.BytesIO()
@@ -249,7 +285,6 @@ def pdf_report():
     styles = getSampleStyleSheet()
     elements = []
 
-    # RedShark logo
     if os.path.exists("redshark.png"):
         elements.append(Image("redshark.png", width=120, height=40))
         elements.append(Spacer(1,12))
@@ -270,7 +305,7 @@ def pdf_report():
         elements.append(Image(io.BytesIO(base64.b64decode(top10_img)), width=500, height=200))
         elements.append(Spacer(1,12))
 
-    # Fetch data
+    # Table
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -284,7 +319,6 @@ def pdf_report():
     conn.close()
     rows = threats + hashes
 
-    # Table
     data = [["ID","Pulse","Indicator","Type","Classification","MITRE","Risk","Created"]]
     for r in rows:
         pulse = Paragraph(str(r["pulse"]), ParagraphStyle(name='Normal', wordWrap='CJK'))
@@ -306,7 +340,6 @@ def pdf_report():
     buffer.seek(0)
     return send_file(buffer, as_attachment=True, download_name="report.pdf")
 
-# ---------------- CSV ----------------
 @app.route("/report/csv")
 def csv_report():
     ensure_database()
@@ -319,7 +352,6 @@ def csv_report():
         FROM threat_hashes
     """).fetchall()
     conn.close()
-
     rows = threats + hashes
     si = io.StringIO()
     cw = csv.writer(si)
@@ -331,7 +363,6 @@ def csv_report():
     output.seek(0)
     return send_file(output, as_attachment=True, download_name="report.csv")
 
-# ---------------- JSON ----------------
 @app.route("/report/json")
 def json_report():
     ensure_database()
@@ -340,9 +371,8 @@ def json_report():
     c = conn.cursor()
     threats = c.execute("SELECT * FROM threats").fetchall()
     hashes = c.execute("""
-        SELECT id, pulse, hash as indicator,
-               'hash' as type, classification,
-               mitre, risk_score, created_at
+        SELECT id, pulse, hash as indicator, 'hash' as type,
+               classification, mitre, risk_score, created_at
         FROM threat_hashes
     """).fetchall()
     conn.close()
