@@ -168,7 +168,7 @@ def generate_charts_bg():
             plt.close()
             charts["top10"] = base64.b64encode(buf.getvalue()).decode()
 
-        # Malaysia heatmap with all cities + Seremban
+        # Malaysia heatmap with all requested cities + Seremban
         cities = [
             (3.1390,101.6869),(1.4927,103.7414),(5.4164,100.3327),(2.1896,102.2501),
             (6.1254,102.2381),(2.9216,101.6509),(2.9264,101.6998),(1.5533,110.3592),
@@ -268,5 +268,4 @@ seed_dummy_data()
 start_background()
 
 # ---------------- Railway Start Command ----------------
-# Use this in Railway:
 # gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --threads 2
