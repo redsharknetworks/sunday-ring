@@ -34,27 +34,27 @@ def ensure_database():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     c.execute("""
-    CREATE TABLE IF NOT EXISTS threats (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        pulse TEXT,
-        indicator TEXT,
-        type TEXT,
-        classification TEXT,
-        mitre TEXT,
-        risk_score INTEGER,
-        created_at TEXT
-    )
+CREATE TABLE IF NOT EXISTS threats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pulse TEXT,
+    indicator TEXT,
+    type TEXT,
+    classification TEXT,
+    mitre TEXT,
+    risk_score INTEGER,
+    created_at TEXT
+)
     """)
     c.execute("""
-    CREATE TABLE IF NOT EXISTS threat_hashes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        pulse TEXT,
-        hash TEXT,
-        classification TEXT,
-        mitre TEXT,
-        risk_score INTEGER,
-        created_at TEXT
-    )
+CREATE TABLE IF NOT EXISTS threat_hashes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pulse TEXT,
+    hash TEXT,
+    classification TEXT,
+    mitre TEXT,
+    risk_score INTEGER,
+    created_at TEXT
+)
     """)
     conn.commit()
     conn.close()
@@ -83,15 +83,15 @@ def fetch_otx_data():
             score = random.randint(50,95)
             if typ in ["IPv4","domain","URL"]:
                 c.execute("""
-                INSERT INTO threats
-                (pulse,indicator,type,classification,mitre,risk_score,created_at)
-                VALUES (?,?,?,?,?,?,?)
+INSERT INTO threats
+(pulse,indicator,type,classification,mitre,risk_score,created_at)
+VALUES (?,?,?,?,?,?,?)
                 """,(name,val,typ,"Medium","OTX",score,created))
             if "Hash" in typ:
                 c.execute("""
-                INSERT INTO threat_hashes
-                (pulse,hash,classification,mitre,risk_score,created_at)
-                VALUES (?,?,?,?,?,?)
+INSERT INTO threat_hashes
+(pulse,hash,classification,mitre,risk_score,created_at)
+VALUES (?,?,?,?,?,?)
                 """,(name,val,"Medium","OTX",score,created))
     conn.commit()
     conn.close()
@@ -101,7 +101,7 @@ def fetch_otx_data():
 def scheduler():
     while True:
         fetch_otx_data()
-        time.sleep(3600)  # every hour
+        time.sleep(3600)
 
 # ---------------- CHARTS ----------------
 def generate_charts():
@@ -109,12 +109,12 @@ def generate_charts():
     c = conn.cursor()
 
     trend = c.execute("""
-        SELECT substr(created_at,1,10), COUNT(*) FROM threats
-        GROUP BY 1 ORDER BY 1
+SELECT substr(created_at,1,10), COUNT(*) FROM threats
+GROUP BY 1 ORDER BY 1
     """).fetchall()
 
     types = c.execute("""
-        SELECT type, COUNT(*) FROM threats GROUP BY type
+SELECT type, COUNT(*) FROM threats GROUP BY type
     """).fetchall()
 
     conn.close()
@@ -189,8 +189,8 @@ def csv_report():
     c = conn.cursor()
     threats = c.execute("SELECT * FROM threats").fetchall()
     hashes = c.execute("""
-        SELECT id,pulse,hash,'hash',classification,mitre,risk_score,created_at
-        FROM threat_hashes
+SELECT id,pulse,hash,'hash',classification,mitre,risk_score,created_at
+FROM threat_hashes
     """).fetchall()
     conn.close()
     rows = threats + hashes
@@ -211,9 +211,9 @@ def json_report():
     c = conn.cursor()
     threats = c.execute("SELECT * FROM threats").fetchall()
     hashes = c.execute("""
-        SELECT id,pulse,hash as indicator,'hash' as type,
-        classification,mitre,risk_score,created_at
-        FROM threat_hashes
+SELECT id,pulse,hash as indicator,'hash' as type,
+classification,mitre,risk_score,created_at
+FROM threat_hashes
     """).fetchall()
     conn.close()
     data = [dict(x) for x in threats] + [dict(x) for x in hashes]
