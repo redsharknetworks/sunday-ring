@@ -144,7 +144,7 @@ def generate_charts():
             ax.set_title("Top 10 Threat Pulses")
             charts["top10"] = plot_chart_to_base64(fig)
 
-        # Malaysia heatmap with cities
+        # Malaysia heatmap
         cities = [
             (3.1390,101.6869),(1.4927,103.7414),(5.4164,100.3327),(2.1896,102.2501),
             (6.1254,102.2381),(2.9216,101.6509),(2.9264,101.6998),(1.5533,110.3592),
@@ -237,8 +237,7 @@ def pdf_report():
         return f"Error generating PDF: {e}",500
 
 # ---------------- Startup ----------------
-if __name__ == "__main__":
-    ensure_database()
-    fetch_otx_data()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+ensure_database()
+fetch_otx_data()
+# ---------------- Railway / Gunicorn safe startup ----------------
+# Do NOT call app.run() when using Gunicorn
