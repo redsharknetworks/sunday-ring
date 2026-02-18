@@ -1,14 +1,12 @@
 import os
 import io
 import sqlite3
-import threading
-import time
 import random
 from datetime import datetime
 from flask import Flask, render_template_string, send_file, jsonify
 from OTXv2 import OTXv2
 import matplotlib
-matplotlib.use("Agg")  # headless backend
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
@@ -27,23 +25,6 @@ OTX_KEY = os.getenv("OTX_KEY")
 otx = OTXv2(OTX_KEY) if OTX_KEY else None
 if not OTX_KEY:
     print("⚠️ WARNING: OTX_KEY not set. Using dummy data.")
-
-# ---------------- GLOBAL CHARTS ----------------
-def generate_dummy_image():
-    buf = io.BytesIO()
-    plt.figure(figsize=(1,1))
-    plt.plot([0,1],[0,1])
-    plt.axis("off")
-    plt.savefig(buf, format="png")
-    plt.close()
-    return base64.b64encode(buf.getvalue()).decode()
-
-charts = {
-    "trend": generate_dummy_image(),
-    "type_chart": generate_dummy_image(),
-    "top10": generate_dummy_image(),
-    "heatmap": generate_dummy_image()
-}
 
 # ---------------- DATABASE ----------------
 def ensure_database():
@@ -64,39 +45,35 @@ def ensure_database():
     conn.commit()
     conn.close()
 
-# ---------------- FETCH OTX DATA ----------------
-def fetch_otx_data():
+# ---------------- FETCH OTX OR DUMMY ----------------
+def fetch_data():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     created = datetime.utcnow().isoformat()
+
+    # OTX fetch
     if otx:
         try:
             pulses = otx.getall(limit=10)
+            for pulse in pulses:
+                name = pulse.get("name","OTX")
+                for ind in pulse.get("indicators", []):
+                    val = ind.get("indicator")
+                    typ = ind.get("type","domain")
+                    if not val: continue
+                    score = random.randint(50,95)
+                    try:
+                        c.execute(
+                            "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
+                            (name,val,typ,"Medium","OTX",score,created)
+                        )
+                    except: pass
         except Exception as e:
             print("OTX fetch error:", e)
-            pulses = []
-        for pulse in pulses:
-            name = pulse.get("name","OTX")
-            for ind in pulse.get("indicators", []):
-                val = ind.get("indicator")
-                typ = ind.get("type","domain")
-                if not val: continue
-                score = random.randint(50,95)
-                try:
-                    c.execute(
-                        "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                        (name,val,typ,"Medium","OTX",score,created)
-                    )
-                except: pass
-    conn.commit()
-    conn.close()
 
-# ---------------- SEED DUMMY DATA ----------------
-def seed_dummy_data():
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    existing = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
-    if existing == 0:
+    # Seed dummy data if empty
+    count = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
+    if count == 0:
         print("Seeding dummy threat data...")
         dummy_pulses = ["Red Shark Attack","Silent Hunter","Ghost Spider","Dark Wave","Cyber Kraken","Phantom Tiger"]
         dummy_types = ["IPv4","domain","URL","FileHash-MD5","FileHash-SHA256"]
@@ -112,88 +89,75 @@ def seed_dummy_data():
                     (pulse,indicator,typ,random.choice(["Low","Medium","High"]),"N/A",score,created)
                 )
             except: pass
-        conn.commit()
+
+    conn.commit()
     conn.close()
 
-# ---------------- BACKGROUND CHARTS ----------------
-def generate_charts_bg():
-    global charts
-    while True:
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
+# ---------------- CHART GENERATION ----------------
+def plot_chart_to_base64(fig):
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return base64.b64encode(buf.getvalue()).decode()
 
-        # Trend chart
-        trend = c.execute("SELECT date(created_at), COUNT(*) FROM threats GROUP BY date(created_at) ORDER BY date(created_at)").fetchall()
-        if trend:
-            dates = [x[0] for x in trend]
-            counts = [x[1] for x in trend]
-            plt.figure(figsize=(6,3), dpi=100)
-            ax = plt.gca()
-            if os.path.exists("boxing_ring.png"):
-                try:
-                    bg = plt.imread("boxing_ring.png")
-                    ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
-                except: pass
-            plt.plot(dates, counts, marker="o", color="crimson")
-            plt.xticks(rotation=45)
-            plt.title("Threat Trend")
-            buf = io.BytesIO()
-            plt.tight_layout()
-            plt.savefig(buf, format="png")
-            plt.close()
-            charts["trend"] = base64.b64encode(buf.getvalue()).decode()
+def generate_charts():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
 
-        # Type chart
-        types = c.execute("SELECT type, COUNT(*) FROM threats GROUP BY type").fetchall()
-        if types:
-            labels = [x[0] for x in types]
-            values = [x[1] for x in types]
-            plt.figure(figsize=(4,3), dpi=100)
-            plt.bar(labels, values, color="darkblue")
-            plt.title("Indicator Types")
-            buf = io.BytesIO()
-            plt.tight_layout()
-            plt.savefig(buf, format="png")
-            plt.close()
-            charts["type_chart"] = base64.b64encode(buf.getvalue()).decode()
+    charts = {}
 
-        # Top10 chart
-        top10 = c.execute("SELECT pulse, COUNT(*) as cnt FROM threats GROUP BY pulse ORDER BY cnt DESC LIMIT 10").fetchall()
-        if top10:
-            pulses = [x[0] for x in top10]
-            counts = [x[1] for x in top10]
-            plt.figure(figsize=(6,3), dpi=100)
-            plt.barh(pulses[::-1], counts[::-1], color="red")
-            plt.title("Top 10 Threat Pulses")
-            plt.tight_layout()
-            buf = io.BytesIO()
-            plt.savefig(buf, format="png")
-            plt.close()
-            charts["top10"] = base64.b64encode(buf.getvalue()).decode()
+    # Trend
+    trend_data = c.execute("SELECT date(created_at), COUNT(*) FROM threats GROUP BY date(created_at) ORDER BY date(created_at)").fetchall()
+    if trend_data:
+        dates = [x[0] for x in trend_data]
+        counts = [x[1] for x in trend_data]
+        fig, ax = plt.subplots(figsize=(6,3), dpi=100)
+        if os.path.exists("boxing_ring.png"):
+            try:
+                bg = plt.imread("boxing_ring.png")
+                ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
+            except: pass
+        ax.plot(dates, counts, marker="o", color="crimson")
+        ax.set_title("Threat Trend")
+        plt.xticks(rotation=45)
+        charts["trend"] = plot_chart_to_base64(fig)
 
-        # Malaysia heatmap (all requested cities + Seremban)
-        cities = [
-            (3.1390,101.6869),(1.4927,103.7414),(5.4164,100.3327),(2.1896,102.2501),
-            (6.1254,102.2381),(2.9216,101.6509),(2.9264,101.6998),(1.5533,110.3592),
-            (5.9804,116.0735),(6.1203,100.3660),(5.3289,103.1403),(4.5975,101.0901),
-            (6.4383,100.2002),(3.8070,103.3255),(2.7295,101.9385)  # Seremban
-        ]
-        lats,lons = zip(*cities)
-        plt.figure(figsize=(6,6), dpi=100)
-        plt.scatter(lons,lats,s=100,c="red",alpha=0.6)
-        plt.title("Malaysia Threat Heatmap")
-        buf = io.BytesIO()
-        plt.tight_layout()
-        plt.savefig(buf,format="png")
-        plt.close()
-        charts["heatmap"] = base64.b64encode(buf.getvalue()).decode()
+    # Type chart
+    type_data = c.execute("SELECT type, COUNT(*) FROM threats GROUP BY type").fetchall()
+    if type_data:
+        labels = [x[0] for x in type_data]
+        values = [x[1] for x in type_data]
+        fig, ax = plt.subplots(figsize=(4,3), dpi=100)
+        ax.bar(labels, values, color="darkblue")
+        ax.set_title("Indicator Types")
+        charts["type_chart"] = plot_chart_to_base64(fig)
 
-        conn.close()
-        time.sleep(600)
+    # Top 10 pulses
+    top10_data = c.execute("SELECT pulse, COUNT(*) FROM threats GROUP BY pulse ORDER BY COUNT(*) DESC LIMIT 10").fetchall()
+    if top10_data:
+        pulses = [x[0] for x in top10_data]
+        counts = [x[1] for x in top10_data]
+        fig, ax = plt.subplots(figsize=(6,3), dpi=100)
+        ax.barh(pulses[::-1], counts[::-1], color="red")
+        ax.set_title("Top 10 Threat Pulses")
+        charts["top10"] = plot_chart_to_base64(fig)
 
-def start_background():
-    t = threading.Thread(target=generate_charts_bg, daemon=True)
-    t.start()
+    # Malaysia heatmap
+    cities = [
+        (3.1390,101.6869),(1.4927,103.7414),(5.4164,100.3327),(2.1896,102.2501),
+        (6.1254,102.2381),(2.9216,101.6509),(2.9264,101.6998),(1.5533,110.3592),
+        (5.9804,116.0735),(6.1203,100.3660),(5.3289,103.1403),(4.5975,101.0901),
+        (6.4383,100.2002),(3.8070,103.3255),(2.7295,101.9385)  # Seremban
+    ]
+    lats,lons = zip(*cities)
+    fig, ax = plt.subplots(figsize=(6,6), dpi=100)
+    ax.scatter(lons,lats,s=100,c="red",alpha=0.6)
+    ax.set_title("Malaysia Threat Heatmap")
+    charts["heatmap"] = plot_chart_to_base64(fig)
+
+    conn.close()
+    return charts
 
 # ---------------- DASHBOARD ----------------
 TEMPLATE = """
@@ -216,9 +180,10 @@ TEMPLATE = """
 
 @app.route("/")
 def dashboard():
+    charts = generate_charts()
     return render_template_string(TEMPLATE, charts=charts)
 
-# ---------------- CSV ----------------
+# ---------------- REPORTS ----------------
 @app.route("/report/csv")
 def csv_report():
     conn = sqlite3.connect(DB)
@@ -234,7 +199,6 @@ def csv_report():
     output.seek(0)
     return send_file(output, as_attachment=True, download_name="report.csv")
 
-# ---------------- JSON ----------------
 @app.route("/report/json")
 def json_report():
     conn = sqlite3.connect(DB)
@@ -244,32 +208,26 @@ def json_report():
     conn.close()
     return jsonify([dict(x) for x in data])
 
-# ---------------- PDF ----------------
 @app.route("/report/pdf")
 def pdf_report():
+    charts = generate_charts()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer,pagesize=letter)
     styles = getSampleStyleSheet()
-    elements = []
-    elements.append(Paragraph("Threat Intelligence Report",styles["Title"]))
-    elements.append(Spacer(1,12))
-
+    elements = [Paragraph("Threat Intelligence Report", styles["Title"]), Spacer(1,12)]
     for key in ["trend","type_chart","top10","heatmap"]:
         if charts.get(key):
             img = io.BytesIO(base64.b64decode(charts[key]))
             elements.append(RLImage(img, width=420, height=200))
             elements.append(Spacer(1,12))
-
     doc.build(elements)
     buffer.seek(0)
     return send_file(buffer, as_attachment=True, download_name="report.pdf")
 
 # ---------------- INIT ----------------
 ensure_database()
-fetch_otx_data()
-seed_dummy_data()
-start_background()
+fetch_data()
 
-# ---------------- Railway Start Command ----------------
-# Use in Railway dashboard:
+# ---------------- Railway Start ----------------
+# Run with:
 # gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --threads 2
