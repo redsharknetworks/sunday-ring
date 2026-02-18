@@ -2,7 +2,7 @@ import os
 import io
 import sqlite3
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 import asyncio
 
 from fastapi import FastAPI, Request
@@ -65,7 +65,6 @@ async def fetch_otx_data():
     c = conn.cursor()
     created = datetime.utcnow().isoformat()
 
-    # OTX fetch
     if otx:
         try:
             pulses = otx.getall(limit=10)
@@ -76,16 +75,14 @@ async def fetch_otx_data():
                     typ = ind.get("type","domain")
                     if not val: continue
                     score = random.randint(50,95)
-                    try:
-                        c.execute(
-                            "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                            (name,val,typ,"Medium","OTX",score,created)
-                        )
-                    except: pass
+                    c.execute(
+                        "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
+                        (name,val,typ,"Medium","OTX",score,created)
+                    )
         except Exception as e:
             print("OTX fetch error:", e)
 
-    # Dummy data if empty
+    # Dummy data fallback
     count = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
     if count == 0:
         dummy_pulses = ["Red Shark Attack","Silent Hunter","Ghost Spider","Dark Wave","Cyber Kraken","Phantom Tiger"]
@@ -96,12 +93,10 @@ async def fetch_otx_data():
             typ = random.choice(dummy_types)
             score = random.randint(50,95)
             created = datetime.utcnow().isoformat()
-            try:
-                c.execute(
-                    "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                    (pulse,indicator,typ,random.choice(["Low","Medium","High"]),"N/A",score,created)
-                )
-            except: pass
+            c.execute(
+                "INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
+                (pulse,indicator,typ,random.choice(["Low","Medium","High"]),"N/A",score,created)
+            )
 
     conn.commit()
     conn.close()
@@ -238,15 +233,10 @@ async def pdf_report():
 
 # ---------------- Startup ----------------
 ensure_database()
-# Start OTX fetch background task
+# Background OTX fetch task
 if otx:
     loop = asyncio.get_event_loop()
     loop.create_task(fetch_otx_loop())
 else:
     # Populate dummy data immediately
-    import asyncio
     asyncio.run(fetch_otx_data())
-
-# ---------------- Notes for Railway ----------------
-# Run with:
-#   gunicorn main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --workers 1
