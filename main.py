@@ -1,9 +1,8 @@
 import os
 import sqlite3
 import random
+import threading
 from datetime import datetime, timedelta
-from threading import Thread
-import time
 from flask import Flask, jsonify, request, render_template_string, send_file
 import matplotlib
 matplotlib.use("Agg")
@@ -19,44 +18,43 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.pagesizes import A4, landscape
 import ipaddress
 import re
-from OTXv2 import OTXv2  # make sure to install otx-api-client
+from OTX2 import OTX2
 
-# ---------------- CONFIG ----------------
-app = Flask(__name__)
+# ---------------- CONFIG -----------------
+OTX_API_KEY = os.getenv("OTX_API_KEY","YOUR_OTX_KEY_HERE")  # Replace with your key
 DB = "/tmp/threats.db"
 PAGE_SIZE = 50
 DISCLAIMER = "Information and analysis are derived from publicly available sources and developed by DarkGrid (darkgrid@redshark.my)."
-OTX_KEY = os.environ.get("OTX_API_KEY")  # set in Render dashboard
-otx = OTXv2(OTX_KEY)
+
+app = Flask(__name__)
 
 # ---------------- DATABASE ----------------
-def get_conn():
-    return sqlite3.connect(DB, check_same_thread=False)
-
 def init_db():
-    conn = get_conn()
+    conn = sqlite3.connect(DB)
     c = conn.cursor()
     c.execute("""
-    CREATE TABLE IF NOT EXISTS threats (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        pulse TEXT,
-        indicator TEXT,
-        type TEXT,
-        classification TEXT,
-        mitre TEXT,
-        risk_score INTEGER,
-        created_at TEXT
-    )""")
+        CREATE TABLE IF NOT EXISTS threats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pulse TEXT,
+            indicator TEXT,
+            type TEXT,
+            classification TEXT,
+            mitre TEXT,
+            risk_score INTEGER,
+            created_at TEXT
+        )
+    """)
     c.execute("""
-    CREATE TABLE IF NOT EXISTS threat_hashes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        pulse TEXT,
-        hash TEXT,
-        classification TEXT,
-        mitre TEXT,
-        risk_score INTEGER,
-        created_at TEXT
-    )""")
+        CREATE TABLE IF NOT EXISTS threat_hashes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pulse TEXT,
+            hash TEXT,
+            classification TEXT,
+            mitre TEXT,
+            risk_score INTEGER,
+            created_at TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -75,7 +73,7 @@ def is_valid_domain(domain):
 def is_valid_url(url):
     return url.startswith("http://") or url.startswith("https://")
 
-# ---------------- RISK ENGINE ----------------
+# ---------------- RISK ----------------
 def calculate_risk(classification, mitre):
     base = {"Low":30,"Medium":60,"High":80}.get(classification,50)
     mitre_weight = 15 if "T1566" in mitre else 10
@@ -84,72 +82,87 @@ def calculate_risk(classification, mitre):
 
 # ---------------- SEED DATA ----------------
 def seed_data():
-    conn = get_conn()
+    conn = sqlite3.connect(DB)
     c = conn.cursor()
-    if c.execute("SELECT COUNT(*) FROM threats").fetchone()[0] > 0:
+    count_main = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
+    count_hash = c.execute("SELECT COUNT(*) FROM threat_hashes").fetchone()[0]
+    if count_main > 0 and count_hash > 0:
         conn.close()
         return
-    for i in range(50):
+    for i in range(120):
         classification = random.choice(["Low","Medium","High"])
         mitre = random.choice(["T1566 Phishing","T1071 C2","T1059 Execution"])
         score = calculate_risk(classification, mitre)
         typ = random.choice(["domain","IPv4","URL","hash"])
-        pulse = f"Campaign {i%6}"
-        created_at = datetime.utcnow().isoformat()
         if typ == "domain":
             indicator = f"malicious{i}.com"
-            c.execute("INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                      (pulse, indicator, typ, classification, mitre, score, created_at))
+            if not is_valid_domain(indicator): continue
+            c.execute("""
+                INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at)
+                VALUES (?,?,?,?,?,?,?)
+            """,(f"Campaign {i%6}",indicator,typ,classification,mitre,score,datetime.utcnow().isoformat()))
         elif typ == "IPv4":
             indicator = f"192.168.{i%255}.{i%255}"
-            c.execute("INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                      (pulse, indicator, typ, classification, mitre, score, created_at))
+            if not is_valid_ipv4(indicator): continue
+            c.execute("""
+                INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at)
+                VALUES (?,?,?,?,?,?,?)
+            """,(f"Campaign {i%6}",indicator,typ,classification,mitre,score,datetime.utcnow().isoformat()))
         elif typ == "URL":
             indicator = f"http://malicious{i}.com"
-            c.execute("INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                      (pulse, indicator, typ, classification, mitre, score, created_at))
+            if not is_valid_url(indicator): continue
+            c.execute("""
+                INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at)
+                VALUES (?,?,?,?,?,?,?)
+            """,(f"Campaign {i%6}",indicator,typ,classification,mitre,score,datetime.utcnow().isoformat()))
         else:
             hash_val = f"{random.getrandbits(128):032x}"
-            c.execute("INSERT INTO threat_hashes (pulse,hash,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?)",
-                      (pulse, hash_val, classification, mitre, score, created_at))
+            c.execute("""
+                INSERT INTO threat_hashes (pulse,hash,classification,mitre,risk_score,created_at)
+                VALUES (?,?,?,?,?,?)
+            """,(f"Campaign {i%6}",hash_val,classification,mitre,score,datetime.utcnow().isoformat()))
     conn.commit()
     conn.close()
 
-# ---------------- OTX FETCH ----------------
-def fetch_otx():
-    try:
-        pulses = otx.getall_pulses()  # fetch recent pulses
-        conn = get_conn()
-        c = conn.cursor()
-        for pulse in pulses:
-            pulse_name = pulse.get("name", "Unknown")
-            indicators = pulse.get("indicators", [])
-            for i in indicators:
-                typ = i.get("type", "")
-                indicator = i.get("indicator", "")
-                mitre = i.get("technique", "")
-                classification = "Medium"
-                risk_score = calculate_risk(classification, mitre)
-                created_at = datetime.utcnow().isoformat()
-                if typ in ["IPv4", "domain", "URL"] and indicator:
-                    c.execute("INSERT OR IGNORE INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?,?)",
-                              (pulse_name, indicator, typ, classification, mitre, risk_score, created_at))
-                elif typ == "file hash":
-                    c.execute("INSERT OR IGNORE INTO threat_hashes (pulse,hash,classification,mitre,risk_score,created_at) VALUES (?,?,?,?,?,?)",
-                              (pulse_name, indicator, classification, mitre, risk_score, created_at))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print("OTX fetch error:", e)
+# ---------------- DATABASE ENSURE ----------------
+def ensure_database():
+    init_db()
+    seed_data()
 
-def auto_fetch_otx():
-    while True:
-        fetch_otx()
-        time.sleep(3600)  # every hour
+ensure_database()
+
+# ---------------- FETCH FROM OTX ----------------
+otx = OTX2(OTX_API_KEY)
+
+def fetch_otx():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    pulses = ["malware","botnet","phishing"]
+    for pulse in pulses:
+        try:
+            for i, indicator in enumerate(otx.get_indicators_by_section("IPv4", pulse=pulse)[:10]):
+                ind = indicator["indicator"]
+                mitre = indicator.get("threat_type","N/A")
+                score = calculate_risk("Medium", mitre)
+                c.execute("""
+                    INSERT INTO threats (pulse,indicator,type,classification,mitre,risk_score,created_at)
+                    VALUES (?,?,?,?,?,?,?)
+                """,(pulse,ind,"IPv4","Medium",mitre,score,datetime.utcnow().isoformat()))
+        except Exception as e:
+            print("OTX fetch error:", e)
+    conn.commit()
+    conn.close()
+
+# Auto fetch every hour
+def otx_scheduler():
+    fetch_otx()
+    threading.Timer(3600, otx_scheduler).start()
+
+otx_scheduler()
 
 # ---------------- ANALYTICS ----------------
 def risk_index():
-    conn = get_conn()
+    conn = sqlite3.connect(DB)
     c = conn.cursor()
     scores = [x[0] for x in c.execute("SELECT risk_score FROM threats").fetchall()]
     scores += [x[0] for x in c.execute("SELECT risk_score FROM threat_hashes").fetchall()]
@@ -157,7 +170,7 @@ def risk_index():
     return int(sum(scores)/len(scores)) if scores else 0
 
 def executive_summary():
-    conn = get_conn()
+    conn = sqlite3.connect(DB)
     c = conn.cursor()
     total = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
     total += c.execute("SELECT COUNT(*) FROM threat_hashes").fetchone()[0]
@@ -170,7 +183,7 @@ def executive_summary():
 
 # ---------------- TREND CHART ----------------
 def generate_trend_html():
-    conn = get_conn()
+    conn = sqlite3.connect(DB)
     c = conn.cursor()
     data = c.execute("SELECT substr(created_at,1,10), COUNT(*) FROM threats GROUP BY substr(created_at,1,10) ORDER BY substr(created_at,1,10)").fetchall()
     conn.close()
@@ -199,25 +212,23 @@ def generate_trend_html():
     img.seek(0)
     return base64.b64encode(img.read()).decode()
 
-# ---------------- INDICATOR TYPE LINE CHART ----------------
+# ---------------- INDICATOR TYPE CHART ----------------
 def generate_type_chart_html():
-    conn = get_conn()
+    conn = sqlite3.connect(DB)
     c = conn.cursor()
     data = c.execute("SELECT type, COUNT(*) FROM threats GROUP BY type").fetchall()
     conn.close()
-    if not data: return ""
     types = [d[0] for d in data]
     counts = [d[1] for d in data]
-
     plt.figure(figsize=(8,3))
-    plt.plot(types, counts, color="orange", marker="o", linewidth=2)
-    plt.grid(color='white', linestyle='--', linewidth=0.3, alpha=0.5)
-    plt.tight_layout()
-    img = io.BytesIO()
-    plt.savefig(img, format="png", facecolor='#0a1f44')
+    plt.plot(types, counts, color="orange", marker="o")
+    plt.title("Indicator Type Count")
+    plt.grid(True, alpha=0.3)
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", facecolor='white')
     plt.close()
-    img.seek(0)
-    return base64.b64encode(img.read()).decode()
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode()
 
 # ---------------- MAP ----------------
 def generate_map():
@@ -226,44 +237,61 @@ def generate_map():
     HeatMap(heat).add_to(m)
     return m._repr_html_()
 
-# ---------------- REPORTS ----------------
-def get_weekly_top10():
-    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
-    conn = get_conn()
-    c = conn.cursor()
-    result = {}
-    for typ in ["IPv4","domain","URL"]:
-        result[typ] = c.execute("SELECT pulse,indicator,type,classification,mitre,risk_score,created_at FROM threats WHERE type=? AND created_at >= ? ORDER BY risk_score DESC LIMIT 10",(typ, week_ago)).fetchall()
-    result["hash"] = c.execute("SELECT pulse,hash AS indicator,'hash' AS type,classification,mitre,risk_score,created_at FROM threat_hashes WHERE created_at >= ? ORDER BY risk_score DESC LIMIT 10",(week_ago,)).fetchall()
-    conn.close()
-    return result
-
 # ---------------- DASHBOARD ----------------
 @app.route("/")
 def dashboard():
     page = int(request.args.get("page",1))
     sort = request.args.get("sort","risk_score")
     offset = (page-1)*PAGE_SIZE
-    conn = get_conn()
+    conn = sqlite3.connect(DB)
     c = conn.cursor()
     total = c.execute("SELECT COUNT(*) FROM threats WHERE type IN ('domain','IPv4','URL')").fetchone()[0]
-    data = c.execute(f"SELECT pulse,indicator,type,classification,mitre,risk_score,created_at FROM threats WHERE type IN ('domain','IPv4','URL') ORDER BY {sort} DESC LIMIT ? OFFSET ?", (PAGE_SIZE, offset)).fetchall()
+    data = c.execute(f"""
+        SELECT pulse,indicator,type,classification,mitre,risk_score,created_at
+        FROM threats
+        WHERE type IN ('domain','IPv4','URL')
+        ORDER BY {sort} DESC LIMIT ? OFFSET ?
+    """,(PAGE_SIZE, offset)).fetchall()
     conn.close()
-
     trend = generate_trend_html()
     type_chart = generate_type_chart_html()
     return render_template_string(TEMPLATE,
-                                  data=data,
-                                  total=total,
-                                  page=page,
-                                  risk_index=risk_index(),
-                                  summary=executive_summary(),
-                                  trend=trend,
-                                  type_chart=type_chart,
-                                  map_html=generate_map(),
-                                  disclaimer=DISCLAIMER)
+        data=data,
+        total=total,
+        page=page,
+        risk_index=risk_index(),
+        summary=executive_summary(),
+        trend=trend,
+        type_chart=type_chart,
+        map_html=generate_map(),
+        disclaimer=DISCLAIMER
+    )
 
-# ---------------- PDF/CSV/JSON ----------------
+# ---------------- WEEKLY REPORT ----------------
+def get_weekly_top10():
+    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    result = {}
+    for typ in ["IPv4","domain","URL"]:
+        result[typ] = c.execute(f"""
+            SELECT pulse,indicator,type,classification,mitre,risk_score,created_at
+            FROM threats
+            WHERE type='{typ}' AND created_at >= ?
+            ORDER BY risk_score DESC
+            LIMIT 10
+        """,(week_ago,)).fetchall()
+    result["hash"] = c.execute("""
+        SELECT pulse,hash AS indicator,'hash' AS type,classification,mitre,risk_score,created_at
+        FROM threat_hashes
+        WHERE created_at >= ?
+        ORDER BY risk_score DESC
+        LIMIT 10
+    """,(week_ago,)).fetchall()
+    conn.close()
+    return result
+
+# ---------------- REPORTS ----------------
 @app.route("/report/pdf")
 def pdf_report():
     buffer = io.BytesIO()
@@ -274,7 +302,6 @@ def pdf_report():
     elements.append(Spacer(1,12))
     elements.append(Paragraph(executive_summary(), styles["Normal"]))
     elements.append(Spacer(1,12))
-
     weekly_top = get_weekly_top10()
     for typ, rows in weekly_top.items():
         elements.append(Paragraph(f"Weekly Top 10 {typ} Threats", styles["Heading2"]))
@@ -289,15 +316,14 @@ def pdf_report():
         ]))
         elements.append(table)
         elements.append(Spacer(1,12))
-
     elements.append(Paragraph(DISCLAIMER, styles["Italic"]))
     doc.build(elements)
     buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="darkgridatredsharkdotmy.pdf", mimetype="application/pdf")
+    return send_file(buffer, as_attachment=True, download_name="darkgrid_report.pdf", mimetype="application/pdf")
 
 @app.route("/report/csv")
 def csv_report():
-    conn = get_conn()
+    conn = sqlite3.connect(DB)
     rows = conn.execute("SELECT * FROM threats").fetchall()
     hash_rows = conn.execute("SELECT id,pulse,hash,type,classification,mitre,risk_score,created_at FROM threat_hashes").fetchall()
     conn.close()
@@ -309,25 +335,21 @@ def csv_report():
     output = io.BytesIO()
     output.write(si.getvalue().encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name="darkgridatredsharkdotmy.csv")
+    return send_file(output, as_attachment=True, download_name="darkgrid_report.csv")
 
 @app.route("/report/json")
 def json_report():
-    conn = get_conn()
+    conn = sqlite3.connect(DB)
     rows = conn.execute("SELECT * FROM threats").fetchall()
     hash_rows = conn.execute("SELECT id,pulse,hash,type,classification,mitre,risk_score,created_at FROM threat_hashes").fetchall()
     conn.close()
-    combined = rows + hash_rows
-    return jsonify(combined)
+    return jsonify(rows + hash_rows)
 
 # ---------------- RUN ----------------
 if __name__ == "__main__":
-    init_db()
-    seed_data()
-    Thread(target=auto_fetch_otx, daemon=True).start()
     app.run(host="0.0.0.0", port=5000, debug=True)
 
-# ---------------- DASHBOARD TEMPLATE ----------------
+# ---------------- TEMPLATE ----------------
 TEMPLATE = """<html><head>
 <style>
 body { background:#0a1f44; color:white; font-family:Arial; margin:0 auto; max-width:1200px; }
@@ -363,7 +385,7 @@ function sortTable(n) {
 </script>
 </head>
 <body>
-<h1>REDSHARK CYBER THREATS INTELLIGENCE DASHBOARD</h1>
+<h1>Redshark Cyber Threats Intelligence Dashboard</h1>
 <div class="container">{{ map_html|safe }}</div>
 <p style="text-align:center;">{{ summary }}</p>
 <div class="container"><img src="data:image/png;base64,{{ trend }}"></div>
@@ -391,7 +413,9 @@ function sortTable(n) {
 </tr>
 {% endfor %}
 </table>
-<p style="text-align:center;">{{ disclaimer }}</p>
 <p style="text-align:center;">
 <a href="/report/pdf">Download PDF</a> |
-<a href="/report/csv">Download CSV</a>
+<a href="/report/csv">Download CSV</a> |
+<a href="/report/json">Download JSON</a>
+</p>
+<p style="
