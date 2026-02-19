@@ -11,7 +11,7 @@ from datetime import datetime
 import requests
 from flask import Flask, render_template_string, send_file, jsonify
 
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
@@ -23,17 +23,13 @@ import matplotlib.pyplot as plt
 import folium
 from folium.plugins import HeatMap
 
-# -------------------------------------------------
-# CONFIG
-# -------------------------------------------------
+# ---------------- CONFIG ----------------
 app = Flask(__name__)
 DB = os.getenv("DB_PATH", "/tmp/threats.db")
 OTX_KEY = os.getenv("OTX_KEY")
 OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
 
-# -------------------------------------------------
-# DATABASE
-# -------------------------------------------------
+# ---------------- DATABASE ----------------
 def ensure_database():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -51,9 +47,7 @@ def ensure_database():
     conn.commit()
     conn.close()
 
-# -------------------------------------------------
-# DUMMY DATA
-# -------------------------------------------------
+# ---------------- DUMMY DATA ----------------
 def insert_dummy_data():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -70,9 +64,7 @@ def insert_dummy_data():
     conn.close()
     print("Inserted dummy data")
 
-# -------------------------------------------------
-# OTX FETCH
-# -------------------------------------------------
+# ---------------- OTX FETCH ----------------
 def fetch_otx_data():
     ensure_database()
     if not OTX_KEY:
@@ -109,17 +101,13 @@ def fetch_otx_data():
     conn.close()
     print("OTX data updated")
 
-# -------------------------------------------------
-# SCHEDULER
-# -------------------------------------------------
+# ---------------- SCHEDULER ----------------
 def scheduler():
     while True:
         fetch_otx_data()
         time.sleep(3600)
 
-# -------------------------------------------------
-# CHARTS
-# -------------------------------------------------
+# ---------------- CHARTS ----------------
 def generate_trend_chart():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -137,19 +125,21 @@ def generate_trend_chart():
     dates = [x["date"] for x in trend]
     counts = [x["cnt"] for x in trend]
 
-    plt.figure(figsize=(6,3))
+    plt.figure(figsize=(6,3), facecolor="#0A2239")  # dark blue background
     ax = plt.gca()
+    ax.set_facecolor("#0A2239")
     # Boxing ring background if exists
     if os.path.exists("boxing_ring.png"):
         bg = plt.imread("boxing_ring.png")
         ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
 
     plt.plot(dates, counts, marker="o", color="crimson")
-    plt.title("Threat Trend")
-    plt.xticks(rotation=45)
-    plt.tight_layout()
+    plt.title("Threat Trend", color="white")
+    plt.xticks(rotation=45, color="white")
+    plt.yticks(color="white")
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", facecolor="#0B3D91")  # dark blue background
+    plt.tight_layout()
+    plt.savefig(buf, format="png", facecolor="#0A2239")
     plt.close()
     buf.seek(0)
     return base64.b64encode(buf.getvalue()).decode()
@@ -169,19 +159,21 @@ def generate_type_chart():
     labels = [x["type"] for x in types]
     values = [x["cnt"] for x in types]
 
-    plt.figure(figsize=(4,3))
+    plt.figure(figsize=(4,3), facecolor="#0A2239")
+    ax = plt.gca()
+    ax.set_facecolor("#0A2239")
     plt.bar(labels, values, color="crimson")
-    plt.title("Signal Types")
-    plt.tight_layout()
+    plt.title("Signal Types", color="white")
+    plt.xticks(color="white")
+    plt.yticks(color="white")
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", facecolor="#0B3D91")
+    plt.tight_layout()
+    plt.savefig(buf, format="png", facecolor="#0A2239")
     plt.close()
     buf.seek(0)
     return base64.b64encode(buf.getvalue()).decode()
 
-# -------------------------------------------------
-# MALAYSIA HEATMAP
-# -------------------------------------------------
+# ---------------- MALAYSIA HEATMAP ----------------
 def generate_heatmap():
     malaysia_coords = [
         [3.1390,101.6869,5],  # KL
@@ -197,13 +189,11 @@ def generate_heatmap():
         [5.3300,103.1400,2],  # Kuala Terengganu
         [3.8167,103.3333,2],  # Kuantan
     ]
-    m = folium.Map(location=[4.2105,101.9758], zoom_start=6)
+    m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
     HeatMap(malaysia_coords, radius=25).add_to(m)
     return m._repr_html_()
 
-# -------------------------------------------------
-# SUMMARY
-# -------------------------------------------------
+# ---------------- SUMMARY ----------------
 def generate_summary():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -215,68 +205,7 @@ def generate_summary():
     summary = f"RedShark has detected {total_signals} signals. {high_risk} high-risk signals observed. Signals by type: " + ", ".join([f"{x['type']}({x['cnt']})" for x in types])
     return summary
 
-# -------------------------------------------------
-# REPORT GENERATION
-# -------------------------------------------------
-def get_timestamp():
-    return datetime.now().strftime("%Y%m%d%H%M%S")
-
-def generate_pdf_report(trend_img, type_img, table_data, summary_text):
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-    styles = getSampleStyleSheet()
-    elements = []
-
-    elements.append(Paragraph("RedShark Threat Intelligence Dashboard", styles['Title']))
-    elements.append(Paragraph(summary_text, styles['Normal']))
-    elements.append(Spacer(1,12))
-    if trend_img:
-        img = io.BytesIO(base64.b64decode(trend_img))
-        elements.append(Image(img, width=400, height=200))
-    if type_img:
-        img2 = io.BytesIO(base64.b64decode(type_img))
-        elements.append(Spacer(1,12))
-        elements.append(Image(img2, width=300, height=200))
-    # Table
-    data = [["ID","Pulse","Signal","Type","Class","MITRE","Risk","Created"]]
-    for row in table_data:
-        data.append([row['id'], row['pulse'], row['signal'], row['type'], row['classification'], row['mitre'], row['risk_score'], row['created_at']])
-    table = Table(data, repeatRows=1)
-    table.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
-        ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
-        ('FONTNAME',(0,0),(-1,-1),'Helvetica'),
-        ('FONTSIZE',(0,0),(-1,-1),9),
-        ('ALIGN',(0,0),(-1,-1),'CENTER'),
-        ('BACKGROUND',(0,1),(-1,-1),colors.lightblue),
-        ('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.darkblue, colors.lightblue])
-    ]))
-    elements.append(Spacer(1,12))
-    elements.append(table)
-    # Disclaimer
-    elements.append(Spacer(1,12))
-    elements.append(Paragraph("Disclaimer: Developed by DarkGrid@redshark.my from publicly available sources", styles['Normal']))
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
-
-def generate_csv_report(table_data):
-    si = io.StringIO()
-    cw = csv.writer(si)
-    cw.writerow(["ID","Pulse","Signal","Type","Class","MITRE","Risk","Created"])
-    for row in table_data:
-        cw.writerow([row['id'], row['pulse'], row['signal'], row['type'], row['classification'], row['mitre'], row['risk_score'], row['created_at']])
-    output = io.BytesIO()
-    output.write(si.getvalue().encode())
-    output.seek(0)
-    return output
-
-def generate_json_report(table_data):
-    return jsonify([dict(row) for row in table_data])
-
-# -------------------------------------------------
-# DASHBOARD TEMPLATE
-# -------------------------------------------------
+# ---------------- DASHBOARD TEMPLATE ----------------
 TEMPLATE = """
 <html>
 <head>
@@ -285,9 +214,9 @@ TEMPLATE = """
 <script src="https://code.jquery.com/jquery-3.7.1.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 <style>
-body { background-color:#0B3D91; color:white; font-family:Arial, sans-serif; }
-table.dataTable tbody tr:nth-child(odd){ background-color:#0B3D91; }
-table.dataTable tbody tr:nth-child(even){ background-color:#4682B4; }
+body { background-color:#0A2239; color:white; font-family:Arial, sans-serif; }
+table.dataTable tbody tr:nth-child(odd){ background-color:#0A2239; }
+table.dataTable tbody tr:nth-child(even){ background-color:#1C3C6B; }
 th, td { color:white; text-align:center; }
 </style>
 </head>
@@ -312,14 +241,8 @@ th, td { color:white; text-align:center; }
 <table id="signals" class="display">
 <thead>
 <tr>
-<th>ID</th>
-<th>Pulse</th>
-<th>Signal</th>
-<th>Type</th>
-<th>Class</th>
-<th>MITRE</th>
-<th>Risk</th>
-<th>Created</th>
+<th>ID</th><th>Pulse</th><th>Signal</th><th>Type</th>
+<th>Class</th><th>MITRE</th><th>Risk</th><th>Created</th>
 </tr>
 </thead>
 <tbody>
@@ -351,9 +274,7 @@ $(document).ready(function() {
 </html>
 """
 
-# -------------------------------------------------
-# ROUTES
-# -------------------------------------------------
+# ---------------- ROUTES ----------------
 @app.route("/")
 def dashboard():
     trend = generate_trend_chart()
@@ -365,19 +286,52 @@ def dashboard():
     table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
     conn.close()
     summary_text = generate_summary()
-    return render_template_string(TEMPLATE, trend=trend, type_chart=type_chart, heatmap=heatmap, table_data=table_data, summary_text=summary_text)
+    return render_template_string(TEMPLATE, trend=trend, type_chart=type_chart, heatmap=heatmap,
+                                  table_data=table_data, summary_text=summary_text)
+
+# ---------------- REPORT ROUTES ----------------
+def get_timestamp(): return datetime.now().strftime("%Y%m%d%H%M%S")
 
 @app.route("/report/pdf")
 def report_pdf():
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
+    table_data = conn.cursor().execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
     conn.close()
     trend = generate_trend_chart()
     type_chart = generate_type_chart()
     summary_text = generate_summary()
-    buf = generate_pdf_report(trend, type_chart, table_data, summary_text)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4)
+    styles = getSampleStyleSheet()
+    elements = [Paragraph("RedShark Threat Intelligence Dashboard", styles['Title']),
+                Paragraph(summary_text, styles['Normal']), Spacer(1,12)]
+    if trend:
+        img = io.BytesIO(base64.b64decode(trend))
+        elements.append(Image(img, width=400, height=200))
+    if type_chart:
+        img2 = io.BytesIO(base64.b64decode(type_chart))
+        elements.append(Spacer(1,12))
+        elements.append(Image(img2, width=300, height=200))
+    data = [["ID","Pulse","Signal","Type","Class","MITRE","Risk","Created"]]
+    for row in table_data:
+        data.append([row['id'], row['pulse'], row['signal'], row['type'], row['classification'], row['mitre'], row['risk_score'], row['created_at']])
+    table = Table(data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
+        ('FONTNAME',(0,0),(-1,-1),'Helvetica'),
+        ('FONTSIZE',(0,0),(-1,-1),9),
+        ('ALIGN',(0,0),(-1,-1),'CENTER'),
+        ('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.HexColor("#0A2239"), colors.HexColor("#1C3C6B")])
+    ]))
+    elements.append(Spacer(1,12))
+    elements.append(table)
+    elements.append(Spacer(1,12))
+    elements.append(Paragraph("Disclaimer: Developed by DarkGrid@redshark.my from publicly available sources", styles['Normal']))
+    doc.build(elements)
+    buf.seek(0)
     filename = f"RedShark_DarkGrid_report{get_timestamp()}.pdf"
     return send_file(buf, as_attachment=True, download_name=filename)
 
@@ -385,10 +339,16 @@ def report_pdf():
 def report_csv():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
+    table_data = conn.cursor().execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
     conn.close()
-    buf = generate_csv_report(table_data)
+    si = io.StringIO()
+    cw = csv.writer(si)
+    cw.writerow(["ID","Pulse","Signal","Type","Class","MITRE","Risk","Created"])
+    for row in table_data:
+        cw.writerow([row['id'], row['pulse'], row['signal'], row['type'], row['classification'], row['mitre'], row['risk_score'], row['created_at']])
+    buf = io.BytesIO()
+    buf.write(si.getvalue().encode())
+    buf.seek(0)
     filename = f"RedShark_DarkGrid_report{get_timestamp()}.csv"
     return send_file(buf, as_attachment=True, download_name=filename)
 
@@ -396,14 +356,11 @@ def report_csv():
 def report_json():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
+    table_data = conn.cursor().execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
     conn.close()
-    return generate_json_report(table_data)
+    return jsonify([dict(row) for row in table_data])
 
-# -------------------------------------------------
-# START
-# -------------------------------------------------
+# ---------------- START ----------------
 ensure_database()
 fetch_otx_data()
 if not os.getenv("RUN_MAIN"):
