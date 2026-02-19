@@ -23,6 +23,9 @@ import matplotlib.pyplot as plt
 import folium
 from folium.plugins import HeatMap
 
+# -------------------------------------------------
+# CONFIG
+# -------------------------------------------------
 app = Flask(__name__)
 DB = os.getenv("DB_PATH", "/tmp/threats.db")
 OTX_KEY = os.getenv("OTX_KEY")
@@ -36,7 +39,7 @@ def ensure_database():
     CREATE TABLE IF NOT EXISTS threats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         pulse TEXT,
-        entity TEXT,
+        signal TEXT,
         category TEXT,
         classification TEXT,
         mitre TEXT,
@@ -53,13 +56,13 @@ def insert_dummy_data():
     c = conn.cursor()
     for i in range(10):
         pulse = f"Dummy Pulse {i+1}"
-        entity = f"malicious{i+1}.com"
+        signal = f"malicious{i+1}.com"
         created = datetime.utcnow().isoformat()
         score = random.randint(60, 95)
         c.execute("""
-        INSERT INTO threats (pulse, entity, category, classification, mitre, risk_score, created_at)
+        INSERT INTO threats (pulse, signal, category, classification, mitre, risk_score, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,(pulse, entity, "Domain", "Medium", "OTX", score, created))
+        """,(pulse, signal, "Domain", "Medium", "OTX", score, created))
     conn.commit()
     conn.close()
     print("Inserted dummy data")
@@ -68,7 +71,7 @@ def insert_dummy_data():
 def fetch_otx_data():
     ensure_database()
     if not OTX_KEY:
-        print("No OTX key, inserting dummy data...")
+        print("No OTX key, using dummy data.")
         insert_dummy_data()
         return
 
@@ -78,7 +81,7 @@ def fetch_otx_data():
         r.raise_for_status()
         pulses = r.json().get("results", [])
     except Exception as e:
-        print("OTX fetch error:", e)
+        print("OTX fetch failed:", e)
         insert_dummy_data()
         return
 
@@ -94,9 +97,9 @@ def fetch_otx_data():
             created = datetime.utcnow().isoformat()
             score = random.randint(60,95)
             c.execute("""
-            INSERT INTO threats (pulse, entity, category, classification, mitre, risk_score, created_at)
+            INSERT INTO threats (pulse, signal, category, classification, mitre, risk_score, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,(name,val,typ,"Medium","OTX",score,created))
+            """,(name, val, typ, "Medium","OTX", score, created))
     conn.commit()
     conn.close()
     print("OTX data updated")
@@ -123,15 +126,18 @@ def generate_trend_chart():
     counts = [x["cnt"] for x in trend]
 
     plt.figure(figsize=(6,3))
+    ax = plt.gca()
     if os.path.exists("boxing_ring.png"):
         bg = plt.imread("boxing_ring.png")
-        plt.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
-    plt.plot(dates, counts, marker="o", color="orange")
-    plt.title("Threat Trend")
-    plt.xticks(rotation=45)
+        ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
+    plt.plot(dates, counts, marker="o", color="#b71c1c") # dark red
+    plt.title("Threat Trend", color="white")
+    plt.xticks(rotation=45, color="white")
+    plt.yticks(color="white")
+    plt.gca().set_facecolor("#001f4d") # dark blue background
     buf = io.BytesIO()
     plt.tight_layout()
-    plt.savefig(buf, format="png", facecolor="#001f4d") # dark blue background
+    plt.savefig(buf, format="png", facecolor="#001f4d")
     plt.close()
     return base64.b64encode(buf.getvalue()).decode()
 
@@ -139,16 +145,19 @@ def generate_category_chart():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    categories = c.execute("""
-        SELECT category, COUNT(*) as cnt FROM threats GROUP BY category
-    """).fetchall()
+    categories = c.execute("SELECT category, COUNT(*) as cnt FROM threats GROUP BY category").fetchall()
     conn.close()
     if not categories: return None
+
     labels = [x["category"] for x in categories]
     values = [x["cnt"] for x in categories]
+
     plt.figure(figsize=(4,3))
-    plt.bar(labels, values, color="orange")
-    plt.title("Category Types")
+    plt.bar(labels, values, color="#b71c1c")
+    plt.title("Category Types", color="white")
+    plt.xticks(color="white")
+    plt.yticks(color="white")
+    plt.gca().set_facecolor("#001f4d")
     buf = io.BytesIO()
     plt.tight_layout()
     plt.savefig(buf, format="png", facecolor="#001f4d")
@@ -158,7 +167,7 @@ def generate_category_chart():
 # ---------------- MALAYSIA HEATMAP ----------------
 def generate_malaysia_heatmap():
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="cartodbpositron")
-    # State-level sample coordinates (Lat, Lon, weight)
+    # State-level coordinates
     heat_data = [
         [5.4164,100.3327,3],   # Penang
         [3.1390,101.6869,5],   # KL
@@ -179,7 +188,7 @@ def generate_malaysia_heatmap():
     HeatMap(heat_data,radius=25).add_to(m)
     return m._repr_html_()
 
-# ---------------- DASHBOARD TEMPLATE ----------------
+# ---------------- DASHBOARD ----------------
 TEMPLATE = """
 <html>
 <head>
@@ -203,16 +212,16 @@ TEMPLATE = """
 <img src="data:image/png;base64,{{ category_chart }}">
 {% else %}<p>No category data</p>{% endif %}
 
-<h3>Latest Threats (50 per page)</h3>
+<h3>Latest Signals (50 per page)</h3>
 <table border="1" cellpadding="5">
 <tr>
-<th>ID</th><th>Pulse</th><th>Entity</th><th>Category</th><th>Risk</th><th>Created</th>
+<th>ID</th><th>Pulse</th><th>Signal</th><th>Category</th><th>Risk</th><th>Created</th>
 </tr>
 {% for row in table_data %}
 <tr>
 <td>{{ row['id'] }}</td>
 <td>{{ row['pulse'] }}</td>
-<td>{{ row['entity'] }}</td>
+<td>{{ row['signal'] }}</td>
 <td>{{ row['category'] }}</td>
 <td>{{ row['risk_score'] }}</td>
 <td>{{ row['created_at'] }}</td>
@@ -220,51 +229,46 @@ TEMPLATE = """
 {% endfor %}
 </table>
 
-<h3>Top 10 by Entity</h3>
+<h3>Top 10 Signals</h3>
 <table border="1" cellpadding="5">
-<tr><th>Entity</th><th>Count</th></tr>
+<tr><th>Signal</th><th>Count</th></tr>
 {% for row in top10 %}
-<tr><td>{{ row['entity'] }}</td><td>{{ row['cnt'] }}</td></tr>
+<tr><td>{{ row['signal'] }}</td><td>{{ row['cnt'] }}</td></tr>
 {% endfor %}
 </table>
 
-<p style="font-size:small;">Developed and analyzed by DarkGrid@redshark.my from publicly available sources.</p>
+<p style="font-size:small;">Developed & analyzed by DarkGrid@redshark.my from public sources.</p>
 </body>
 </html>
 """
 
-# ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
-    # Latest 50 threats
     rows = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+    top10 = c.execute("SELECT signal, COUNT(*) as cnt FROM threats GROUP BY signal ORDER BY cnt DESC LIMIT 10").fetchall()
 
-    # Top 10
-    top10 = c.execute("SELECT entity, COUNT(*) as cnt FROM threats GROUP BY entity ORDER BY cnt DESC LIMIT 10").fetchall()
-
-    # Summary
-    total_threats = c.execute("SELECT COUNT(*) as cnt FROM threats").fetchone()["cnt"]
+    total_signals = c.execute("SELECT COUNT(*) as cnt FROM threats").fetchone()["cnt"]
     unique_pulses = c.execute("SELECT COUNT(DISTINCT pulse) as cnt FROM threats").fetchone()["cnt"]
     categories = c.execute("SELECT category, COUNT(*) as cnt FROM threats GROUP BY category").fetchall()
     avg_risk = c.execute("SELECT AVG(risk_score) as avg_score FROM threats").fetchone()["avg_score"]
+    top_risk = c.execute("SELECT MAX(risk_score) as max_risk FROM threats").fetchone()["max_risk"]
     conn.close()
 
     category_summary = ", ".join([f"{x['cnt']} {x['category']}" for x in categories])
-    summary = (f"RedShark has detected {total_threats} threats from {unique_pulses} pulses "
-               f"covering categories: {category_summary}. SecureNation Index: {int(avg_risk)}. "
-               f"Continuous monitoring recommended.")
-    
+    summary = (f"RedShark detected {total_signals} signals from {unique_pulses} pulses. "
+               f"Categories distribution: {category_summary}. Top risk observed: {top_risk}. "
+               f"SecureNation Index: {int(avg_risk)}. Continuous monitoring recommended.")
+
     trend = generate_trend_chart()
     category_chart = generate_category_chart()
     heatmap = generate_malaysia_heatmap()
     secure_index = int(avg_risk)
 
-    return render_template_string(
-        TEMPLATE,
+    return render_template_string(TEMPLATE,
         table_data=rows,
         top10=top10,
         trend=trend,
@@ -274,36 +278,35 @@ def dashboard():
         summary=summary
     )
 
-# ---------------- CSV REPORT ----------------
+# ---------------- CSV / JSON / PDF ----------------
+def report_timestamp():
+    return datetime.now().strftime("%Y%m%d%H%M%S")
+
 @app.route("/report/csv")
 def csv_report():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     rows = c.execute("SELECT * FROM threats").fetchall()
     conn.close()
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["ID","Pulse","Entity","Category","Risk","Created"])
+    writer.writerow(["ID","Pulse","Signal","Category","Risk","Created"])
     writer.writerows(rows)
     mem = io.BytesIO()
     mem.write(output.getvalue().encode())
     mem.seek(0)
-    return send_file(mem, as_attachment=True, download_name=f"RedShark_DarkGrid_report_{timestamp}.csv")
+    return send_file(mem, as_attachment=True, download_name=f"RedShark_DarkGrid_report_{report_timestamp()}.csv")
 
-# ---------------- JSON REPORT ----------------
 @app.route("/report/json")
 def json_report():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    rows = c = conn.cursor()
+    c = conn.cursor()
     data = c.execute("SELECT * FROM threats").fetchall()
     conn.close()
     json_data = [dict(x) for x in data]
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    return jsonify({"report_name":f"RedShark_DarkGrid_report_{timestamp}","data":json_data})
+    return jsonify({"report_name":f"RedShark_DarkGrid_report_{report_timestamp()}","data":json_data})
 
-# ---------------- PDF REPORT ----------------
 @app.route("/report/pdf")
 def pdf_report():
     conn = sqlite3.connect(DB)
@@ -311,34 +314,30 @@ def pdf_report():
     c = conn.cursor()
     rows = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
     conn.close()
-    
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     styles = getSampleStyleSheet()
     elements = []
 
-    # Executive Cover
     elements.append(Paragraph("RedShark DarkGrid Cyber Threat Intelligence Report", styles['Title']))
     elements.append(Spacer(1,12))
-    elements.append(Paragraph(f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
+    elements.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
     elements.append(Spacer(1,12))
-    elements.append(Paragraph("Summary:", styles['Heading2']))
-    
-    total_threats = len(rows)
+
+    # Summary
+    total_signals = len(rows)
     unique_pulses = len(set([r['pulse'] for r in rows]))
-    avg_risk = int(sum([r['risk_score'] for r in rows])/total_threats) if total_threats else 0
-    summary = f"RedShark has detected {total_threats} threats from {unique_pulses} pulses. SecureNation Index: {avg_risk}."
-    elements.append(Paragraph(summary, styles['Normal']))
+    avg_risk = int(sum([r['risk_score'] for r in rows])/total_signals) if total_signals else 0
+    summary_text = f"RedShark detected {total_signals} signals from {unique_pulses} pulses. SecureNation Index: {avg_risk}."
+    elements.append(Paragraph(summary_text, styles['Normal']))
     elements.append(Spacer(1,12))
-    
-    # Trend chart
+
     trend = generate_trend_chart()
     if trend:
         img = io.BytesIO(base64.b64decode(trend))
         elements.append(Image(img, width=420, height=200))
-    
-    # Category chart
+
     category_chart = generate_category_chart()
     if category_chart:
         img2 = io.BytesIO(base64.b64decode(category_chart))
@@ -347,7 +346,7 @@ def pdf_report():
 
     doc.build(elements)
     buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name=f"RedShark_DarkGrid_report_{timestamp}.pdf")
+    return send_file(buffer, as_attachment=True, download_name=f"RedShark_DarkGrid_report_{report_timestamp()}.pdf")
 
 # ---------------- START ----------------
 ensure_database()
