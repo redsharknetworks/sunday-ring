@@ -15,8 +15,6 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Tabl
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase import pdfmetrics
 
 import matplotlib
 matplotlib.use("Agg")
@@ -58,12 +56,11 @@ def insert_dummy_data():
         pulse = f"Dummy Pulse {i+1}"
         indicator = f"malicious{i+1}.com"
         score = random.randint(60, 95)
-        mitre = f"T{100+i}"
         created = datetime.utcnow().isoformat()
         c.execute("""INSERT INTO threats
         (pulse, indicator, type, classification, mitre, risk_score, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (pulse, indicator, "domain", "Medium", mitre, score, created))
+        (pulse, indicator, "domain", "Medium", "OTX", score, created))
     conn.commit()
     conn.close()
     print("Inserted dummy data")
@@ -96,12 +93,11 @@ def fetch_otx_data():
             if not val:
                 continue
             score = random.randint(60, 95)
-            mitre = ind.get("mitre", "T1000")
             created = datetime.utcnow().isoformat()
             c.execute("""INSERT INTO threats
             (pulse, indicator, type, classification, mitre, risk_score, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (name, val, typ, "Medium", mitre, score, created))
+            (name, val, typ, "Medium", "OTX", score, created))
     conn.commit()
     conn.close()
     print("OTX data updated")
@@ -158,7 +154,6 @@ def generate_charts():
         plt.figure(figsize=(6,4))
         plt.bar(labels, values, color="#ff7f50")
         plt.title("Indicator Types")
-        plt.xticks(rotation=30)
         buf = io.BytesIO()
         plt.tight_layout()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
@@ -230,10 +225,10 @@ TEMPLATE = """
 <style>
 body {background:#0d1b2a;color:white;font-family:sans-serif;}
 table {border-collapse: collapse;width:100%;}
-th,td {padding:8px;text-align:left;word-break:break-word;}
+th,td {padding:8px;text-align:left;}
 tr:nth-child(even){background:#1b2a44;}
 tr:nth-child(odd){background:#0d1b2a;}
-th {background:#444;color:white;cursor:pointer;}
+th {background:#d90429;color:white;cursor:pointer;}
 </style>
 </head>
 <body>
@@ -243,43 +238,43 @@ th {background:#444;color:white;cursor:pointer;}
 <h3>SecureNation Index</h3>
 <img src="data:image/png;base64,{{ gauge }}">
 
-<h3>Summary</h3>
-<p>{{ summary_text }}</p>
-<ul>
-<li>Total Indicators: {{ total_indicators }}</li>
-<li>Average Risk Score: {{ avg_risk }}</li>
-<li>Top MITRE Techniques: {{ top_mitre }}</li>
-</ul>
-
 <h3>Malaysia Heatmap</h3>
 {{ heatmap | safe }}
 
 <h3>Trend</h3>
 {% if trend %}
 <img src="data:image/png;base64,{{ trend }}">
-{% else %}
-<p>No trend data</p>
-{% endif %}
+{% else %}<p>No trend data</p>{% endif %}
 
 <h3>Indicator Types</h3>
 {% if type_chart %}
 <img src="data:image/png;base64,{{ type_chart }}">
-{% else %}
-<p>No type data</p>
-{% endif %}
+{% else %}<p>No type data</p>{% endif %}
 
-<h3>Top 20 Indicators</h3>
-<table>
-<tr><th>Indicator</th><th>Pulse</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
-{% for row in top20 %}
+<h3>Summary</h3>
+<p>{{ summary_text }}</p>
+
+<h3>Latest Indicators</h3>
+<table id="indicators">
+<tr><th>ID</th><th>Pulse</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
+{% for row in table_data %}
 <tr>
-<td>{{ row['indicator'] }}</td>
+<td>{{ row['id'] }}</td>
 <td>{{ row['pulse'] }}</td>
+<td>{{ row['indicator'] }}</td>
 <td>{{ row['type'] }}</td>
 <td>{{ row['mitre'] }}</td>
 <td>{{ row['risk_score'] }}</td>
 <td>{{ row['created_at'] }}</td>
 </tr>
+{% endfor %}
+</table>
+
+<h3>Top 20 Indicators</h3>
+<table>
+<tr><th>Indicator</th><th>Count</th></tr>
+{% for row in top20 %}
+<tr><td>{{ row['indicator'] }}</td><td>{{ row['count'] }}</td></tr>
 {% endfor %}
 </table>
 
@@ -303,37 +298,35 @@ def dashboard():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-
-    total_indicators = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
-    avg_risk = c.execute("SELECT AVG(risk_score) FROM threats").fetchone()[0] or 0
-    top_mitre_rows = c.execute("SELECT mitre, COUNT(*) as cnt FROM threats GROUP BY mitre ORDER BY cnt DESC LIMIT 5").fetchall()
-    top_mitre = ", ".join([x['mitre'] for x in top_mitre_rows])
-
-    top20 = c.execute("SELECT * FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
+    table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+    summary_row = c.execute("SELECT COUNT(*) as total, AVG(risk_score) as avg_risk FROM threats").fetchone()
+    top20 = c.execute("SELECT indicator, COUNT(*) as count FROM threats GROUP BY indicator ORDER BY count DESC LIMIT 20").fetchall()
     conn.close()
-
-    summary_text = f"Dashboard overview: total {total_indicators} indicators, avg risk {avg_risk:.1f}, top MITRE techniques: {top_mitre}."
+    summary_text = (
+        f"RedShark has detected {summary_row['total']} indicators with average risk score "
+        f"{summary_row['avg_risk']:.1f}. Continuous monitoring is recommended."
+    )
     return render_template_string(TEMPLATE,
                                   trend=trend,
                                   type_chart=type_chart,
                                   heatmap=heatmap,
                                   gauge=gauge,
+                                  table_data=table_data,
                                   summary_text=summary_text,
-                                  total_indicators=total_indicators,
-                                  avg_risk=avg_risk,
-                                  top_mitre=top_mitre,
                                   top20=top20)
 
-# ---------------- REPORTS ----------------
-def get_timestamp(): return datetime.now().strftime("%Y%m%d%H%M%S")
+# ---------------- UTILS ----------------
+def get_timestamp(): 
+    return datetime.now().strftime("%Y%m%d%H%M%S")
 
+# ---------------- CSV REPORT ----------------
 @app.route("/report/csv")
 def csv_report():
     timestamp = get_timestamp()
     filename = f"RedShark_report_{timestamp}.csv"
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    threats = c.execute("SELECT * FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
+    threats = c.execute("SELECT * FROM threats").fetchall()
     conn.close()
     si = io.StringIO()
     cw = csv.writer(si)
@@ -342,8 +335,9 @@ def csv_report():
     output = io.BytesIO()
     output.write(si.getvalue().encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name=filename)
+    return send_file(output, as_attachment=True, download_name=filename, mimetype="text/csv")
 
+# ---------------- JSON REPORT ----------------
 @app.route("/report/json")
 def json_report():
     timestamp = get_timestamp()
@@ -351,14 +345,15 @@ def json_report():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    threats = c.execute("SELECT * FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
+    threats = c.execute("SELECT * FROM threats").fetchall()
     conn.close()
     data = [dict(x) for x in threats]
     output = io.BytesIO()
     output.write(str(data).encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name=filename)
+    return send_file(output, as_attachment=True, download_name=filename, mimetype="application/json")
 
+# ---------------- PDF REPORT ----------------
 @app.route("/report/pdf")
 def pdf_report():
     timestamp = get_timestamp()
@@ -366,7 +361,6 @@ def pdf_report():
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer,pagesize=letter)
     styles = getSampleStyleSheet()
-    pdfmetrics.registerFont(TTFont('Helvetica', 'Helvetica.ttf'))
     elements = []
 
     # Cover page
@@ -379,12 +373,18 @@ def pdf_report():
     # Charts
     trend, type_chart = generate_charts()
     if trend:
-        img = io.BytesIO(base64.b64decode(trend))
-        elements.append(Image(img,width=420,height=200))
+        try:
+            img = io.BytesIO(base64.b64decode(trend))
+            elements.append(Image(img,width=420,height=200))
+        except:
+            pass
     if type_chart:
-        img2 = io.BytesIO(base64.b64decode(type_chart))
-        elements.append(Spacer(1,12))
-        elements.append(Image(img2,width=420,height=250))
+        try:
+            img2 = io.BytesIO(base64.b64decode(type_chart))
+            elements.append(Spacer(1,12))
+            elements.append(Image(img2,width=420,height=250))
+        except:
+            pass
 
     # Top 20 indicators table
     conn = sqlite3.connect(DB)
@@ -408,9 +408,15 @@ def pdf_report():
         ('BACKGROUND',(0,1),(-1,-1),colors.HexColor("#1b2a44")),
     ]))
     elements.append(t)
-    doc.build(elements)
+
+    try:
+        doc.build(elements)
+    except Exception as e:
+        print("PDF generation failed:", e)
+        return "PDF generation failed", 500
+
     buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name=filename)
+    return send_file(buffer, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
 # ---------------- START ----------------
 ensure_database()
