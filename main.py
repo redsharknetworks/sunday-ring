@@ -54,15 +54,16 @@ def ensure_database():
 def insert_dummy_data():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    for i in range(5):
+    for i in range(20):
         pulse = f"Dummy Pulse {i+1}"
         indicator = f"malicious{i+1}.com"
         score = random.randint(60, 95)
+        mitre = f"T{100+i}"
         created = datetime.utcnow().isoformat()
         c.execute("""INSERT INTO threats
         (pulse, indicator, type, classification, mitre, risk_score, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (pulse, indicator, "domain", "Medium", "T1071", score, created))
+        (pulse, indicator, "domain", "Medium", mitre, score, created))
     conn.commit()
     conn.close()
     print("Inserted dummy data")
@@ -95,11 +96,12 @@ def fetch_otx_data():
             if not val:
                 continue
             score = random.randint(60, 95)
+            mitre = ind.get("mitre", "T1000")
             created = datetime.utcnow().isoformat()
             c.execute("""INSERT INTO threats
             (pulse, indicator, type, classification, mitre, risk_score, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (name, val, typ, "Medium", "T1071", score, created))
+            (name, val, typ, "Medium", mitre, score, created))
     conn.commit()
     conn.close()
     print("OTX data updated")
@@ -112,6 +114,7 @@ def scheduler():
 
 # ---------------- CHARTS ----------------
 def generate_charts():
+    ensure_database()
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -130,34 +133,32 @@ def generate_charts():
     trend_img = None
     type_img = None
 
-    # Trend chart
+    # Trend chart with boxing ring background
     if trend:
         dates = [x["date"] for x in trend]
         counts = [x["cnt"] for x in trend]
-        plt.figure(figsize=(8,3))
+        plt.figure(figsize=(6,3))
         ax = plt.gca()
         if os.path.exists(BOXING_RING):
             bg = plt.imread(BOXING_RING)
             ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
-        plt.plot(dates, counts, marker="o", color="#f77f00")
-        plt.title("Threat Trend", color="white")
-        plt.xticks(rotation=45, color="white")
-        plt.yticks(color="white")
+        plt.plot(dates, counts, marker="o", color="#d90429")
+        plt.title("Threat Trend")
+        plt.xticks(rotation=45)
         buf = io.BytesIO()
         plt.tight_layout()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
-    # Type chart
+    # Type chart (enlarged)
     if types:
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
         plt.figure(figsize=(6,4))
-        plt.bar(labels, values, color="#00b4d8")
-        plt.title("Indicator Types", color="white")
-        plt.xticks(rotation=45, color="white")
-        plt.yticks(color="white")
+        plt.bar(labels, values, color="#ff7f50")
+        plt.title("Indicator Types")
+        plt.xticks(rotation=30)
         buf = io.BytesIO()
         plt.tight_layout()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
@@ -211,7 +212,7 @@ def calculate_secure_index():
 def generate_secure_gauge():
     index = calculate_secure_index()
     fig, ax = plt.subplots(figsize=(4,2))
-    ax.barh([0],[index], color="#f77f00")
+    ax.barh([0],[index], color="#d90429")
     ax.set_xlim(0,100)
     ax.set_yticks([])
     ax.set_title(f"SecureNation Index: {index}", color="white")
@@ -229,23 +230,26 @@ TEMPLATE = """
 <style>
 body {background:#0d1b2a;color:white;font-family:sans-serif;}
 table {border-collapse: collapse;width:100%;}
-th,td {padding:6px;text-align:left;}
+th,td {padding:8px;text-align:left;word-break:break-word;}
 tr:nth-child(even){background:#1b2a44;}
 tr:nth-child(odd){background:#0d1b2a;}
-th {background:#1b2a44;color:#f77f00;cursor:pointer;}
-button {margin:5px;padding:8px;background:#f77f00;color:white;border:none;border-radius:3px;cursor:pointer;}
+th {background:#444;color:white;cursor:pointer;}
 </style>
 </head>
 <body>
 <h2>RedShark Threat Intelligence Dashboard</h2>
-<p><strong>Disclaimer:</strong> Developed by DarkGrid@redshark.my using publicly available sources.</p>
-
-<button onclick="window.location='/report/pdf'">Download PDF</button>
-<button onclick="window.location='/report/csv'">Download CSV</button>
-<button onclick="window.location='/report/json'">Download JSON</button>
+<p>Disclaimer: Developed and analyzed by DarkGrid@redshark.my using publicly available sources.</p>
 
 <h3>SecureNation Index</h3>
 <img src="data:image/png;base64,{{ gauge }}">
+
+<h3>Summary</h3>
+<p>{{ summary_text }}</p>
+<ul>
+<li>Total Indicators: {{ total_indicators }}</li>
+<li>Average Risk Score: {{ avg_risk }}</li>
+<li>Top MITRE Techniques: {{ top_mitre }}</li>
+</ul>
 
 <h3>Malaysia Heatmap</h3>
 {{ heatmap | safe }}
@@ -253,24 +257,24 @@ button {margin:5px;padding:8px;background:#f77f00;color:white;border:none;border
 <h3>Trend</h3>
 {% if trend %}
 <img src="data:image/png;base64,{{ trend }}">
-{% else %}<p>No trend data</p>{% endif %}
+{% else %}
+<p>No trend data</p>
+{% endif %}
 
 <h3>Indicator Types</h3>
 {% if type_chart %}
 <img src="data:image/png;base64,{{ type_chart }}">
-{% else %}<p>No type data</p>{% endif %}
+{% else %}
+<p>No type data</p>
+{% endif %}
 
-<h3>Summary</h3>
-<p>{{ summary_text }}</p>
-
-<h3>Latest Indicators</h3>
+<h3>Top 20 Indicators</h3>
 <table>
-<tr><th>ID</th><th>Pulse</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
-{% for row in table_data %}
+<tr><th>Indicator</th><th>Pulse</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
+{% for row in top20 %}
 <tr>
-<td>{{ row['id'] }}</td>
-<td style="min-width:200px">{{ row['pulse'] }}</td>
 <td>{{ row['indicator'] }}</td>
+<td>{{ row['pulse'] }}</td>
 <td>{{ row['type'] }}</td>
 <td>{{ row['mitre'] }}</td>
 <td>{{ row['risk_score'] }}</td>
@@ -278,6 +282,14 @@ button {margin:5px;padding:8px;background:#f77f00;color:white;border:none;border
 </tr>
 {% endfor %}
 </table>
+
+<h3>Download Reports</h3>
+<ul>
+<li><a href="/report/pdf">Download PDF</a></li>
+<li><a href="/report/csv">Download CSV</a></li>
+<li><a href="/report/json">Download JSON</a></li>
+</ul>
+
 </body>
 </html>
 """
@@ -291,74 +303,29 @@ def dashboard():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
-    summary_row = c.execute("SELECT COUNT(*) as total, AVG(risk_score) as avg_risk FROM threats").fetchone()
+
+    total_indicators = c.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
+    avg_risk = c.execute("SELECT AVG(risk_score) FROM threats").fetchone()[0] or 0
+    top_mitre_rows = c.execute("SELECT mitre, COUNT(*) as cnt FROM threats GROUP BY mitre ORDER BY cnt DESC LIMIT 5").fetchall()
+    top_mitre = ", ".join([x['mitre'] for x in top_mitre_rows])
+
+    top20 = c.execute("SELECT * FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
     conn.close()
-    summary_text = (
-        f"RedShark has detected {summary_row['total']} indicators with average risk score "
-        f"{summary_row['avg_risk']:.1f}. Continuous monitoring is recommended."
-    )
+
+    summary_text = f"Dashboard overview: total {total_indicators} indicators, avg risk {avg_risk:.1f}, top MITRE techniques: {top_mitre}."
     return render_template_string(TEMPLATE,
                                   trend=trend,
                                   type_chart=type_chart,
                                   heatmap=heatmap,
                                   gauge=gauge,
-                                  table_data=table_data,
-                                  summary_text=summary_text)
+                                  summary_text=summary_text,
+                                  total_indicators=total_indicators,
+                                  avg_risk=avg_risk,
+                                  top_mitre=top_mitre,
+                                  top20=top20)
 
 # ---------------- REPORTS ----------------
 def get_timestamp(): return datetime.now().strftime("%Y%m%d%H%M%S")
-
-@app.route("/report/pdf")
-def pdf_report():
-    timestamp = get_timestamp()
-    filename = f"RedShark_report_{timestamp}.pdf"
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer,pagesize=letter)
-    styles = getSampleStyleSheet()
-    elements = []
-
-    # Cover
-    elements.append(Paragraph("RedShark Threat Intelligence Report", styles["Title"]))
-    elements.append(Spacer(1,12))
-    elements.append(Paragraph("Disclaimer and Executive Summary", styles["Heading2"]))
-    elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", styles["Normal"]))
-    elements.append(Spacer(1,12))
-
-    # Charts
-    trend, type_chart = generate_charts()
-    if trend:
-        img = io.BytesIO(base64.b64decode(trend))
-        elements.append(Image(img,width=450,height=200))
-    if type_chart:
-        img2 = io.BytesIO(base64.b64decode(type_chart))
-        elements.append(Spacer(1,12))
-        elements.append(Image(img2,width=400,height=250))
-
-    # Table
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    rows = c.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
-    conn.close()
-    data = [["ID","Pulse","Indicator","Type","MITRE","Risk","Created"]]
-    for r in rows:
-        data.append([r["id"], r["pulse"], r["indicator"], r["type"], r["mitre"], r["risk_score"], r["created_at"]])
-    table = Table(data, repeatRows=1)
-    table.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
-        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
-        ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
-        ('FONTSIZE',(0,0),(-1,0),10),
-        ('ALIGN',(0,0),(-1,-1),'CENTER'),
-        ('GRID',(0,0),(-1,-1),0.5,colors.white),
-        ('BACKGROUND',(0,1),(-1,-1),colors.HexColor("#1b2a44")),
-    ]))
-    elements.append(Spacer(1,12))
-    elements.append(table)
-    doc.build(elements)
-    buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name=filename)
 
 @app.route("/report/csv")
 def csv_report():
@@ -366,17 +333,16 @@ def csv_report():
     filename = f"RedShark_report_{timestamp}.csv"
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    rows = c.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
+    threats = c.execute("SELECT * FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
     conn.close()
     si = io.StringIO()
     cw = csv.writer(si)
-    cw.writerow(["ID","Pulse","Indicator","Type","MITRE","Risk","Created"])
-    for r in rows:
-        cw.writerow(r)
-    buf = io.BytesIO()
-    buf.write(si.getvalue().encode())
-    buf.seek(0)
-    return send_file(buf, as_attachment=True, download_name=filename)
+    cw.writerow(["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"])
+    cw.writerows(threats)
+    output = io.BytesIO()
+    output.write(si.getvalue().encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=filename)
 
 @app.route("/report/json")
 def json_report():
@@ -385,10 +351,66 @@ def json_report():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    rows = c.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
+    threats = c.execute("SELECT * FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
     conn.close()
-    data = [dict(r) for r in rows]
-    return jsonify(data)
+    data = [dict(x) for x in threats]
+    output = io.BytesIO()
+    output.write(str(data).encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=filename)
+
+@app.route("/report/pdf")
+def pdf_report():
+    timestamp = get_timestamp()
+    filename = f"RedShark_report_{timestamp}.pdf"
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer,pagesize=letter)
+    styles = getSampleStyleSheet()
+    pdfmetrics.registerFont(TTFont('Helvetica', 'Helvetica.ttf'))
+    elements = []
+
+    # Cover page
+    elements.append(Paragraph("RedShark Threat Intelligence Report", styles["Title"]))
+    elements.append(Spacer(1,12))
+    elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", styles["Normal"]))
+    elements.append(Paragraph("Disclaimer: Developed from publicly available sources. Continuous monitoring recommended.", styles["Normal"]))
+    elements.append(PageBreak())
+
+    # Charts
+    trend, type_chart = generate_charts()
+    if trend:
+        img = io.BytesIO(base64.b64decode(trend))
+        elements.append(Image(img,width=420,height=200))
+    if type_chart:
+        img2 = io.BytesIO(base64.b64decode(type_chart))
+        elements.append(Spacer(1,12))
+        elements.append(Image(img2,width=420,height=250))
+
+    # Top 20 indicators table
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    rows = c.execute("SELECT * FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
+    conn.close()
+
+    table_data = [["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"]]
+    for r in rows:
+        table_data.append([r["id"], r["pulse"], r["indicator"], r["type"], r["classification"], r["mitre"], r["risk_score"], r["created_at"]])
+
+    t=Table(table_data, repeatRows=1)
+    t.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
+        ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
+        ('FONTSIZE',(0,0),(-1,0),10),
+        ('ALIGN',(0,0),(-1,-1),'CENTER'),
+        ('GRID',(0,0),(-1,-1),0.5,colors.white),
+        ('BACKGROUND',(0,1),(-1,-1),colors.HexColor("#1b2a44")),
+    ]))
+    elements.append(t)
+    doc.build(elements)
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name=filename)
 
 # ---------------- START ----------------
 ensure_database()
