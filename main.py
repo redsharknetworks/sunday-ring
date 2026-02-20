@@ -63,13 +63,11 @@ def insert_dummy_data():
         (pulse, indicator, "domain", "Medium", "OTX", score, created))
     conn.commit()
     conn.close()
-    print("Inserted dummy data")
 
 # ---------------- OTX FETCH ----------------
 def fetch_otx_data():
     ensure_database()
     if not OTX_KEY:
-        print("No OTX key found — using dummy data.")
         insert_dummy_data()
         return
     headers = {"X-OTX-API-KEY": OTX_KEY}
@@ -77,8 +75,7 @@ def fetch_otx_data():
         r = requests.get(OTX_URL, headers=headers, timeout=15)
         r.raise_for_status()
         pulses = r.json().get("results", [])
-    except Exception as e:
-        print("OTX fetch failed:", e)
+    except:
         insert_dummy_data()
         return
 
@@ -100,7 +97,6 @@ def fetch_otx_data():
             (name, val, typ, "Medium", "OTX", score, created))
     conn.commit()
     conn.close()
-    print("OTX data updated")
 
 # ---------------- SCHEDULER ----------------
 def scheduler():
@@ -141,21 +137,22 @@ def generate_charts():
         plt.plot(dates, counts, marker="o", color="#d90429")
         plt.title("Threat Trend")
         plt.xticks(rotation=45)
-        buf = io.BytesIO()
         plt.tight_layout()
+        buf = io.BytesIO()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
-    # Type chart
+    # Type chart with proper spacing to avoid caption overlap
     if types:
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
         plt.figure(figsize=(6,4))
         plt.bar(labels, values, color="#ff7f50")
         plt.title("Indicator Types")
-        buf = io.BytesIO()
+        plt.xticks(rotation=30, ha='right')
         plt.tight_layout()
+        buf = io.BytesIO()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
         plt.close()
         type_img = base64.b64encode(buf.getvalue()).decode()
@@ -328,14 +325,12 @@ def dashboard():
                                   summary_text=summary_text,
                                   top20=top20)
 
-# ---------------- REPORT PDF ----------------
+# ---------------- PDF REPORT ----------------
 @app.route("/report/pdf")
 def pdf_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    filename = f"RedShark_report_{timestamp}.pdf"
     buffer = io.BytesIO()
-    margin = 36
-    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=margin, rightMargin=margin)
+    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     elements = []
 
@@ -350,16 +345,12 @@ def pdf_report():
 
     trend, type_chart = generate_charts()
     if trend:
-        try:
-            img = io.BytesIO(base64.b64decode(trend))
-            elements.append(Image(img,width=420,height=200))
-        except: pass
+        img = io.BytesIO(base64.b64decode(trend))
+        elements.append(Image(img,width=420,height=200))
     if type_chart:
-        try:
-            img2 = io.BytesIO(base64.b64decode(type_chart))
-            elements.append(Spacer(1,12))
-            elements.append(Image(img2,width=420,height=250))
-        except: pass
+        img2 = io.BytesIO(base64.b64decode(type_chart))
+        elements.append(Spacer(1,12))
+        elements.append(Image(img2,width=420,height=250))
 
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -373,10 +364,9 @@ def pdf_report():
 
     t=Table(table_data, repeatRows=1)
     t.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
+        ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),  # blue-grey header
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
         ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
-        ('FONTSIZE',(0,0),(-1,0),10),
         ('ALIGN',(0,0),(-1,-1),'CENTER'),
         ('GRID',(0,0),(-1,-1),0.5,colors.black),
         ('BACKGROUND',(0,1),(-1,-1),colors.white),
@@ -384,20 +374,14 @@ def pdf_report():
     ]))
     elements.append(t)
 
-    try:
-        doc.build(elements)
-    except Exception as e:
-        print("PDF generation failed:", e)
-        return "PDF generation failed", 500
-
+    doc.build(elements)
     buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name=filename, mimetype='application/pdf')
+    return send_file(buffer, as_attachment=True, download_name=f"RedShark_report_{timestamp}.pdf", mimetype='application/pdf')
 
-# ---------------- REPORT CSV/JSON ----------------
+# ---------------- CSV/JSON ----------------
 @app.route("/report/csv")
 def csv_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    filename = f"RedShark_report_{timestamp}.csv"
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     threats = c.execute("SELECT * FROM threats").fetchall()
@@ -409,12 +393,11 @@ def csv_report():
     output = io.BytesIO()
     output.write(si.getvalue().encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name=filename, mimetype="text/csv")
+    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.csv", mimetype="text/csv")
 
 @app.route("/report/json")
 def json_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    filename = f"RedShark_report_{timestamp}.json"
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -424,7 +407,7 @@ def json_report():
     output = io.BytesIO()
     output.write(str(data).encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name=filename, mimetype="application/json")
+    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json", mimetype="application/json")
 
 # ---------------- START ----------------
 ensure_database()
