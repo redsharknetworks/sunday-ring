@@ -6,10 +6,10 @@ import sqlite3
 import threading
 import time
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
-from flask import Flask, render_template_string, send_file, jsonify
+from flask import Flask, render_template_string, send_file
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
 from reportlab.lib.pagesizes import letter
@@ -147,13 +147,14 @@ def generate_charts():
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
-    # Type chart enlarged to avoid overlap
+    # Type chart enlarged, caption repositioned
     if types:
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
         plt.figure(figsize=(6,4))
-        plt.bar(labels, values, color="#ff7f50")
-        plt.title("Indicator Types")
+        bars = plt.bar(labels, values, color="#ff7f50")
+        plt.title("Indicator Types", pad=20)  # padding to avoid overlap
+        plt.xticks(rotation=20)
         buf = io.BytesIO()
         plt.tight_layout()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
@@ -194,9 +195,9 @@ def generate_malaysia_heatmap():
     conn.close()
     HeatMap(heat_data, radius=25).add_to(m)
     
-    # Malaysia timestamp
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return f"<p style='color:white;'>Malaysia Data Timestamp: {timestamp}</p>" + m._repr_html_()
+    # Malaysia timestamp GMT+8
+    timestamp = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    return f"<p style='color:white;'>Malaysia Data Timestamp (GMT+8): {timestamp}</p>" + m._repr_html_()
 
 # ---------------- SECURENATION INDEX ----------------
 def calculate_secure_index():
@@ -361,7 +362,7 @@ def pdf_report():
     timestamp = get_timestamp()
     filename = f"RedShark_report_{timestamp}.pdf"
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer,pagesize=letter,leftMargin=30,rightMargin=30)
+    doc = SimpleDocTemplate(buffer,pagesize=letter,leftMargin=40,rightMargin=40)
     styles = getSampleStyleSheet()
     elements = []
 
