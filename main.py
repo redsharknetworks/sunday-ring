@@ -147,7 +147,7 @@ def generate_charts():
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
-    # Type chart (enlarged)
+    # Type chart enlarged to avoid overlap
     if types:
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
@@ -162,21 +162,21 @@ def generate_charts():
 
     return trend_img, type_img
 
-# ---------------- MALAYSIA HEATMAP (STATE CAPITALS) ----------------
-MALAYSIA_CAPITALS = {
-    "Johor Bahru": [1.4927,103.7414],
-    "Alor Setar": [6.1164,100.3678],
-    "Kota Bharu": [6.1254,102.2381],
+# ---------------- MALAYSIA HEATMAP ----------------
+MALAYSIA_STATES = {
+    "Johor": [1.4927,103.7414],
+    "Kedah": [6.1164,100.3678],
+    "Kelantan": [6.1254,102.2381],
     "Melaka": [2.1896,102.2501],
-    "Seremban": [2.7290,101.9383],
-    "Kuantan": [3.8167,103.3333],
-    "Ipoh": [4.5929,101.0900],
-    "Kangar": [6.4400,100.2000],
-    "George Town": [5.4164,100.3327],
-    "Kota Kinabalu": [5.9804,116.0735],
-    "Kuching": [1.5533,110.3592],
-    "Shah Alam": [3.1390,101.6869],
-    "Kuala Terengganu": [5.3300,103.1400],
+    "Negeri Sembilan": [2.7290,101.9383],
+    "Pahang": [3.8167,103.3333],
+    "Perak": [4.5929,101.0900],
+    "Perlis": [6.4400,100.2000],
+    "Penang": [5.4164,100.3327],
+    "Sabah": [5.9804,116.0735],
+    "Sarawak": [1.5533,110.3592],
+    "Selangor": [3.1390,101.6869],
+    "Terengganu": [5.3300,103.1400],
     "Kuala Lumpur": [3.1390,101.6869],
     "Putrajaya": [2.9264,101.6981],
     "Labuan": [5.2833,115.2333]
@@ -185,11 +185,18 @@ MALAYSIA_CAPITALS = {
 def generate_malaysia_heatmap():
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
     heat_data = []
-    for state, coords in MALAYSIA_CAPITALS.items():
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    for state, coords in MALAYSIA_STATES.items():
         count = random.randint(1,10)
         heat_data.append([coords[0], coords[1], count])
+    conn.close()
     HeatMap(heat_data, radius=25).add_to(m)
-    return m._repr_html_()
+    
+    # Malaysia timestamp
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"<p style='color:white;'>Malaysia Data Timestamp: {timestamp}</p>" + m._repr_html_()
 
 # ---------------- SECURENATION INDEX ----------------
 def calculate_secure_index():
@@ -221,11 +228,11 @@ TEMPLATE = """
 <style>
 body {background:#0d1b2a;color:white;font-family:sans-serif;}
 table {border-collapse: collapse;width:100%;}
-th,td {padding:8px;text-align:left;}
+th,td {padding:8px;text-align:left; word-wrap: break-word;}
 tr:nth-child(even){background:#1b2a44;}
 tr:nth-child(odd){background:#0d1b2a;}
-th {background:#ff7f00;color:white;cursor:pointer;}
-a.download-btn {color:white; background:#ff7f00; padding:4px 8px; text-decoration:none; border-radius:4px;}
+th {background:#d90429;color:white;cursor:pointer;}
+a.button {background:#ff7f50;color:white;padding:6px 12px;text-decoration:none;border-radius:4px;}
 </style>
 </head>
 <body>
@@ -253,7 +260,7 @@ a.download-btn {color:white; background:#ff7f00; padding:4px 8px; text-decoratio
 
 <h3>Latest Indicators</h3>
 <table id="indicators">
-<tr><th>ID</th><th>Pulse</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
+<tr><th>ID</th><th style="width:200px;">Pulse</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
 {% for row in table_data %}
 <tr>
 <td>{{ row['id'] }}</td>
@@ -276,11 +283,9 @@ a.download-btn {color:white; background:#ff7f00; padding:4px 8px; text-decoratio
 </table>
 
 <h3>Download Reports</h3>
-<ul>
-<li><a class="download-btn" href="/report/pdf">PDF</a></li>
-<li><a class="download-btn" href="/report/csv">CSV</a></li>
-<li><a class="download-btn" href="/report/json">JSON</a></li>
-</ul>
+<a class="button" href="/report/pdf">Download PDF</a>
+<a class="button" href="/report/csv">Download CSV</a>
+<a class="button" href="/report/json">Download JSON</a>
 
 </body>
 </html>
@@ -301,7 +306,7 @@ def dashboard():
     conn.close()
     summary_text = (
         f"RedShark has detected {summary_row['total']} indicators with average risk score "
-        f"{summary_row['avg_risk']:.1f}. It is recommended to review the top indicators and apply mitigation measures such as firewalls, network segmentation, and continuous monitoring."
+        f"{summary_row['avg_risk']:.1f}. Recommended solutions: monitor high-risk indicators, block malicious domains/IPs, and conduct employee cybersecurity training."
     )
     return render_template_string(TEMPLATE,
                                   trend=trend,
@@ -356,7 +361,7 @@ def pdf_report():
     timestamp = get_timestamp()
     filename = f"RedShark_report_{timestamp}.pdf"
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=40, rightMargin=40, topMargin=40, bottomMargin=40)
+    doc = SimpleDocTemplate(buffer,pagesize=letter,leftMargin=30,rightMargin=30)
     styles = getSampleStyleSheet()
     elements = []
 
@@ -370,12 +375,18 @@ def pdf_report():
     # Charts
     trend, type_chart = generate_charts()
     if trend:
-        img = io.BytesIO(base64.b64decode(trend))
-        elements.append(Image(img,width=420,height=200))
+        try:
+            img = io.BytesIO(base64.b64decode(trend))
+            elements.append(Image(img,width=420,height=200))
+        except:
+            pass
     if type_chart:
-        img2 = io.BytesIO(base64.b64decode(type_chart))
-        elements.append(Spacer(1,12))
-        elements.append(Image(img2,width=420,height=250))
+        try:
+            img2 = io.BytesIO(base64.b64decode(type_chart))
+            elements.append(Spacer(1,12))
+            elements.append(Image(img2,width=420,height=250))
+        except:
+            pass
 
     # Top 20 indicators table
     conn = sqlite3.connect(DB)
@@ -400,7 +411,12 @@ def pdf_report():
     ]))
     elements.append(t)
 
-    doc.build(elements)
+    try:
+        doc.build(elements)
+    except Exception as e:
+        print("PDF generation failed:", e)
+        return "PDF generation failed", 500
+
     buffer.seek(0)
     return send_file(buffer, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
