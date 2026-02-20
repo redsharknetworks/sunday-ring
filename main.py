@@ -192,7 +192,7 @@ def generate_malaysia_heatmap():
         count = random.randint(1,10)
         heat_data.append([coords[0], coords[1], count])
     HeatMap(heat_data, radius=25).add_to(m)
-    return m._repr_html_()
+    return m._repr_html_(), timestamp
 
 # ---------------- SECURENATION INDEX ----------------
 def calculate_secure_index():
@@ -216,7 +216,7 @@ def generate_secure_gauge():
     plt.close()
     return base64.b64encode(buf.getvalue()).decode()
 
-# ---------------- DASHBOARD TEMPLATE ----------------
+# ---------------- DASHBOARD ----------------
 TEMPLATE = """<html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
@@ -239,7 +239,7 @@ a.button {background:#ff7f50;color:white;padding:6px 12px;text-decoration:none;b
 <h3>SecureNation Index</h3>
 <img src="data:image/png;base64,{{ gauge }}">
 
-<h3>Malaysia Heatmap</h3>
+<h3>Malaysia Heatmap (Last Update: {{ heatmap_time }})</h3>
 {{ heatmap | safe }}
 
 <h3>Trend</h3>
@@ -301,11 +301,10 @@ $(document).ready(function() {
 </html>
 """
 
-# ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
     trend, type_chart = generate_charts()
-    heatmap = generate_malaysia_heatmap()
+    heatmap, heatmap_time = generate_malaysia_heatmap()
     gauge = generate_secure_gauge()
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -323,51 +322,16 @@ def dashboard():
                                   trend=trend,
                                   type_chart=type_chart,
                                   heatmap=heatmap,
+                                  heatmap_time=heatmap_time,
                                   gauge=gauge,
                                   table_data=table_data,
                                   summary_text=summary_text,
                                   top20=top20)
 
-# ---------------- UTILS ----------------
-def get_timestamp(): 
-    return datetime.now().strftime("%Y%m%d%H%M%S")
-
-# ---------------- REPORTS ----------------
-@app.route("/report/csv")
-def csv_report():
-    timestamp = get_timestamp()
-    filename = f"RedShark_report_{timestamp}.csv"
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    threats = c.execute("SELECT * FROM threats").fetchall()
-    conn.close()
-    si = io.StringIO()
-    cw = csv.writer(si)
-    cw.writerow(["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"])
-    cw.writerows(threats)
-    output = io.BytesIO()
-    output.write(si.getvalue().encode())
-    output.seek(0)
-    return send_file(output, as_attachment=True, download_name=filename, mimetype="text/csv")
-
-@app.route("/report/json")
-def json_report():
-    timestamp = get_timestamp()
-    filename = f"RedShark_report_{timestamp}.json"
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    threats = c.execute("SELECT * FROM threats").fetchall()
-    conn.close()
-    data = [dict(x) for x in threats]
-    output = io.BytesIO()
-    output.write(str(data).encode())
-    output.seek(0)
-    return send_file(output, as_attachment=True, download_name=filename, mimetype="application/json")
-
+# ---------------- REPORT PDF ----------------
 @app.route("/report/pdf")
 def pdf_report():
-    timestamp = get_timestamp()
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     filename = f"RedShark_report_{timestamp}.pdf"
     buffer = io.BytesIO()
     margin = 36
@@ -378,6 +342,9 @@ def pdf_report():
     elements.append(Paragraph("RedShark Threat Intelligence Report", styles["Title"]))
     elements.append(Spacer(1,12))
     elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", styles["Normal"]))
+    tz = timedelta(hours=8)
+    timestamp_gmt8 = (datetime.utcnow() + tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
+    elements.append(Paragraph(f"Malaysia Map Timestamp: {timestamp_gmt8}", styles["Normal"]))
     elements.append(Paragraph("Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available source.", styles["Normal"]))
     elements.append(PageBreak())
 
@@ -406,13 +373,14 @@ def pdf_report():
 
     t=Table(table_data, repeatRows=1)
     t.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),colors.crimson),
+        ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
         ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
         ('FONTSIZE',(0,0),(-1,0),10),
         ('ALIGN',(0,0),(-1,-1),'CENTER'),
-        ('GRID',(0,0),(-1,-1),0.5,colors.white),
-        ('BACKGROUND',(0,1),(-1,-1),colors.HexColor("#1b2a44")),
+        ('GRID',(0,0),(-1,-1),0.5,colors.black),
+        ('BACKGROUND',(0,1),(-1,-1),colors.white),
+        ('TEXTCOLOR',(0,1),(-1,-1),colors.black)
     ]))
     elements.append(t)
 
@@ -424,6 +392,39 @@ def pdf_report():
 
     buffer.seek(0)
     return send_file(buffer, as_attachment=True, download_name=filename, mimetype='application/pdf')
+
+# ---------------- REPORT CSV/JSON ----------------
+@app.route("/report/csv")
+def csv_report():
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    filename = f"RedShark_report_{timestamp}.csv"
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    threats = c.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    si = io.StringIO()
+    cw = csv.writer(si)
+    cw.writerow(["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"])
+    cw.writerows(threats)
+    output = io.BytesIO()
+    output.write(si.getvalue().encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=filename, mimetype="text/csv")
+
+@app.route("/report/json")
+def json_report():
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    filename = f"RedShark_report_{timestamp}.json"
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    threats = c.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    data = [dict(x) for x in threats]
+    output = io.BytesIO()
+    output.write(str(data).encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=filename, mimetype="application/json")
 
 # ---------------- START ----------------
 ensure_database()
