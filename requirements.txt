@@ -21,3 +21,4 @@ fastapi
 uvicorn
 pydantic
 eventlet
+psycopg2-binary
