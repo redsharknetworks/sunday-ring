@@ -12,10 +12,9 @@ import requests
 from flask import Flask, render_template_string, send_file
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
-from reportlab.pdfgen import canvas
 
 import matplotlib
 matplotlib.use("Agg")
@@ -30,9 +29,6 @@ DB = os.getenv("DB_PATH", "/tmp/threats.db")
 OTX_KEY = os.getenv("OTX_KEY")
 OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
 BOXING_RING = "boxing_ring.png"
-LOGO_PATH = "redshark.png"  # path to company logo
-
-DATA_RETENTION_DAYS = 60
 
 # ---------------- DATABASE ----------------
 def ensure_database():
@@ -49,14 +45,6 @@ def ensure_database():
         risk_score INTEGER,
         created_at TEXT
     )""")
-    conn.commit()
-    conn.close()
-
-def cleanup_old_data():
-    cutoff = datetime.utcnow() - timedelta(days=DATA_RETENTION_DAYS)
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("DELETE FROM threats WHERE datetime(created_at) < ?", (cutoff.isoformat(),))
     conn.commit()
     conn.close()
 
@@ -79,7 +67,6 @@ def insert_dummy_data():
 # ---------------- OTX FETCH ----------------
 def fetch_otx_data():
     ensure_database()
-    cleanup_old_data()
     if not OTX_KEY:
         insert_dummy_data()
         return
@@ -138,6 +125,7 @@ def generate_charts():
     trend_img = None
     type_img = None
 
+    # Trend chart
     if trend:
         dates = [x["date"] for x in trend]
         counts = [x["cnt"] for x in trend]
@@ -155,6 +143,7 @@ def generate_charts():
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
+    # Type chart with proper spacing to avoid caption overlap
     if types:
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
@@ -341,109 +330,90 @@ def dashboard():
 def pdf_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     buffer = io.BytesIO()
-
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=landscape(A4),
-        leftMargin=60,
-        rightMargin=60,
-        topMargin=70,
-        bottomMargin=60
-    )
-
+    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     elements = []
 
-    # ---------------- PAGE BORDER & NUMBER ----------------
-    def draw_page_border(canvas_obj, doc_obj):
-        width, height = landscape(A4)
-        margin = 30
-        canvas_obj.setStrokeColor(colors.HexColor("#1b263b"))
-        canvas_obj.setLineWidth(2)
-        canvas_obj.rect(margin, margin, width - margin*2, height - margin*2)
-        # Page number
-        page_num = canvas_obj.getPageNumber()
-        canvas_obj.setFont("Helvetica", 9)
-        canvas_obj.setFillColor(colors.grey)
-        canvas_obj.drawRightString(width - margin, margin - 10, f"Page {page_num}")
-
-    # ---------------- EXECUTIVE SUMMARY ----------------
-    if os.path.exists(LOGO_PATH):
-        elements.append(Image(LOGO_PATH, width=180, height=70))
-    elements.append(Spacer(1, 20))
     elements.append(Paragraph("RedShark Threat Intelligence Report", styles["Title"]))
-    elements.append(Spacer(1, 15))
-
-    secure_index = calculate_secure_index()
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    summary = c.execute("SELECT COUNT(*) as total, AVG(risk_score) as avg_risk FROM threats").fetchone()
-    conn.close()
-
-    elements.append(Paragraph(f"SecureNation Index: {secure_index}/100", styles["Heading2"]))
-    elements.append(Spacer(1, 12))
-
-    executive_text = f"""
-    Executive Summary:
-
-    RedShark has detected {summary['total']} threat indicators within the monitoring period.
-    The average risk score is {summary['avg_risk']:.1f}.
-
-    Risk Classification:
-    • High Risk (≥80) – Immediate containment required
-    • Medium Risk (60–79) – Mitigation recommended
-    • Low Risk (<60) – Continuous monitoring
-
-    Recommended Actions:
-    • Prioritize high-risk containment
-    • Update firewall and IDS/IPS signatures
-    • Apply endpoint detection rules
-    • Monitor outbound traffic
-    """
-
-    elements.append(Paragraph(executive_text.replace("\n","<br/>"), styles["Normal"]))
+    elements.append(Spacer(1,12))
+    elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", styles["Normal"]))
+    tz = timedelta(hours=8)
+    timestamp_gmt8 = (datetime.utcnow() + tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
+    elements.append(Paragraph(f"Malaysia Map Timestamp: {timestamp_gmt8}", styles["Normal"]))
+    elements.append(Paragraph("Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available source.", styles["Normal"]))
     elements.append(PageBreak())
 
-    # ---------------- TOP 20 INDICATORS BY TYPE ----------------
-    elements.append(Paragraph("Top 20 Indicators by Type", styles["Heading2"]))
-    elements.append(Spacer(1, 15))
+    trend, type_chart = generate_charts()
+    if trend:
+        img = io.BytesIO(base64.b64decode(trend))
+        elements.append(Image(img,width=420,height=200))
+    if type_chart:
+        img2 = io.BytesIO(base64.b64decode(type_chart))
+        elements.append(Spacer(1,12))
+        elements.append(Image(img2,width=420,height=250))
 
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    rows = c.execute("""
-        SELECT type, indicator, COUNT(*) as count, AVG(risk_score) as avg_risk
-        FROM threats
-        GROUP BY type, indicator
-        ORDER BY avg_risk DESC
-        LIMIT 20
-    """).fetchall()
+    rows = c.execute("SELECT * FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
     conn.close()
 
-    table_data = [["Type","Indicator","Count","Avg Risk","Risk Level"]]
-    risk_colors = []
-
+    table_data = [["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"]]
     for r in rows:
-        avg_score = round(r["avg_risk"],1)
-        if avg_score >= 80:
-            level = "High"; color = colors.red
-        elif avg_score >= 60:
-            level = "Medium"; color = colors.orange
-        else:
-            level = "Low"; color = colors.green
-        table_data.append([r["type"], r["indicator"], r["count"], avg_score, level])
-        risk_colors.append(color)
+        table_data.append([r["id"], r["pulse"], r["indicator"], r["type"], r["classification"], r["mitre"], r["risk_score"], r["created_at"]])
 
-    t = Table(table_data, repeatRows=1)
-    style = TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#4B6C8A")),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-        ('ALIGN', (2,1), (3,-1), 'CENTER'),
-        ('BACKGROUND', (0,1), (-1,-1), colors.white),
-        ('TEXTCOLOR', (0,1), (-1,-1), colors.black),
-    ])
-    for i, color in enumerate(risk_colors, start=1):
-        style.add('TEXTCOLOR', (
+    t=Table(table_data, repeatRows=1)
+    t.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),  # blue-grey header
+        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
+        ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
+        ('ALIGN',(0,0),(-1,-1),'CENTER'),
+        ('GRID',(0,0),(-1,-1),0.5,colors.black),
+        ('BACKGROUND',(0,1),(-1,-1),colors.white),
+        ('TEXTCOLOR',(0,1),(-1,-1),colors.black)
+    ]))
+    elements.append(t)
+
+    doc.build(elements)
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name=f"RedShark_report_{timestamp}.pdf", mimetype='application/pdf')
+
+# ---------------- CSV/JSON ----------------
+@app.route("/report/csv")
+def csv_report():
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    threats = c.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    si = io.StringIO()
+    cw = csv.writer(si)
+    cw.writerow(["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"])
+    cw.writerows(threats)
+    output = io.BytesIO()
+    output.write(si.getvalue().encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.csv", mimetype="text/csv")
+
+@app.route("/report/json")
+def json_report():
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    threats = c.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    data = [dict(x) for x in threats]
+    output = io.BytesIO()
+    output.write(str(data).encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json", mimetype="application/json")
+
+# ---------------- START ----------------
+ensure_database()
+fetch_otx_data()
+if not os.getenv("RUN_MAIN"):
+    threading.Thread(target=scheduler, daemon=True).start()
+
+if __name__=="__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
