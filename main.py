@@ -147,14 +147,13 @@ def generate_charts():
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
-    # Type chart enlarged
+    # Type chart
     if types:
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
         plt.figure(figsize=(6,4))
         plt.bar(labels, values, color="#ff7f50")
-        plt.title("Indicator Types", pad=20)
-        plt.xticks(rotation=20)
+        plt.title("Indicator Types")
         buf = io.BytesIO()
         plt.tight_layout()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
@@ -184,18 +183,16 @@ MALAYSIA_STATES = {
 }
 
 def generate_malaysia_heatmap():
+    tz = timedelta(hours=8)
+    timestamp = (datetime.utcnow() + tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
+    folium.Marker([5.4164,100.3327], popup=f"Last update: {timestamp}").add_to(m)
     heat_data = []
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    for state, coords in MALAYSIA_STATES.items():
+    for coords in MALAYSIA_STATES.values():
         count = random.randint(1,10)
         heat_data.append([coords[0], coords[1], count])
-    conn.close()
     HeatMap(heat_data, radius=25).add_to(m)
-    timestamp = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-    return f"<p style='color:white;'>Malaysia Data Timestamp (GMT+8): {timestamp}</p>" + m._repr_html_()
+    return m._repr_html_()
 
 # ---------------- SECURENATION INDEX ----------------
 def calculate_secure_index():
@@ -220,17 +217,18 @@ def generate_secure_gauge():
     return base64.b64encode(buf.getvalue()).decode()
 
 # ---------------- DASHBOARD TEMPLATE ----------------
-TEMPLATE = """
-<html>
+TEMPLATE = """<html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
+<link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css"/>
+<link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/responsive/2.6.1/css/responsive.dataTables.min.css"/>
 <style>
 body {background:#0d1b2a;color:white;font-family:sans-serif;}
-table {border-collapse: collapse;width:100%;}
-th,td {padding:8px;text-align:left; word-wrap: break-word;}
+table {border-collapse: collapse;width:100%; word-wrap: break-word;}
+th, td {padding:8px; text-align:left;}
+th {cursor:pointer; background:crimson; color:white;}
 tr:nth-child(even){background:#1b2a44;}
 tr:nth-child(odd){background:#0d1b2a;}
-th {background:#d90429;color:white;cursor:pointer;}
 a.button {background:#ff7f50;color:white;padding:6px 12px;text-decoration:none;border-radius:4px;}
 </style>
 </head>
@@ -245,21 +243,20 @@ a.button {background:#ff7f50;color:white;padding:6px 12px;text-decoration:none;b
 {{ heatmap | safe }}
 
 <h3>Trend</h3>
-{% if trend %}
-<img src="data:image/png;base64,{{ trend }}">
-{% else %}<p>No trend data</p>{% endif %}
+{% if trend %}<img src="data:image/png;base64,{{ trend }}">{% else %}<p>No trend data</p>{% endif %}
 
 <h3>Indicator Types</h3>
-{% if type_chart %}
-<img src="data:image/png;base64,{{ type_chart }}">
-{% else %}<p>No type data</p>{% endif %}
+{% if type_chart %}<img src="data:image/png;base64,{{ type_chart }}">{% else %}<p>No type data</p>{% endif %}
 
 <h3>Summary</h3>
 <p>{{ summary_text }}</p>
 
 <h3>Latest Indicators</h3>
-<table id="indicators">
-<tr><th>ID</th><th style="width:250px;">Pulse</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
+<table id="indicators" class="display nowrap" style="width:100%">
+<thead>
+<tr><th>ID</th><th style="width:300px;">Pulse</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
+</thead>
+<tbody>
 {% for row in table_data %}
 <tr>
 <td>{{ row['id'] }}</td>
@@ -271,6 +268,7 @@ a.button {background:#ff7f50;color:white;padding:6px 12px;text-decoration:none;b
 <td>{{ row['created_at'] }}</td>
 </tr>
 {% endfor %}
+</tbody>
 </table>
 
 <h3>Top 20 Indicators</h3>
@@ -285,6 +283,19 @@ a.button {background:#ff7f50;color:white;padding:6px 12px;text-decoration:none;b
 <a class="button" href="/report/pdf">Download PDF</a>
 <a class="button" href="/report/csv">Download CSV</a>
 <a class="button" href="/report/json">Download JSON</a>
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+<script src="https://cdn.datatables.net/responsive/2.6.1/js/dataTables.responsive.min.js"></script>
+<script>
+$(document).ready(function() {
+    $('#indicators').DataTable({
+        "pageLength": 50,
+        "scrollX": true,
+        responsive: true
+    });
+});
+</script>
 
 </body>
 </html>
@@ -305,7 +316,8 @@ def dashboard():
     conn.close()
     summary_text = (
         f"RedShark has detected {summary_row['total']} indicators with average risk score "
-        f"{summary_row['avg_risk']:.1f}. Recommended solutions: monitor high-risk indicators, block malicious domains/IPs, and conduct employee cybersecurity training."
+        f"{summary_row['avg_risk']:.1f}. Recommended solution: Prioritize high-risk indicators, monitor traffic, "
+        f"apply network rules and update endpoint protection."
     )
     return render_template_string(TEMPLATE,
                                   trend=trend,
@@ -320,7 +332,7 @@ def dashboard():
 def get_timestamp(): 
     return datetime.now().strftime("%Y%m%d%H%M%S")
 
-# ---------------- CSV REPORT ----------------
+# ---------------- REPORTS ----------------
 @app.route("/report/csv")
 def csv_report():
     timestamp = get_timestamp()
@@ -338,7 +350,6 @@ def csv_report():
     output.seek(0)
     return send_file(output, as_attachment=True, download_name=filename, mimetype="text/csv")
 
-# ---------------- JSON REPORT ----------------
 @app.route("/report/json")
 def json_report():
     timestamp = get_timestamp()
@@ -354,40 +365,35 @@ def json_report():
     output.seek(0)
     return send_file(output, as_attachment=True, download_name=filename, mimetype="application/json")
 
-# ---------------- PDF REPORT ----------------
 @app.route("/report/pdf")
 def pdf_report():
     timestamp = get_timestamp()
     filename = f"RedShark_report_{timestamp}.pdf"
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer,pagesize=letter,leftMargin=50,rightMargin=50)
+    margin = 36
+    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=margin, rightMargin=margin)
     styles = getSampleStyleSheet()
     elements = []
 
-    # Cover page
     elements.append(Paragraph("RedShark Threat Intelligence Report", styles["Title"]))
     elements.append(Spacer(1,12))
     elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", styles["Normal"]))
-    elements.append(Paragraph("Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available source. Continuous monitoring recommended.", styles["Normal"]))
+    elements.append(Paragraph("Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available source.", styles["Normal"]))
     elements.append(PageBreak())
 
-    # Charts
     trend, type_chart = generate_charts()
     if trend:
         try:
             img = io.BytesIO(base64.b64decode(trend))
             elements.append(Image(img,width=420,height=200))
-        except:
-            pass
+        except: pass
     if type_chart:
         try:
             img2 = io.BytesIO(base64.b64decode(type_chart))
             elements.append(Spacer(1,12))
             elements.append(Image(img2,width=420,height=250))
-        except:
-            pass
+        except: pass
 
-    # Top 20 indicators table
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
