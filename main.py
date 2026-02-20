@@ -63,13 +63,11 @@ def insert_dummy_data():
         (pulse, indicator, "domain", "Medium", "OTX", score, created))
     conn.commit()
     conn.close()
-    print("Inserted dummy data")
 
 # ---------------- OTX FETCH ----------------
 def fetch_otx_data():
     ensure_database()
     if not OTX_KEY:
-        print("No OTX key found — using dummy data.")
         insert_dummy_data()
         return
     headers = {"X-OTX-API-KEY": OTX_KEY}
@@ -77,8 +75,7 @@ def fetch_otx_data():
         r = requests.get(OTX_URL, headers=headers, timeout=15)
         r.raise_for_status()
         pulses = r.json().get("results", [])
-    except Exception as e:
-        print("OTX fetch failed:", e)
+    except Exception:
         insert_dummy_data()
         return
 
@@ -100,7 +97,6 @@ def fetch_otx_data():
             (name, val, typ, "Medium", "OTX", score, created))
     conn.commit()
     conn.close()
-    print("OTX data updated")
 
 # ---------------- SCHEDULER ----------------
 def scheduler():
@@ -110,7 +106,6 @@ def scheduler():
 
 # ---------------- CHARTS ----------------
 def generate_charts():
-    ensure_database()
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -311,11 +306,10 @@ def dashboard():
                                   summary_text=summary_text,
                                   top20=top20)
 
-# ---------------- REPORT HELPERS ----------------
+# ---------------- REPORTS ----------------
 def get_timestamp():
     return datetime.now().strftime("%Y%m%d%H%M%S")
 
-# ---------------- CSV ----------------
 @app.route("/report/csv")
 def csv_report():
     timestamp = get_timestamp()
@@ -333,7 +327,6 @@ def csv_report():
     output.seek(0)
     return send_file(output, as_attachment=True, download_name=filename, mimetype="text/csv")
 
-# ---------------- JSON ----------------
 @app.route("/report/json")
 def json_report():
     timestamp = get_timestamp()
@@ -349,31 +342,26 @@ def json_report():
     output.seek(0)
     return send_file(output, as_attachment=True, download_name=filename, mimetype="application/json")
 
-# ---------------- PDF ----------------
 @app.route("/report/pdf")
 def pdf_report():
     timestamp = get_timestamp()
     filename = f"RedShark_report_{timestamp}.pdf"
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=letter,
-        leftMargin=36,
-        rightMargin=36,
-        topMargin=36,
-        bottomMargin=36
-    )
+    doc = SimpleDocTemplate(buffer,
+                            pagesize=letter,
+                            leftMargin=36,
+                            rightMargin=36,
+                            topMargin=36,
+                            bottomMargin=36)
     styles = getSampleStyleSheet()
     elements = []
 
-    # Cover
     elements.append(Paragraph("RedShark Threat Intelligence Report", styles["Title"]))
     elements.append(Spacer(1,12))
     elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", styles["Normal"]))
     elements.append(Paragraph("Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available source.", styles["Normal"]))
     elements.append(PageBreak())
 
-    # Charts
     trend, type_chart = generate_charts()
     if trend:
         img = io.BytesIO(base64.b64decode(trend))
@@ -383,7 +371,7 @@ def pdf_report():
         elements.append(Spacer(1,12))
         elements.append(Image(img2,width=420,height=250))
 
-    # Top 20 indicators
+    # Top 20 indicators table
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
