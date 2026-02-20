@@ -9,7 +9,7 @@ import random
 from datetime import datetime
 
 import requests
-from flask import Flask, render_template_string, send_file
+from flask import Flask, render_template_string, send_file, jsonify
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
 from reportlab.lib.pagesizes import letter
@@ -139,34 +139,31 @@ def generate_charts():
             bg = plt.imread(BOXING_RING)
             ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
         plt.plot(dates, counts, marker="o", color="#d90429")
-        plt.title("Threat Trend", color="white")
-        plt.xticks(rotation=45, color="white")
-        plt.yticks(color="white")
+        plt.title("Threat Trend")
+        plt.xticks(rotation=45)
         buf = io.BytesIO()
         plt.tight_layout()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
-    # Type chart
+    # Type chart (enlarged)
     if types:
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
         plt.figure(figsize=(6,4))
         plt.bar(labels, values, color="#ff7f50")
-        plt.title("Indicator Types", color="white")
-        plt.xticks(rotation=45, color="white")
-        plt.yticks(color="white")
-        plt.tight_layout()
+        plt.title("Indicator Types")
         buf = io.BytesIO()
+        plt.tight_layout()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
         plt.close()
         type_img = base64.b64encode(buf.getvalue()).decode()
 
     return trend_img, type_img
 
-# ---------------- MALAYSIA HEATMAP ----------------
-MALAYSIA_IBU_NEGERI = {
+# ---------------- MALAYSIA HEATMAP (STATE CAPITALS) ----------------
+MALAYSIA_CAPITALS = {
     "Johor Bahru": [1.4927,103.7414],
     "Alor Setar": [6.1164,100.3678],
     "Kota Bharu": [6.1254,102.2381],
@@ -188,7 +185,7 @@ MALAYSIA_IBU_NEGERI = {
 def generate_malaysia_heatmap():
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
     heat_data = []
-    for city, coords in MALAYSIA_IBU_NEGERI.items():
+    for state, coords in MALAYSIA_CAPITALS.items():
         count = random.randint(1,10)
         heat_data.append([coords[0], coords[1], count])
     HeatMap(heat_data, radius=25).add_to(m)
@@ -227,8 +224,8 @@ table {border-collapse: collapse;width:100%;}
 th,td {padding:8px;text-align:left;}
 tr:nth-child(even){background:#1b2a44;}
 tr:nth-child(odd){background:#0d1b2a;}
-th {background:#d90429;color:white;cursor:pointer;}
-a.download-btn {background:orange;color:black;padding:6px 12px;text-decoration:none;border-radius:4px;margin-right:5px;}
+th {background:#ff7f00;color:white;cursor:pointer;}
+a.download-btn {color:white; background:#ff7f00; padding:4px 8px; text-decoration:none; border-radius:4px;}
 </style>
 </head>
 <body>
@@ -279,9 +276,11 @@ a.download-btn {background:orange;color:black;padding:6px 12px;text-decoration:n
 </table>
 
 <h3>Download Reports</h3>
-<a class="download-btn" href="/report/pdf">PDF</a>
-<a class="download-btn" href="/report/csv">CSV</a>
-<a class="download-btn" href="/report/json">JSON</a>
+<ul>
+<li><a class="download-btn" href="/report/pdf">PDF</a></li>
+<li><a class="download-btn" href="/report/csv">CSV</a></li>
+<li><a class="download-btn" href="/report/json">JSON</a></li>
+</ul>
 
 </body>
 </html>
@@ -301,9 +300,8 @@ def dashboard():
     top20 = c.execute("SELECT indicator, COUNT(*) as count FROM threats GROUP BY indicator ORDER BY count DESC LIMIT 20").fetchall()
     conn.close()
     summary_text = (
-        f"RedShark has detected {summary_row['total']} indicators with an average SecureNation Index of "
-        f"{summary_row['avg_risk']:.1f}. Recommended actions: review high-risk indicators, update firewalls, "
-        "apply patches promptly, and monitor network traffic continuously."
+        f"RedShark has detected {summary_row['total']} indicators with average risk score "
+        f"{summary_row['avg_risk']:.1f}. It is recommended to review the top indicators and apply mitigation measures such as firewalls, network segmentation, and continuous monitoring."
     )
     return render_template_string(TEMPLATE,
                                   trend=trend,
@@ -358,7 +356,7 @@ def pdf_report():
     timestamp = get_timestamp()
     filename = f"RedShark_report_{timestamp}.pdf"
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer,pagesize=letter)
+    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=40, rightMargin=40, topMargin=40, bottomMargin=40)
     styles = getSampleStyleSheet()
     elements = []
 
