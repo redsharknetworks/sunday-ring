@@ -147,13 +147,13 @@ def generate_charts():
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
-    # Type chart enlarged, caption repositioned
+    # Type chart enlarged
     if types:
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
         plt.figure(figsize=(6,4))
-        bars = plt.bar(labels, values, color="#ff7f50")
-        plt.title("Indicator Types", pad=20)  # padding to avoid overlap
+        plt.bar(labels, values, color="#ff7f50")
+        plt.title("Indicator Types", pad=20)
         plt.xticks(rotation=20)
         buf = io.BytesIO()
         plt.tight_layout()
@@ -194,8 +194,6 @@ def generate_malaysia_heatmap():
         heat_data.append([coords[0], coords[1], count])
     conn.close()
     HeatMap(heat_data, radius=25).add_to(m)
-    
-    # Malaysia timestamp GMT+8
     timestamp = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     return f"<p style='color:white;'>Malaysia Data Timestamp (GMT+8): {timestamp}</p>" + m._repr_html_()
 
@@ -261,7 +259,7 @@ a.button {background:#ff7f50;color:white;padding:6px 12px;text-decoration:none;b
 
 <h3>Latest Indicators</h3>
 <table id="indicators">
-<tr><th>ID</th><th style="width:200px;">Pulse</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
+<tr><th>ID</th><th style="width:250px;">Pulse</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
 {% for row in table_data %}
 <tr>
 <td>{{ row['id'] }}</td>
@@ -362,7 +360,7 @@ def pdf_report():
     timestamp = get_timestamp()
     filename = f"RedShark_report_{timestamp}.pdf"
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer,pagesize=letter,leftMargin=40,rightMargin=40)
+    doc = SimpleDocTemplate(buffer,pagesize=letter,leftMargin=50,rightMargin=50)
     styles = getSampleStyleSheet()
     elements = []
 
@@ -402,7 +400,7 @@ def pdf_report():
 
     t=Table(table_data, repeatRows=1)
     t.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
+        ('BACKGROUND',(0,0),(-1,0),colors.crimson),
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
         ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
         ('FONTSIZE',(0,0),(-1,0),10),
