@@ -140,8 +140,8 @@ def generate_charts():
         plt.plot(dates, counts, marker="o", color="#d90429")
         plt.title("Threat Trend")
         plt.xticks(rotation=45)
-        plt.tight_layout()
         buf = io.BytesIO()
+        plt.tight_layout()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
@@ -188,9 +188,7 @@ def generate_malaysia_heatmap():
         heat_data.append([coords[0], coords[1], count])
     HeatMap(heat_data, radius=25).add_to(m)
     timestamp = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S GMT+8")
-    folium.map.Marker([4.2105,101.9758], icon=folium.DivIcon(
-        html=f'<div style="color:white;font-weight:bold;">Updated: {timestamp}</div>'
-    )).add_to(m)
+    folium.map.Marker([4.2105,101.9758], icon=folium.DivIcon(html=f'<div style="color:white;font-weight:bold;">Updated: {timestamp}</div>')).add_to(m)
     return m._repr_html_()
 
 # ---------------- SECURENATION INDEX ----------------
