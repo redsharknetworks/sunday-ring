@@ -118,7 +118,6 @@ def scheduler():
 
 # ---------------- CHARTS ----------------
 def generate_charts():
-   def generate_charts():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
