@@ -375,7 +375,7 @@ def pdf_report():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     # Select only needed columns: remove pulse and mitre
-    rows = c.execute("SELECT id, indicator, type, classification, risk_score, created_at FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
+    rows = c.execute("SELECT id, indicator, type, classification, risk_score FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
     conn.close()
 
     # Prepare table data with wrapped Indicator column
