@@ -12,7 +12,15 @@ import requests
 from flask import Flask, render_template_string, send_file
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.platypus import Frame, PageTemplate, BaseDocTemplate
+# Define margins in points (left, bottom, width, height, padding)
+frame = Frame(
+    72, 72, 450, 700,
+    leftPadding=0, bottomPadding=0,
+    rightPadding=0, topPadding=0
+)
+template = PageTemplate(id='main', frames=[frame])
+from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.lib import colors
@@ -331,7 +339,7 @@ def dashboard():
 def pdf_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, gesize=landscape (A4), ghtMargin=0.5*inch, ftMargin=0.9*inch, pMargin=0.9*inch, ttomMargin=0.5*inch)
+    doc = SimpleDocTemplate(buffer, gesize=A4, ghtMargin=0.5*inch, ftMargin=0.9*inch, pMargin=0.9*inch, ttomMargin=0.5*inch)
     styles = getSampleStyleSheet()
     elements = []
 
