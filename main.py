@@ -13,7 +13,7 @@ from flask import Flask, render_template_string, send_file
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 import matplotlib
@@ -48,6 +48,15 @@ def ensure_database():
     conn.commit()
     conn.close()
 
+def clean_old_data():
+    """Delete data older than 60 days"""
+    cutoff = (datetime.utcnow() - timedelta(days=60)).isoformat()
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("DELETE FROM threats WHERE created_at < ?", (cutoff,))
+    conn.commit()
+    conn.close()
+
 # ---------------- DUMMY DATA ----------------
 def insert_dummy_data():
     conn = sqlite3.connect(DB)
@@ -67,6 +76,7 @@ def insert_dummy_data():
 # ---------------- OTX FETCH ----------------
 def fetch_otx_data():
     ensure_database()
+    clean_old_data()
     if not OTX_KEY:
         insert_dummy_data()
         return
@@ -135,22 +145,24 @@ def generate_charts():
             bg = plt.imread(BOXING_RING)
             ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
         plt.plot(dates, counts, marker="o", color="#d90429")
-        plt.title("Threat Trend")
-        plt.xticks(rotation=45)
+        plt.title("Threat Trend", color="crimson")
+        plt.xticks(rotation=45, color="white")
+        plt.yticks(color="white")
         plt.tight_layout()
         buf = io.BytesIO()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
-    # Type chart with proper spacing to avoid caption overlap
+    # Type chart
     if types:
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
         plt.figure(figsize=(6,4))
         plt.bar(labels, values, color="#ff7f50")
-        plt.title("Indicator Types")
-        plt.xticks(rotation=30, ha='right')
+        plt.title("Indicator Types", color="crimson")
+        plt.xticks(rotation=30, ha='right', color="white")
+        plt.yticks(color="white")
         plt.tight_layout()
         buf = io.BytesIO()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
@@ -206,14 +218,14 @@ def generate_secure_gauge():
     ax.barh([0],[index], color="#d90429")
     ax.set_xlim(0,100)
     ax.set_yticks([])
-    ax.set_title(f"SecureNation Index: {index}", color="white")
+    ax.set_title(f"SecureNation Index: {index}", color="crimson")
     buf = io.BytesIO()
     plt.tight_layout()
     plt.savefig(buf, format="png", facecolor="#0d1b2a")
     plt.close()
     return base64.b64encode(buf.getvalue()).decode()
 
-# ---------------- DASHBOARD ----------------
+# ---------------- DASHBOARD TEMPLATE ----------------
 TEMPLATE = """<html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
@@ -298,6 +310,7 @@ $(document).ready(function() {
 </html>
 """
 
+# ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
     trend, type_chart = generate_charts()
@@ -330,7 +343,9 @@ def dashboard():
 def pdf_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
+    # increase left/right margin
+    doc = SimpleDocTemplate(buffer, pagesize=letter,
+                            leftMargin=50, rightMargin=50, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     elements = []
 
@@ -362,15 +377,20 @@ def pdf_report():
     for r in rows:
         table_data.append([r["id"], r["pulse"], r["indicator"], r["type"], r["classification"], r["mitre"], r["risk_score"], r["created_at"]])
 
-    t=Table(table_data, repeatRows=1)
+    # fix table margins using TableStyle padding
+    t=Table(table_data, repeatRows=1, colWidths=[30,100,100,60,60,60,40,80])
     t.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),  # blue-grey header
+        ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
         ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
         ('ALIGN',(0,0),(-1,-1),'CENTER'),
         ('GRID',(0,0),(-1,-1),0.5,colors.black),
         ('BACKGROUND',(0,1),(-1,-1),colors.white),
-        ('TEXTCOLOR',(0,1),(-1,-1),colors.black)
+        ('TEXTCOLOR',(0,1),(-1,-1),colors.black),
+        ('LEFTPADDING',(0,0),(-1,-1),4),
+        ('RIGHTPADDING',(0,0),(-1,-1),4),
+        ('TOPPADDING',(0,0),(-1,-1),2),
+        ('BOTTOMPADDING',(0,0),(-1,-1),2)
     ]))
     elements.append(t)
 
@@ -401,19 +421,4 @@ def json_report():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    threats = c.execute("SELECT * FROM threats").fetchall()
-    conn.close()
-    data = [dict(x) for x in threats]
-    output = io.BytesIO()
-    output.write(str(data).encode())
-    output.seek(0)
-    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json", mimetype="application/json")
-
-# ---------------- START ----------------
-ensure_database()
-fetch_otx_data()
-if not os.getenv("RUN_MAIN"):
-    threading.Thread(target=scheduler, daemon=True).start()
-
-if __name__=="__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
+    threats = c.execute("SELECT * FROM threats
