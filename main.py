@@ -64,6 +64,10 @@ def insert_dummy_data():
     c = conn.cursor()
     for i in range(20):
         created = datetime.utcnow().isoformat()
+        # Random classification and score
+        classification = random.choice(["Low","Medium","High"])
+        score_map = {"Low": random.randint(20,39), "Medium": random.randint(40,69), "High": random.randint(70,100)}
+        score = score_map[classification]
         c.execute("""
         INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -71,9 +75,9 @@ def insert_dummy_data():
             f"Dummy Pulse {i+1}",
             f"malicious{i+1}.com",
             "domain",
-            random.choice(["Low","Medium","High"]),
+            classification,
             "OTX",
-            random.randint(60, 95),
+            score,
             created
         ))
     conn.commit()
@@ -97,7 +101,6 @@ def fetch_otx_data():
 
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-
     for pulse in pulses[:10]:
         name = pulse.get("name", "OTX Pulse")
         indicators = pulse.get("indicators", [])
@@ -106,21 +109,15 @@ def fetch_otx_data():
             typ = ind.get("type", "domain")
             if not val:
                 continue
-
+            # Random classification
+            classification = random.choice(["Low","Medium","High"])
+            score_map = {"Low": random.randint(20,39), "Medium": random.randint(40,69), "High": random.randint(70,100)}
+            score = score_map[classification]
             created = datetime.utcnow().isoformat()
             c.execute("""
             INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                name,
-                val,
-                typ,
-                random.choice(["Low","Medium","High"]),
-                "OTX",
-                random.randint(60, 95),
-                created
-            ))
-
+            """, (name, val, typ, classification, "OTX", score, created))
     conn.commit()
     conn.close()
 
@@ -150,20 +147,17 @@ def generate_charts():
     """).fetchall()
 
     conn.close()
-
     trend_img = None
     type_img = None
 
-    # ---- Trend Last 7 Days ----
     if trend_rows:
         trend_dict = {row["date"]: row["cnt"] for row in trend_rows}
         today = datetime.utcnow() + timedelta(hours=8)
         dates, counts = [], []
-        for i in range(6, -1, -1):
+        for i in range(6,-1,-1):
             d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
             dates.append(d)
-            counts.append(trend_dict.get(d, 0))
-
+            counts.append(trend_dict.get(d,0))
         plt.figure(figsize=(6,3))
         ax = plt.gca()
         plt.plot(dates, counts, marker="o", color="#d90429")
@@ -176,7 +170,6 @@ def generate_charts():
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
-    # ---- Type Chart ----
     if type_rows:
         labels = [x["type"] for x in type_rows]
         values = [x["cnt"] for x in type_rows]
@@ -196,79 +189,71 @@ def generate_charts():
 
 # ---------------- MALAYSIA HEATMAP ----------------
 MALAYSIA_STATES = {
-    "Johor": [1.4927,103.7414],
-    "Kedah": [6.1164,100.3678],
-    "Kelantan": [6.1254,102.2381],
-    "Melaka": [2.1896,102.2501],
-    "Negeri Sembilan": [2.7290,101.9383],
-    "Pahang": [3.8167,103.3333],
-    "Perak": [4.5929,101.0900],
-    "Perlis": [6.4400,100.2000],
-    "Penang": [5.4164,100.3327],
-    "Sabah": [5.9804,116.0735],
-    "Sarawak": [1.5533,110.3592],
-    "Selangor": [3.1390,101.6869],
-    "Terengganu": [5.3300,103.1400],
-    "Kuala Lumpur": [3.1390,101.6869],
-    "Putrajaya": [2.9264,101.6981],
+    "Johor": [1.4927,103.7414], "Kedah": [6.1164,100.3678], "Kelantan": [6.1254,102.2381],
+    "Melaka": [2.1896,102.2501], "Negeri Sembilan": [2.7290,101.9383], "Pahang": [3.8167,103.3333],
+    "Perak": [4.5929,101.0900], "Perlis": [6.4400,100.2000], "Penang": [5.4164,100.3327],
+    "Sabah": [5.9804,116.0735], "Sarawak": [1.5533,110.3592], "Selangor": [3.1390,101.6869],
+    "Terengganu": [5.3300,103.1400], "Kuala Lumpur": [3.1390,101.6869], "Putrajaya": [2.9264,101.6981],
     "Labuan": [5.2833,115.2333]
 }
 
 def generate_malaysia_heatmap():
     tz = timedelta(hours=8)
-    timestamp = (datetime.utcnow() + tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
+    timestamp = (datetime.utcnow()+tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
     folium.Marker([5.4164,100.3327], popup=f"Last update: {timestamp}").add_to(m)
-    heat_data = []
+    heat_data=[]
     for coords in MALAYSIA_STATES.values():
         count = random.randint(1,10)
-        heat_data.append([coords[0], coords[1], count])
-    HeatMap(heat_data, radius=25).add_to(m)
+        heat_data.append([coords[0],coords[1],count])
+    HeatMap(heat_data,radius=25).add_to(m)
     return m._repr_html_(), timestamp
 
 # ---------------- SECURENATION INDEX ----------------
-def calculate_secure_index():
+def calculate_secure_index(start_date=None):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    c.execute("SELECT AVG(risk_score) as avg_risk FROM threats")
+    query = "SELECT AVG(risk_score) FROM threats"
+    params = ()
+    if start_date:
+        query += " WHERE created_at>=?"
+        params=(start_date,)
+    c.execute(query,params)
     avg_risk = c.fetchone()[0] or 0
     conn.close()
     return round(avg_risk,1)
 
-# ---------------- SUMMARY & RECOMMENDATION ----------------
-def generate_summary(days=1):
+def risk_summary(start_date=None):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    c.execute("""
-        SELECT classification, COUNT(*) FROM threats
-        WHERE created_at >= ?
-        GROUP BY classification
-    """, (cutoff,))
-    rows = c.fetchall()
+    query = "SELECT classification, COUNT(*) FROM threats"
+    params=()
+    if start_date:
+        query+=" WHERE created_at>=?"
+        params=(start_date,)
+    query+=" GROUP BY classification"
+    c.execute(query,params)
+    rows=c.fetchall()
     conn.close()
-
-    summary = {"Low":0,"Medium":0,"High":0,"total":0,"recommendations":[]}
-    for cls, cnt in rows:
-        summary[cls] = cnt
-        summary["total"] += cnt
-
-    # Recommendations based on risk counts
-    if summary["High"] > 0 or summary["Medium"] > 10:
-        summary["recommendations"].extend([
-            "Immediate investigation required",
-            "Isolate affected systems",
-            "Notify security team"
-        ])
-    elif summary["Medium"] > 0:
-        summary["recommendations"].extend([
-            "Review medium-risk threats",
-            "Monitor systems closely"
-        ])
-    else:
-        summary["recommendations"].append("No immediate action required")
-
+    summary = {"Low":0,"Medium":0,"High":0}
+    for cls,count in rows:
+        summary[cls]=count
     return summary
+
+def generate_recommendations(summary):
+    rec=[]
+    if summary["High"]>0:
+        rec.append("Immediate investigation required")
+        rec.append("Isolate affected systems")
+        rec.append("Notify security team")
+    elif summary["Medium"]>0:
+        rec.append("Monitor systems and logs")
+        rec.append("Scan affected systems")
+    elif summary["Low"]>0:
+        rec.append("Regular review of indicators")
+    else:
+        rec.append("No significant threats detected")
+    return rec
 
 # ---------------- DASHBOARD TEMPLATE ----------------
 TEMPLATE = """<html>
@@ -301,22 +286,6 @@ a.button {background:#ff7f50;color:white;padding:6px 12px;text-decoration:none;b
 <div class="secure-bar">
   <div class="secure-fill" style="width:{{ gauge }}%;background:{{ color }};">{{ gauge }}/100</div>
 </div>
-
-<h3>Daily Threat Summary</h3>
-<p>Total: {{ daily_summary.total }} | Low: {{ daily_summary.Low }}, Medium: {{ daily_summary.Medium }}, High: {{ daily_summary.High }}</p>
-<ul>
-{% for rec in daily_summary.recommendations %}
-<li>{{ rec }}</li>
-{% endfor %}
-</ul>
-
-<h3>Weekly Threat Summary</h3>
-<p>Total: {{ weekly_summary.total }} | Low: {{ weekly_summary.Low }}, Medium: {{ weekly_summary.Medium }}, High: {{ weekly_summary.High }}</p>
-<ul>
-{% for rec in weekly_summary.recommendations %}
-<li>{{ rec }}</li>
-{% endfor %}
-</ul>
 
 <h3>Malaysia Heatmap (Last Update: {{ heatmap_time }})</h3>
 {{ heatmap | safe }}
@@ -383,9 +352,6 @@ def dashboard():
     heatmap, heatmap_time = generate_malaysia_heatmap()
     gauge = calculate_secure_index()
 
-    daily_summary = generate_summary(days=1)
-    weekly_summary = generate_summary(days=7)
-
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -401,84 +367,120 @@ def dashboard():
         heatmap_time=heatmap_time,
         gauge=gauge,
         table_data=table_data,
-        top20=top20,
-        daily_summary=daily_summary,
-        weekly_summary=weekly_summary
+        top20=top20
     )
 
-# ---------------- REPORTS ----------------
+# ---------------- REPORT PDF ----------------
 @app.route("/report/pdf")
 def pdf_report():
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    filename_ts = datetime.now().strftime("%Y%m%d%H%M%S")
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4,
                             leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     elements = []
 
+    # Header
     elements.append(Paragraph("RedShark Threat Intelligence Report", styles["Title"]))
     elements.append(Spacer(1,12))
-    elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", styles["Normal"]))
-
-    # Add daily and weekly summary
-    daily_summary = generate_summary(days=1)
-    weekly_summary = generate_summary(days=7)
-
-    elements.append(Spacer(1,12))
-    elements.append(Paragraph("Daily Threat Summary", styles["Heading2"]))
-    elements.append(Paragraph(f"Total: {daily_summary['total']} | Low: {daily_summary['Low']}, Medium: {daily_summary['Medium']}, High: {daily_summary['High']}", styles["Normal"]))
-    for rec in daily_summary["recommendations"]:
-        elements.append(Paragraph(f"• {rec}", styles["Normal"]))
+    elements.append(Paragraph(f"Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["Normal"]))
     elements.append(Spacer(1,12))
 
-    elements.append(Paragraph("Weekly Threat Summary", styles["Heading2"]))
-    elements.append(Paragraph(f"Total: {weekly_summary['total']} | Low: {weekly_summary['Low']}, Medium: {weekly_summary['Medium']}, High: {weekly_summary['High']}", styles["Normal"]))
-    for rec in weekly_summary["recommendations"]:
-        elements.append(Paragraph(f"• {rec}", styles["Normal"]))
+    # Daily summary
+    today_start = (datetime.utcnow() - timedelta(hours=8)).replace(hour=0, minute=0, second=0, microsecond=0)
+    daily_summary = risk_summary(today_start.isoformat())
+    daily_gauge = calculate_secure_index(today_start.isoformat())
+    elements.append(Paragraph(f"Today's SecureNation Index: {daily_gauge} / 100", styles["Heading2"]))
+    elements.append(Spacer(1,6))
+    elements.append(Paragraph(f"Summary of today's threats: {daily_summary}", styles["Normal"]))
+    rec = generate_recommendations(daily_summary)
+    elements.append(Paragraph("Recommendations:", styles["Heading3"]))
+    for r in rec:
+        elements.append(Paragraph(f"• {r}", styles["Normal"]))
+    elements.append(Spacer(1,12))
+
+    # Weekly summary
+    week_start = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    weekly_summary = risk_summary(week_start)
+    weekly_gauge = calculate_secure_index(week_start)
+    elements.append(Paragraph(f"Weekly SecureNation Index: {weekly_gauge} / 100", styles["Heading2"]))
+    elements.append(Spacer(1,6))
+    elements.append(Paragraph(f"Summary of past 7 days threats: {weekly_summary}", styles["Normal"]))
+    rec_week = generate_recommendations(weekly_summary)
+    elements.append(Paragraph("Recommendations:", styles["Heading3"]))
+    for r in rec_week:
+        elements.append(Paragraph(f"• {r}", styles["Normal"]))
     elements.append(PageBreak())
 
-    trend, type_chart = generate_charts()
-    if trend:
-        img = io.BytesIO(base64.b64decode(trend))
-        elements.append(Image(img,width=doc.width,height=220))
-    if type_chart:
+    # Charts
+    trend_img, type_chart_img = generate_charts()
+    if trend_img:
+        img = io.BytesIO(base64.b64decode(trend_img))
+        elements.append(Image(img, width=doc.width, height=220))
+    if type_chart_img:
         elements.append(Spacer(1,12))
-        img2 = io.BytesIO(base64.b64decode(type_chart))
-        elements.append(Image(img2,width=doc.width,height=250))
+        img2 = io.BytesIO(base64.b64decode(type_chart_img))
+        elements.append(Image(img2, width=doc.width, height=250))
 
+    # Top 20 threats prioritized High->Medium->Low
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    rows = c.execute("SELECT id, indicator, type, classification, risk_score FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
+    high_rows = c.execute("SELECT id,indicator,type,classification,risk_score FROM threats WHERE classification='High' ORDER BY risk_score DESC").fetchall()
+    medium_rows = c.execute("SELECT id,indicator,type,classification,risk_score FROM threats WHERE classification='Medium' ORDER BY risk_score DESC").fetchall()
+        low_rows = c.execute(
+        "SELECT id,indicator,type,classification,risk_score FROM threats WHERE classification='Low' ORDER BY risk_score DESC"
+    ).fetchall()
     conn.close()
 
-    wrap_style = ParagraphStyle(name="wrap", alignment=TA_LEFT, fontSize=8, leading=10)
-    table_data = [["ID","Indicator","Type","Class","Risk"]]
-    for r in rows:
-        table_data.append([r["id"], Paragraph(r["indicator"], wrap_style), r["type"], r["classification"], r["risk_score"]])
+    # Combine top 20
+    top_rows = high_rows + medium_rows + low_rows
+    top_rows = top_rows[:20]
 
-        col_widths = [doc.width*0.08, doc.width*0.45, doc.width*0.15, doc.width*0.17, doc.width*0.15]
+    wrap_style = ParagraphStyle(name="wrap", alignment=TA_LEFT, fontSize=8, leading=10)
+    table_data = [["ID", "Indicator", "Type", "Class", "Risk"]]
+    for r in top_rows:
+        table_data.append([
+            r["id"],
+            Paragraph(r["indicator"], wrap_style),
+            r["type"],
+            r["classification"],
+            r["risk_score"]
+        ])
+
+    col_widths = [doc.width*0.08, doc.width*0.45, doc.width*0.15, doc.width*0.17, doc.width*0.15]
     t = Table(table_data, colWidths=col_widths, repeatRows=1)
     t.setStyle(TableStyle([
         ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
         ('GRID',(0,0),(-1,-1),0.5,colors.black),
-        ('VALIGN',(0,0),(-1,-1),'TOP')
+        ('VALIGN',(0,0),(-1,-1),'TOP'),
+        ('ALIGN',(0,0),(-1,-1),'CENTER'),
+        ('LEFTPADDING',(0,0),(-1,-1),2),
+        ('RIGHTPADDING',(0,0),(-1,-1),2),
+        ('TOPPADDING',(0,0),(-1,-1),2),
+        ('BOTTOMPADDING',(0,0),(-1,-1),2)
     ]))
     elements.append(Spacer(1,12))
     elements.append(t)
 
+    # Build PDF
     doc.build(elements)
     buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name=f"RedShark_report_{timestamp}.pdf", mimetype="application/pdf")
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name=f"RedShark_report_{filename_ts}.pdf",
+        mimetype="application/pdf"
+    )
 
-# ---------------- CSV & JSON Reports ----------------
+# ---------------- REPORT CSV ----------------
 @app.route("/report/csv")
 def csv_report():
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    filename_ts = datetime.now().strftime("%Y%m%d%H%M%S")
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    threats = c.execute("SELECT * FROM threats").fetchall()
+    threats = c.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
     conn.close()
     si = io.StringIO()
     cw = csv.writer(si)
@@ -487,21 +489,32 @@ def csv_report():
     output = io.BytesIO()
     output.write(si.getvalue().encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.csv", mimetype="text/csv")
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=f"RedShark_report_{filename_ts}.csv",
+        mimetype="text/csv"
+    )
 
+# ---------------- REPORT JSON ----------------
 @app.route("/report/json")
 def json_report():
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    filename_ts = datetime.now().strftime("%Y%m%d%H%M%S")
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    threats = c.execute("SELECT * FROM threats").fetchall()
+    threats = c.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
     conn.close()
     data = [dict(x) for x in threats]
     output = io.BytesIO()
     output.write(str(data).encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json", mimetype="application/json")
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=f"RedShark_report_{filename_ts}.json",
+        mimetype="application/json"
+    )
 
 # ---------------- START ----------------
 ensure_database()
