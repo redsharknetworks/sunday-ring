@@ -13,7 +13,7 @@ from flask import Flask, render_template_string, send_file
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
 import matplotlib
@@ -32,64 +32,41 @@ BOXING_RING = "boxing_ring.png"
 
 # ---------------- DATABASE ----------------
 def ensure_database():
-    try:
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS threats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pulse TEXT,
-            indicator TEXT,
-            type TEXT,
-            classification TEXT,
-            mitre TEXT,
-            risk_score INTEGER,
-            created_at TEXT
-        )
-        """)
-        conn.commit()
-    except Exception as e:
-        print(f"[DB ERROR] ensure_database: {e}")
-    finally:
-        conn.close()
-
-# ---------------- DATABASE RETENTION ----------------
-def purge_old_data(days=60):
-    try:
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-        c.execute("DELETE FROM threats WHERE created_at < ?", (cutoff,))
-        conn.commit()
-    except Exception as e:
-        print(f"[DB ERROR] purge_old_data: {e}")
-    finally:
-        conn.close()
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS threats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pulse TEXT,
+        indicator TEXT,
+        type TEXT,
+        classification TEXT,
+        mitre TEXT,
+        risk_score INTEGER,
+        created_at TEXT
+    )""")
+    conn.commit()
+    conn.close()
 
 # ---------------- DUMMY DATA ----------------
 def insert_dummy_data():
-    try:
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        for i in range(20):
-            pulse = f"Dummy Pulse {i+1}"
-            indicator = f"malicious{i+1}.com"
-            score = random.randint(60, 95)
-            created = datetime.utcnow().isoformat()
-            c.execute("""INSERT INTO threats
-            (pulse, indicator, type, classification, mitre, risk_score, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (pulse, indicator, "domain", "Medium", "OTX", score, created))
-        conn.commit()
-    except Exception as e:
-        print(f"[DB ERROR] insert_dummy_data: {e}")
-    finally:
-        conn.close()
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    for i in range(20):
+        pulse = f"Dummy Pulse {i+1}"
+        indicator = f"malicious{i+1}.com"
+        score = random.randint(60, 95)
+        created = datetime.utcnow().isoformat()
+        c.execute("""INSERT INTO threats
+        (pulse, indicator, type, classification, mitre, risk_score, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (pulse, indicator, "domain", "Medium", "OTX", score, created))
+    conn.commit()
+    conn.close()
 
 # ---------------- OTX FETCH ----------------
 def fetch_otx_data():
     ensure_database()
-    purge_old_data(60)
     if not OTX_KEY:
         insert_dummy_data()
         return
@@ -98,33 +75,28 @@ def fetch_otx_data():
         r = requests.get(OTX_URL, headers=headers, timeout=15)
         r.raise_for_status()
         pulses = r.json().get("results", [])
-    except Exception as e:
-        print(f"[OTX ERROR] fetch_otx_data: {e}")
+    except:
         insert_dummy_data()
         return
 
-    try:
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        for pulse in pulses[:10]:
-            name = pulse.get("name", "OTX Pulse")
-            indicators = pulse.get("indicators", [])
-            for ind in indicators:
-                val = ind.get("indicator")
-                typ = ind.get("type", "domain")
-                if not val:
-                    continue
-                score = random.randint(60, 95)
-                created = datetime.utcnow().isoformat()
-                c.execute("""INSERT INTO threats
-                (pulse, indicator, type, classification, mitre, risk_score, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (name, val, typ, "Medium", "OTX", score, created))
-        conn.commit()
-    except Exception as e:
-        print(f"[DB ERROR] fetch_otx_data insert: {e}")
-    finally:
-        conn.close()
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    for pulse in pulses[:10]:
+        name = pulse.get("name", "OTX Pulse")
+        indicators = pulse.get("indicators", [])
+        for ind in indicators:
+            val = ind.get("indicator")
+            typ = ind.get("type", "domain")
+            if not val:
+                continue
+            score = random.randint(60, 95)
+            created = datetime.utcnow().isoformat()
+            c.execute("""INSERT INTO threats
+            (pulse, indicator, type, classification, mitre, risk_score, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (name, val, typ, "Medium", "OTX", score, created))
+    conn.commit()
+    conn.close()
 
 # ---------------- SCHEDULER ----------------
 def scheduler():
@@ -134,28 +106,26 @@ def scheduler():
 
 # ---------------- CHARTS ----------------
 def generate_charts():
-    try:
-        conn = sqlite3.connect(DB)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
+    ensure_database()
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
 
-        trend = c.execute("""
-        SELECT substr(created_at,1,10) as date, COUNT(*) as cnt
-        FROM threats GROUP BY date ORDER BY date
-        """).fetchall()
+    trend = c.execute("""
+    SELECT substr(created_at,1,10) as date, COUNT(*) as cnt
+    FROM threats GROUP BY date ORDER BY date
+    """).fetchall()
 
-        types = c.execute("""
-        SELECT type, COUNT(*) as cnt
-        FROM threats GROUP BY type
-        """).fetchall()
-    except Exception as e:
-        print(f"[DB ERROR] generate_charts: {e}")
-        trend = types = []
-    finally:
-        conn.close()
+    types = c.execute("""
+    SELECT type, COUNT(*) as cnt
+    FROM threats GROUP BY type
+    """).fetchall()
+    conn.close()
 
-    trend_img = type_img = None
+    trend_img = None
+    type_img = None
 
+    # Trend chart
     if trend:
         dates = [x["date"] for x in trend]
         counts = [x["cnt"] for x in trend]
@@ -165,23 +135,22 @@ def generate_charts():
             bg = plt.imread(BOXING_RING)
             ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
         plt.plot(dates, counts, marker="o", color="#d90429")
-        plt.title("Threat Trend", color="crimson")
-        plt.xticks(rotation=45, color="white")
-        plt.yticks(color="white")
+        plt.title("Threat Trend")
+        plt.xticks(rotation=45)
         plt.tight_layout()
         buf = io.BytesIO()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
+    # Type chart with proper spacing to avoid caption overlap
     if types:
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
         plt.figure(figsize=(6,4))
         plt.bar(labels, values, color="#ff7f50")
-        plt.title("Indicator Types", color="crimson")
-        plt.xticks(rotation=30, ha='right', color="white")
-        plt.yticks(color="white")
+        plt.title("Indicator Types")
+        plt.xticks(rotation=30, ha='right')
         plt.tight_layout()
         buf = io.BytesIO()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
@@ -215,22 +184,20 @@ def generate_malaysia_heatmap():
     timestamp = (datetime.utcnow() + tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
     folium.Marker([5.4164,100.3327], popup=f"Last update: {timestamp}").add_to(m)
-    heat_data = [[coords[0], coords[1], random.randint(1,10)] for coords in MALAYSIA_STATES.values()]
+    heat_data = []
+    for coords in MALAYSIA_STATES.values():
+        count = random.randint(1,10)
+        heat_data.append([coords[0], coords[1], count])
     HeatMap(heat_data, radius=25).add_to(m)
     return m._repr_html_(), timestamp
 
 # ---------------- SECURENATION INDEX ----------------
 def calculate_secure_index():
-    try:
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        c.execute("SELECT AVG(risk_score) as avg_risk FROM threats")
-        avg_risk = c.fetchone()[0] or 0
-    except Exception as e:
-        print(f"[DB ERROR] calculate_secure_index: {e}")
-        avg_risk = 0
-    finally:
-        conn.close()
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("SELECT AVG(risk_score) as avg_risk FROM threats")
+    avg_risk = c.fetchone()[0] or 0
+    conn.close()
     return round(avg_risk,1)
 
 def generate_secure_gauge():
@@ -239,14 +206,14 @@ def generate_secure_gauge():
     ax.barh([0],[index], color="#d90429")
     ax.set_xlim(0,100)
     ax.set_yticks([])
-    ax.set_title(f"SecureNation Index: {index}", color="crimson")
+    ax.set_title(f"SecureNation Index: {index}", color="white")
     buf = io.BytesIO()
     plt.tight_layout()
     plt.savefig(buf, format="png", facecolor="#0d1b2a")
     plt.close()
     return base64.b64encode(buf.getvalue()).decode()
 
-# ---------------- DASHBOARD TEMPLATE ----------------
+# ---------------- DASHBOARD ----------------
 TEMPLATE = """<html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
@@ -326,30 +293,23 @@ $(document).ready(function() {
     });
 });
 </script>
+
 </body>
 </html>
 """
 
-# ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
     trend, type_chart = generate_charts()
     heatmap, heatmap_time = generate_malaysia_heatmap()
     gauge = generate_secure_gauge()
-    try:
-        conn = sqlite3.connect(DB)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
-        summary_row = c.execute("SELECT COUNT(*) as total, AVG(risk_score) as avg_risk FROM threats").fetchone()
-        top20 = c.execute("SELECT indicator, COUNT(*) as count FROM threats GROUP BY indicator ORDER BY count DESC LIMIT 20").fetchall()
-    except Exception as e:
-        print(f"[DB ERROR] dashboard: {e}")
-        table_data = []
-        summary_row = {"total":0, "avg_risk":0}
-        top20 = []
-    finally:
-        conn.close()
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+    summary_row = c.execute("SELECT COUNT(*) as total, AVG(risk_score) as avg_risk FROM threats").fetchone()
+    top20 = c.execute("SELECT indicator, COUNT(*) as count FROM threats GROUP BY indicator ORDER BY count DESC LIMIT 20").fetchall()
+    conn.close()
     summary_text = (
         f"RedShark has detected {summary_row['total']} indicators with average risk score "
         f"{summary_row['avg_risk']:.1f}. Recommended solution: Prioritize high-risk indicators, monitor traffic, "
@@ -370,47 +330,41 @@ def dashboard():
 def pdf_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
-    normal_style = ParagraphStyle('Normal', fontSize=10, textColor=colors.black)
     elements = []
 
     elements.append(Paragraph("RedShark Threat Intelligence Report", styles["Title"]))
     elements.append(Spacer(1,12))
-    elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", normal_style))
+    elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", styles["Normal"]))
     tz = timedelta(hours=8)
     timestamp_gmt8 = (datetime.utcnow() + tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
-    elements.append(Paragraph(f"Malaysia Map Timestamp: {timestamp_gmt8}", normal_style))
-    elements.append(Paragraph("Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available source.", normal_style))
+    elements.append(Paragraph(f"Malaysia Map Timestamp: {timestamp_gmt8}", styles["Normal"]))
+    elements.append(Paragraph("Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available source.", styles["Normal"]))
     elements.append(PageBreak())
 
     trend, type_chart = generate_charts()
     if trend:
         img = io.BytesIO(base64.b64decode(trend))
-        elements.append(Image(img,width=doc.width, height=200))
+        elements.append(Image(img,width=420,height=200))
     if type_chart:
         img2 = io.BytesIO(base64.b64decode(type_chart))
         elements.append(Spacer(1,12))
-        elements.append(Image(img2,width=doc.width, height=250))
+        elements.append(Image(img2,width=420,height=250))
 
-    try:
-        conn = sqlite3.connect(DB)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        rows = c.execute("SELECT * FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
-    except Exception as e:
-        print(f"[DB ERROR] pdf_report: {e}")
-        rows = []
-    finally:
-        conn.close()
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    rows = c.execute("SELECT * FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
+    conn.close()
 
     table_data = [["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"]]
     for r in rows:
         table_data.append([r["id"], r["pulse"], r["indicator"], r["type"], r["classification"], r["mitre"], r["risk_score"], r["created_at"]])
 
-    t = Table(table_data, repeatRows=1, colWidths=[40,100,120,60,60,60,40,90])
+    t=Table(table_data, repeatRows=1)
     t.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),
+        ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),  # blue-grey header
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
         ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
         ('ALIGN',(0,0),(-1,-1),'CENTER'),
@@ -428,7 +382,38 @@ def pdf_report():
 @app.route("/report/csv")
 def csv_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    try:
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        threats = c.execute("SELECT * FROM threats").fetch
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    threats = c.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    si = io.StringIO()
+    cw = csv.writer(si)
+    cw.writerow(["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"])
+    cw.writerows(threats)
+    output = io.BytesIO()
+    output.write(si.getvalue().encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.csv", mimetype="text/csv")
+
+@app.route("/report/json")
+def json_report():
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    threats = c.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    data = [dict(x) for x in threats]
+    output = io.BytesIO()
+    output.write(str(data).encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json", mimetype="application/json")
+
+# ---------------- START ----------------
+ensure_database()
+fetch_otx_data()
+if not os.getenv("RUN_MAIN"):
+    threading.Thread(target=scheduler, daemon=True).start()
+
+if __name__=="__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
