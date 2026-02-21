@@ -49,11 +49,11 @@ def ensure_database():
     conn.close()
 
 def clean_old_data():
-    """Delete data older than 60 days"""
-    cutoff = (datetime.utcnow() - timedelta(days=60)).isoformat()
+    """Delete threats older than 60 days"""
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    c.execute("DELETE FROM threats WHERE created_at < ?", (cutoff,))
+    cutoff = datetime.utcnow() - timedelta(days=60)
+    c.execute("DELETE FROM threats WHERE created_at < ?", (cutoff.isoformat(),))
     conn.commit()
     conn.close()
 
@@ -343,10 +343,11 @@ def dashboard():
 def pdf_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     buffer = io.BytesIO()
-    # increase left/right margin
     doc = SimpleDocTemplate(buffer, pagesize=letter,
-                            leftMargin=50, rightMargin=50, topMargin=36, bottomMargin=36)
+                            leftMargin=36, rightMargin=36,
+                            topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
+    crimson_style = ParagraphStyle('crimson', parent=styles['Normal'], textColor=colors.crimson)
     elements = []
 
     elements.append(Paragraph("RedShark Threat Intelligence Report", styles["Title"]))
@@ -361,11 +362,11 @@ def pdf_report():
     trend, type_chart = generate_charts()
     if trend:
         img = io.BytesIO(base64.b64decode(trend))
-        elements.append(Image(img,width=420,height=200))
+        elements.append(Image(img, width=doc.width, height=200))
     if type_chart:
         img2 = io.BytesIO(base64.b64decode(type_chart))
         elements.append(Spacer(1,12))
-        elements.append(Image(img2,width=420,height=250))
+        elements.append(Image(img2, width=doc.width, height=250))
 
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -377,8 +378,7 @@ def pdf_report():
     for r in rows:
         table_data.append([r["id"], r["pulse"], r["indicator"], r["type"], r["classification"], r["mitre"], r["risk_score"], r["created_at"]])
 
-    # fix table margins using TableStyle padding
-    t=Table(table_data, repeatRows=1, colWidths=[30,100,100,60,60,60,40,80])
+    t = Table(table_data, repeatRows=1, colWidths=[doc.width/8.0]*8)
     t.setStyle(TableStyle([
         ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
@@ -386,11 +386,7 @@ def pdf_report():
         ('ALIGN',(0,0),(-1,-1),'CENTER'),
         ('GRID',(0,0),(-1,-1),0.5,colors.black),
         ('BACKGROUND',(0,1),(-1,-1),colors.white),
-        ('TEXTCOLOR',(0,1),(-1,-1),colors.black),
-        ('LEFTPADDING',(0,0),(-1,-1),4),
-        ('RIGHTPADDING',(0,0),(-1,-1),4),
-        ('TOPPADDING',(0,0),(-1,-1),2),
-        ('BOTTOMPADDING',(0,0),(-1,-1),2)
+        ('TEXTCOLOR',(0,1),(-1,-1),colors.black)
     ]))
     elements.append(t)
 
@@ -398,7 +394,7 @@ def pdf_report():
     buffer.seek(0)
     return send_file(buffer, as_attachment=True, download_name=f"RedShark_report_{timestamp}.pdf", mimetype='application/pdf')
 
-# ---------------- CSV/JSON ----------------
+# ---------------- CSV/JSON REPORT ----------------
 @app.route("/report/csv")
 def csv_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -421,4 +417,13 @@ def json_report():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    threats = c.execute("SELECT * FROM threats
+    threats = c.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    data = [dict(x) for x in threats]
+    output = io.BytesIO()
+    output.write(str(data).encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json", mimetype="application/json")
+
+# ---------------- STARTUP ----------------
+ensure_database()
