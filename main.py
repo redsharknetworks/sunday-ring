@@ -48,16 +48,6 @@ def ensure_database():
     conn.commit()
     conn.close()
 
-# ---------------- CLEAN OLD DATA ----------------
-def clean_old_data():
-    """Delete records older than 60 days"""
-    cutoff = datetime.utcnow() - timedelta(days=60)
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("DELETE FROM threats WHERE created_at < ?", (cutoff.isoformat(),))
-    conn.commit()
-    conn.close()
-
 # ---------------- DUMMY DATA ----------------
 def insert_dummy_data():
     conn = sqlite3.connect(DB)
@@ -77,7 +67,6 @@ def insert_dummy_data():
 # ---------------- OTX FETCH ----------------
 def fetch_otx_data():
     ensure_database()
-    clean_old_data()  # Clean old data before inserting new
     if not OTX_KEY:
         insert_dummy_data()
         return
@@ -142,31 +131,26 @@ def generate_charts():
         counts = [x["cnt"] for x in trend]
         plt.figure(figsize=(6,3))
         ax = plt.gca()
-        ax.set_facecolor("#0d1b2a")
         if os.path.exists(BOXING_RING):
             bg = plt.imread(BOXING_RING)
             ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
         plt.plot(dates, counts, marker="o", color="#d90429")
-        plt.title("Threat Trend", color="crimson")
-        ax.tick_params(axis='x', colors='white')
-        ax.tick_params(axis='y', colors='white')
+        plt.title("Threat Trend")
+        plt.xticks(rotation=45)
         plt.tight_layout()
         buf = io.BytesIO()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
-    # Type chart
+    # Type chart with proper spacing to avoid caption overlap
     if types:
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
         plt.figure(figsize=(6,4))
-        ax = plt.gca()
-        ax.set_facecolor("#0d1b2a")
         plt.bar(labels, values, color="#ff7f50")
-        plt.title("Indicator Types", color="crimson")
-        ax.tick_params(axis='x', colors='white', rotation=30)
-        ax.tick_params(axis='y', colors='white')
+        plt.title("Indicator Types")
+        plt.xticks(rotation=30, ha='right')
         plt.tight_layout()
         buf = io.BytesIO()
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
@@ -222,7 +206,7 @@ def generate_secure_gauge():
     ax.barh([0],[index], color="#d90429")
     ax.set_xlim(0,100)
     ax.set_yticks([])
-    ax.set_title(f"SecureNation Index: {index}", color="crimson")
+    ax.set_title(f"SecureNation Index: {index}", color="white")
     buf = io.BytesIO()
     plt.tight_layout()
     plt.savefig(buf, format="png", facecolor="#0d1b2a")
@@ -346,14 +330,7 @@ def dashboard():
 def pdf_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=letter,
-        leftMargin=36,
-        rightMargin=36,
-        topMargin=36,
-        bottomMargin=36
-    )
+    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     elements = []
 
@@ -369,11 +346,11 @@ def pdf_report():
     trend, type_chart = generate_charts()
     if trend:
         img = io.BytesIO(base64.b64decode(trend))
-        elements.append(Image(img, width=450, height=225))
+        elements.append(Image(img,width=420,height=200))
     if type_chart:
         img2 = io.BytesIO(base64.b64decode(type_chart))
         elements.append(Spacer(1,12))
-        elements.append(Image(img2, width=450, height=250))
+        elements.append(Image(img2,width=420,height=250))
 
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -385,8 +362,7 @@ def pdf_report():
     for r in rows:
         table_data.append([r["id"], r["pulse"], r["indicator"], r["type"], r["classification"], r["mitre"], r["risk_score"], r["created_at"]])
 
-    # Adjust table to fit margins
-    t=Table(table_data, repeatRows=1, colWidths=[40,100,120,60,60,60,40,80])
+    t=Table(table_data, repeatRows=1)
     t.setStyle(TableStyle([
         ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),  # blue-grey header
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
@@ -430,4 +406,14 @@ def json_report():
     data = [dict(x) for x in threats]
     output = io.BytesIO()
     output.write(str(data).encode())
-    output.seek(0
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json", mimetype="application/json")
+
+# ---------------- START ----------------
+ensure_database()
+fetch_otx_data()
+if not os.getenv("RUN_MAIN"):
+    threading.Thread(target=scheduler, daemon=True).start()
+
+if __name__=="__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
