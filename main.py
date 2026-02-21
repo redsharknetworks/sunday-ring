@@ -30,7 +30,6 @@ app = Flask(__name__)
 DB = os.getenv("DB_PATH", "/tmp/threats.db")
 OTX_KEY = os.getenv("OTX_KEY")
 OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
-BOXING_RING = "boxing_ring.png"
 
 # ---------------- DATABASE ----------------
 def ensure_database():
@@ -236,6 +235,48 @@ def calculate_secure_index():
     conn.close()
     return round(avg_risk,1)
 
+# ---------------- SUMMARY / RECOMMENDATION ----------------
+def generate_summary_and_recommendation():
+    tz = timedelta(hours=8)
+    today_start = (datetime.utcnow() + tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=6)
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    # Daily average
+    c.execute("SELECT AVG(risk_score) FROM threats WHERE datetime(created_at) >= ?", (today_start.isoformat(),))
+    daily_avg = c.fetchone()[0] or 0
+
+    # Weekly average
+    c.execute("SELECT AVG(risk_score) FROM threats WHERE datetime(created_at) >= ?", (week_start.isoformat(),))
+    weekly_avg = c.fetchone()[0] or 0
+
+    conn.close()
+
+    def interpret(score):
+        if score >= 90:
+            return "Low", ["Maintain current security posture", "Continue monitoring"]
+        elif score >= 70:
+            return "Moderate", ["Monitor for unusual activity", "Ensure patching/updating systems"]
+        elif score >= 40:
+            return "High", ["Review security policies", "Prioritize critical vulnerability patching", "Increase monitoring"]
+        else:
+            return "Critical", ["Immediate investigation required", "Isolate affected systems", "Notify security team"]
+
+    daily_level, daily_rec = interpret(daily_avg)
+    weekly_level, weekly_rec = interpret(weekly_avg)
+
+    daily_summary = f"Today's SecureNation Index: {round(daily_avg,1)} ({daily_level})"
+    weekly_summary = f"This week's SecureNation Index: {round(weekly_avg,1)} ({weekly_level})"
+
+    return {
+        "daily_summary": daily_summary,
+        "weekly_summary": weekly_summary,
+        "daily_recommendation": daily_rec,
+        "weekly_recommendation": weekly_rec
+    }
+
 # ---------------- DASHBOARD TEMPLATE ----------------
 TEMPLATE = """<html>
 <head>
@@ -267,6 +308,21 @@ a.button {background:#ff7f50;color:white;padding:6px 12px;text-decoration:none;b
 <div class="secure-bar">
   <div class="secure-fill" style="width:{{ gauge }}%;background:{{ color }};">{{ gauge }}/100</div>
 </div>
+
+<h3>Summary & Recommendations</h3>
+<p><strong>{{ daily_summary }}</strong></p>
+<ul>
+{% for r in daily_recommendation %}
+<li>{{ r }}</li>
+{% endfor %}
+</ul>
+
+<p><strong>{{ weekly_summary }}</strong></p>
+<ul>
+{% for r in weekly_recommendation %}
+<li>{{ r }}</li>
+{% endfor %}
+</ul>
 
 <h3>Malaysia Heatmap (Last Update: {{ heatmap_time }})</h3>
 {{ heatmap | safe }}
@@ -332,6 +388,7 @@ def dashboard():
     trend, type_chart = generate_charts()
     heatmap, heatmap_time = generate_malaysia_heatmap()
     gauge = calculate_secure_index()
+    summary = generate_summary_and_recommendation()
 
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -348,7 +405,11 @@ def dashboard():
         heatmap_time=heatmap_time,
         gauge=gauge,
         table_data=table_data,
-        top20=top20
+        top20=top20,
+        daily_summary=summary["daily_summary"],
+        weekly_summary=summary["weekly_summary"],
+        daily_recommendation=summary["daily_recommendation"],
+        weekly_recommendation=summary["weekly_recommendation"]
     )
 
 # ---------------- REPORTS ----------------
@@ -399,7 +460,12 @@ def pdf_report():
 
     doc.build(elements)
     buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name=f"RedShark_report_{timestamp}.pdf", mimetype="application/pdf")
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name=f"RedShark_report_{timestamp}.pdf",
+        mimetype="application/pdf"
+    )
 
 @app.route("/report/csv")
 def csv_report():
@@ -415,7 +481,12 @@ def csv_report():
     output = io.BytesIO()
     output.write(si.getvalue().encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.csv", mimetype="text/csv")
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=f"RedShark_report_{timestamp}.csv",
+        mimetype="text/csv"
+    )
 
 @app.route("/report/json")
 def json_report():
@@ -429,7 +500,12 @@ def json_report():
     output = io.BytesIO()
     output.write(str(data).encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json", mimetype="application/json")
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=f"RedShark_report_{timestamp}.json",
+        mimetype="application/json"
+    )
 
 # ---------------- START ----------------
 ensure_database()
@@ -438,5 +514,5 @@ cleanup_old_records()
 if not os.getenv("RUN_MAIN"):
     threading.Thread(target=scheduler, daemon=True).start()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
