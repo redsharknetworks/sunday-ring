@@ -12,6 +12,23 @@ import requests
 from flask import Flask, render_template_string, send_file
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
+from reportlab.platypus import Table, TableStyle
+from reportlab.lib import colors
+
+# Example data
+data = [['00', '01', '02', '03', '04'],
+        ['10', '11', '12', '13', '14'],
+        ['20', '21', '22', '23', '24'],
+        ['30', '31', '32', '33', '34']]
+
+# Create a TableStyle with no border commands
+style_no_borders = TableStyle([
+    ('BACKGROUND', (0, 0), (-1, 0), colors.grey), # Optional: Add a background to the header
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    # Omit 'BOX' and 'INNERGRID' commands to have no visible lines
+])
 from reportlab.platypus import Frame, PageTemplate, BaseDocTemplate
 # Define margins in points (left, bottom, width, height, padding)
 frame = Frame(
