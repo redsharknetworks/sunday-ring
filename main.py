@@ -12,34 +12,8 @@ import requests
 from flask import Flask, render_template_string, send_file
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
-from reportlab.platypus import Table, TableStyle
-from reportlab.lib import colors
-
-# Example data
-data = [['00', '01', '02', '03', '04'],
-        ['10', '11', '12', '13', '14'],
-        ['20', '21', '22', '23', '24'],
-        ['30', '31', '32', '33', '34']]
-
-# Create a TableStyle with no border commands
-style_no_borders = TableStyle([
-    ('BACKGROUND', (0, 0), (-1, 0), colors.grey), # Optional: Add a background to the header
-    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-    # Omit 'BOX' and 'INNERGRID' commands to have no visible lines
-])
-from reportlab.platypus import Frame, PageTemplate, BaseDocTemplate
-# Define margins in points (left, bottom, width, height, padding)
-frame = Frame(
-    72, 72, 450, 700,
-    leftPadding=0, bottomPadding=0,
-    rightPadding=0, topPadding=0
-)
-template = PageTemplate(id='main', frames=[frame])
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import inch
 from reportlab.lib import colors
 
 import matplotlib
@@ -71,6 +45,15 @@ def ensure_database():
         risk_score INTEGER,
         created_at TEXT
     )""")
+    conn.commit()
+    conn.close()
+
+def cleanup_old_records():
+    """Delete threats older than 60 days"""
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    cutoff = (datetime.utcnow() - timedelta(days=60)).isoformat()
+    c.execute("DELETE FROM threats WHERE created_at < ?", (cutoff,))
     conn.commit()
     conn.close()
 
@@ -128,11 +111,11 @@ def fetch_otx_data():
 def scheduler():
     while True:
         fetch_otx_data()
+        cleanup_old_records()
         time.sleep(3600)
 
 # ---------------- CHARTS ----------------
 def generate_charts():
-    ensure_database()
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -161,7 +144,8 @@ def generate_charts():
             bg = plt.imread(BOXING_RING)
             ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
         plt.plot(dates, counts, marker="o", color="#d90429")
-        plt.title("Threat Trend")
+        plt.title("Threat Trend", color="#d90429")
+        ax.tick_params(colors='white')
         plt.xticks(rotation=45)
         plt.tight_layout()
         buf = io.BytesIO()
@@ -169,13 +153,15 @@ def generate_charts():
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
-    # Type chart with proper spacing to avoid caption overlap
+    # Type chart
     if types:
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
         plt.figure(figsize=(6,4))
         plt.bar(labels, values, color="#ff7f50")
-        plt.title("Indicator Types")
+        plt.title("Indicator Types", color="#d90429")
+        ax = plt.gca()
+        ax.tick_params(colors='white')
         plt.xticks(rotation=30, ha='right')
         plt.tight_layout()
         buf = io.BytesIO()
@@ -239,7 +225,7 @@ def generate_secure_gauge():
     plt.close()
     return base64.b64encode(buf.getvalue()).decode()
 
-# ---------------- DASHBOARD ----------------
+# ---------------- DASHBOARD TEMPLATE ----------------
 TEMPLATE = """<html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
@@ -324,6 +310,7 @@ $(document).ready(function() {
 </html>
 """
 
+# ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
     trend, type_chart = generate_charts()
@@ -356,7 +343,8 @@ def dashboard():
 def pdf_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, gesize=A4, ghtMargin=0.5*inch, ftMargin=0.9*inch, pMargin=0.9*inch, ttomMargin=0.5*inch)
+    doc = SimpleDocTemplate(buffer, pagesize=letter,
+                            leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     elements = []
 
@@ -372,11 +360,11 @@ def pdf_report():
     trend, type_chart = generate_charts()
     if trend:
         img = io.BytesIO(base64.b64decode(trend))
-        elements.append(Image(img,width=420,height=200))
+        elements.append(Image(img,width=doc.width,height=200))
     if type_chart:
         img2 = io.BytesIO(base64.b64decode(type_chart))
         elements.append(Spacer(1,12))
-        elements.append(Image(img2,width=420,height=250))
+        elements.append(Image(img2,width=doc.width,height=250))
 
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -388,9 +376,11 @@ def pdf_report():
     for r in rows:
         table_data.append([r["id"], r["pulse"], r["indicator"], r["type"], r["classification"], r["mitre"], r["risk_score"], r["created_at"]])
 
-    t=Table(table_data, repeatRows=1)
+    table_width = doc.width
+    col_count = len(table_data[0])
+    t = Table(table_data, repeatRows=1, colWidths=[table_width/col_count]*col_count)
     t.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),  # blue-grey header
+        ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
         ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
         ('ALIGN',(0,0),(-1,-1),'CENTER'),
@@ -438,8 +428,8 @@ def json_report():
 # ---------------- START ----------------
 ensure_database()
 fetch_otx_data()
+cleanup_old_records()
 if not os.getenv("RUN_MAIN"):
     threading.Thread(target=scheduler, daemon=True).start()
 
-if __name__=="__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
+if __name__=="
