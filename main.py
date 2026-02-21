@@ -376,20 +376,17 @@ def pdf_report():
     for r in rows:
         table_data.append([r["id"], r["pulse"], r["indicator"], r["type"], r["classification"], r["mitre"], r["risk_score"], r["created_at"]])
 
+    table_width = doc.width
     col_count = len(table_data[0])
-    table_widths = [doc.width/col_count]*col_count
-
-    t = Table(table_data, repeatRows=1, colWidths=table_widths)
+    t = Table(table_data, repeatRows=1, colWidths=[table_width/col_count]*col_count)
     t.setStyle(TableStyle([
         ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
         ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
         ('ALIGN',(0,0),(-1,-1),'CENTER'),
-        ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
         ('GRID',(0,0),(-1,-1),0.5,colors.black),
         ('BACKGROUND',(0,1),(-1,-1),colors.white),
-        ('TEXTCOLOR',(0,1),(-1,-1),colors.black),
-        ('WORDWRAP',(0,1),(-1,-1),'CJK')  # enables word wrap
+        ('TEXTCOLOR',(0,1),(-1,-1),colors.black)
     ]))
     elements.append(t)
 
@@ -426,17 +423,14 @@ def json_report():
     output = io.BytesIO()
     output.write(str(data).encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json
+    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json", mimetype="application/json")
 
-    # ---------------- START ----------------
+# ---------------- START ----------------
 ensure_database()
 fetch_otx_data()
 cleanup_old_records()
-
-# Start the scheduler in background if not running via Flask reloader
 if not os.getenv("RUN_MAIN"):
     threading.Thread(target=scheduler, daemon=True).start()
 
 if __name__=="__main__":
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
