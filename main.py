@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 import requests
 from flask import Flask, render_template_string, send_file
 
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.enums import TA_LEFT
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
@@ -339,6 +341,7 @@ def dashboard():
                                   top20=top20)
 
 # ---------------- PDF REPORT ----------------
+
 @app.route("/report/pdf")
 def pdf_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -357,6 +360,7 @@ def pdf_report():
     elements.append(Paragraph("Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available source.", styles["Normal"]))
     elements.append(PageBreak())
 
+    # Include charts
     trend, type_chart = generate_charts()
     if trend:
         img = io.BytesIO(base64.b64decode(trend))
@@ -366,29 +370,48 @@ def pdf_report():
         elements.append(Spacer(1,12))
         elements.append(Image(img2,width=doc.width,height=250))
 
+    # Fetch top threats
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    rows = c.execute("SELECT * FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
+    # Select only needed columns: remove pulse and mitre
+    rows = c.execute("SELECT id, indicator, type, classification, risk_score, created_at FROM threats ORDER BY risk_score DESC LIMIT 20").fetchall()
     conn.close()
 
-    table_data = [["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"]]
+    # Prepare table data with wrapped Indicator column
+    table_data = [["ID","Indicator","Type","Class","Risk","Created"]]
+    wrap_style = ParagraphStyle(name="wrap", alignment=TA_LEFT, fontSize=8, leading=10)
     for r in rows:
-        table_data.append([r["id"], r["pulse"], r["indicator"], r["type"], r["classification"], r["mitre"], r["risk_score"], r["created_at"]])
+        table_data.append([
+            r["id"],
+            Paragraph(r["indicator"], wrap_style),
+            r["type"],
+            r["classification"],
+            r["risk_score"],
+            r["created_at"]
+        ])
 
-    table_width = doc.width
     col_count = len(table_data[0])
-    t = Table(table_data, repeatRows=1, colWidths=[table_width/col_count]*col_count)
+    table_width = doc.width
+    col_widths = [table_width/col_count]*col_count
+    t = Table(table_data, repeatRows=1, colWidths=col_widths)
     t.setStyle(TableStyle([
         ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
         ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
-        ('ALIGN',(0,0),(-1,-1),'CENTER'),
+        ('ALIGN',(0,0),(-1,0),'CENTER'),
+        ('ALIGN',(0,1),(-1,-1),'LEFT'),
         ('GRID',(0,0),(-1,-1),0.5,colors.black),
         ('BACKGROUND',(0,1),(-1,-1),colors.white),
         ('TEXTCOLOR',(0,1),(-1,-1),colors.black)
     ]))
     elements.append(t)
+
+    doc.build(elements)
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name=f"RedShark_report_{timestamp}.pdf", mimetype='application/pdf')
+
+    
 
     doc.build(elements)
     buffer.seek(0)
