@@ -13,7 +13,7 @@ from flask import Flask, render_template_string, send_file
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
 import matplotlib
@@ -29,7 +29,6 @@ DB = os.getenv("DB_PATH", "/tmp/threats.db")
 OTX_KEY = os.getenv("OTX_KEY")
 OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
 BOXING_RING = "boxing_ring.png"
-DB_RETENTION_DAYS = 60
 
 # ---------------- DATABASE ----------------
 def ensure_database():
@@ -49,11 +48,11 @@ def ensure_database():
     conn.commit()
     conn.close()
 
-def enforce_db_retention():
-    """Delete entries older than 60 days"""
+# ---------------- DATABASE RETENTION ----------------
+def cleanup_old_data():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    cutoff = (datetime.utcnow() - timedelta(days=DB_RETENTION_DAYS)).isoformat()
+    cutoff = (datetime.utcnow() - timedelta(days=60)).isoformat()
     c.execute("DELETE FROM threats WHERE created_at < ?", (cutoff,))
     conn.commit()
     conn.close()
@@ -77,7 +76,7 @@ def insert_dummy_data():
 # ---------------- OTX FETCH ----------------
 def fetch_otx_data():
     ensure_database()
-    enforce_db_retention()
+    cleanup_old_data()
     if not OTX_KEY:
         insert_dummy_data()
         return
@@ -160,7 +159,7 @@ def generate_charts():
         labels = [x["type"] for x in types]
         values = [x["cnt"] for x in types]
         plt.figure(figsize=(6,4))
-        bars = plt.bar(labels, values, color="#ff7f50")
+        plt.bar(labels, values, color="#ff7f50")
         plt.title("Indicator Types", color="crimson")
         plt.xticks(rotation=30, ha='right', color="white")
         plt.yticks(color="white")
@@ -220,14 +219,13 @@ def generate_secure_gauge():
     ax.set_xlim(0,100)
     ax.set_yticks([])
     ax.set_title(f"SecureNation Index: {index}", color="crimson")
-    buf = io.BytesIO()
     plt.tight_layout()
+    buf = io.BytesIO()
     plt.savefig(buf, format="png", facecolor="#0d1b2a")
     plt.close()
     return base64.b64encode(buf.getvalue()).decode()
 
-# ---------------- DASHBOARD HTML TEMPLATE ----------------
-# Full template preserved exactly as original
+# ---------------- DASHBOARD TEMPLATE ----------------
 TEMPLATE = """<html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
@@ -345,29 +343,27 @@ def dashboard():
 def pdf_report():
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     buffer = io.BytesIO()
-    # Fixed left/right margin
-    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=50, rightMargin=50, topMargin=36, bottomMargin=36)
+    doc = SimpleDocTemplate(buffer, pagesize=letter, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
-    custom_style = ParagraphStyle(name='Custom', fontName='Helvetica', fontSize=10, textColor=colors.black)
     elements = []
 
     elements.append(Paragraph("RedShark Threat Intelligence Report", styles["Title"]))
     elements.append(Spacer(1,12))
-    elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", custom_style))
+    elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", styles["Normal"]))
     tz = timedelta(hours=8)
     timestamp_gmt8 = (datetime.utcnow() + tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
-    elements.append(Paragraph(f"Malaysia Map Timestamp: {timestamp_gmt8}", custom_style))
-    elements.append(Paragraph("Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available source.", custom_style))
+    elements.append(Paragraph(f"Malaysia Map Timestamp: {timestamp_gmt8}", styles["Normal"]))
+    elements.append(Paragraph("Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available source.", styles["Normal"]))
     elements.append(PageBreak())
 
     trend, type_chart = generate_charts()
     if trend:
         img = io.BytesIO(base64.b64decode(trend))
-        elements.append(Image(img,width=420,height=200))
+        elements.append(Image(img, width=420, height=200))
     if type_chart:
         img2 = io.BytesIO(base64.b64decode(type_chart))
         elements.append(Spacer(1,12))
-        elements.append(Image(img2,width=420,height=250))
+        elements.append(Image(img2, width=420, height=250))
 
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -379,7 +375,7 @@ def pdf_report():
     for r in rows:
         table_data.append([r["id"], r["pulse"], r["indicator"], r["type"], r["classification"], r["mitre"], r["risk_score"], r["created_at"]])
 
-    t = Table(table_data, repeatRows=1, colWidths=[40,80,100,60,60,50,40,80])
+    t = Table(table_data, repeatRows=1, colWidths=[36,80,100,50,50,50,36,80])
     t.setStyle(TableStyle([
         ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
@@ -424,4 +420,13 @@ def json_report():
     output = io.BytesIO()
     output.write(str(data).encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.
+    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json", mimetype="application/json")
+
+# ---------------- START ----------------
+ensure_database()
+fetch_otx_data()
+if not os.getenv("RUN_MAIN"):
+    threading.Thread(target=scheduler, daemon=True).start()
+
+if __name__=="__main__":
+    app.run(host="
