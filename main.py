@@ -118,13 +118,16 @@ def scheduler():
 
 # ---------------- CHARTS ----------------
 def generate_charts():
+   def generate_charts():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
     trend = c.execute("""
-    SELECT substr(created_at,1,10) as date, COUNT(*) as cnt
-    FROM threats GROUP BY date ORDER BY date
+    SELECT DATE(created_at, '+8 hours') as date, COUNT(*) as cnt
+    FROM threats
+    GROUP BY DATE(created_at, '+8 hours')
+    ORDER BY DATE(created_at, '+8 hours')
     """).fetchall()
 
     types = c.execute("""
@@ -135,6 +138,48 @@ def generate_charts():
 
     trend_img = None
     type_img = None
+
+    if trend:
+        dates = [x["date"] for x in trend]
+        counts = [x["cnt"] for x in trend]
+
+        plt.figure(figsize=(6,3))
+        ax = plt.gca()
+
+        if os.path.exists(BOXING_RING):
+            bg = plt.imread(BOXING_RING)
+            ax.imshow(bg, extent=[0,len(dates)-1,0,max(counts)+5], aspect='auto', alpha=0.2)
+
+        plt.plot(dates, counts, marker="o", color="#d90429")
+        plt.title("Threat Trend", color="#d90429")
+        ax.tick_params(colors='white')
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", facecolor="#0d1b2a")
+        plt.close()
+        trend_img = base64.b64encode(buf.getvalue()).decode()
+
+    if types:
+        labels = [x["type"] for x in types]
+        values = [x["cnt"] for x in types]
+
+        plt.figure(figsize=(6,4))
+        plt.bar(labels, values, color="#ff7f50")
+        plt.title("Indicator Types", color="#d90429")
+
+        ax = plt.gca()
+        ax.tick_params(colors='white')
+        plt.xticks(rotation=30, ha='right')
+        plt.tight_layout()
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", facecolor="#0d1b2a")
+        plt.close()
+        type_img = base64.b64encode(buf.getvalue()).decode()
+
+    return trend_img, type_img
 
     # Trend chart
     if trend:
@@ -409,8 +454,6 @@ def pdf_report():
     doc.build(elements)
     buffer.seek(0)
     return send_file(buffer, as_attachment=True, download_name=f"RedShark_report_{timestamp}.pdf", mimetype='application/pdf')
-
-    
 
     doc.build(elements)
     buffer.seek(0)
