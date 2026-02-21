@@ -379,7 +379,7 @@ def pdf_report():
     conn.close()
 
     # Prepare table data with wrapped Indicator column
-    table_data = [["ID","Indicator","Type","Class","Risk","Created"]]
+    table_data = [["ID","Indicator","Type","Class","Risk"]]
     wrap_style = ParagraphStyle(name="wrap", alignment=TA_LEFT, fontSize=8, leading=10)
     for r in rows:
         table_data.append([
