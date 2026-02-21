@@ -64,9 +64,8 @@ def insert_dummy_data():
     c = conn.cursor()
     for i in range(20):
         created = datetime.utcnow().isoformat()
-        # Alternate risk classification for demo
-        classification = random.choice(["Low","Medium","High"])
-        risk_score = {"Low":30, "Medium":65, "High":90}[classification]
+        score = random.randint(60,95)
+        classification = "Low" if score<70 else "Medium" if score<85 else "High"
         c.execute("""
         INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -76,7 +75,7 @@ def insert_dummy_data():
             "domain",
             classification,
             "OTX",
-            risk_score,
+            score,
             created
         ))
     conn.commit()
@@ -100,7 +99,6 @@ def fetch_otx_data():
 
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-
     for pulse in pulses[:10]:
         name = pulse.get("name", "OTX Pulse")
         indicators = pulse.get("indicators", [])
@@ -109,22 +107,13 @@ def fetch_otx_data():
             typ = ind.get("type", "domain")
             if not val:
                 continue
-            classification = random.choice(["Low","Medium","High"])
-            risk_score = {"Low":30, "Medium":65, "High":90}[classification]
             created = datetime.utcnow().isoformat()
+            score = random.randint(60,95)
+            classification = "Low" if score<70 else "Medium" if score<85 else "High"
             c.execute("""
             INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                name,
-                val,
-                typ,
-                classification,
-                "OTX",
-                risk_score,
-                created
-            ))
-
+            """, (name, val, typ, classification, "OTX", score, created))
     conn.commit()
     conn.close()
 
@@ -152,25 +141,24 @@ def generate_charts():
         SELECT type, COUNT(*) as cnt
         FROM threats GROUP BY type
     """).fetchall()
-
     conn.close()
 
     trend_img = None
     type_img = None
 
+    # Trend last 7 days
     if trend_rows:
         trend_dict = {row["date"]: row["cnt"] for row in trend_rows}
         today = datetime.utcnow() + timedelta(hours=8)
         dates, counts = [], []
-        for i in range(6, -1, -1):
+        for i in range(6,-1,-1):
             d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
             dates.append(d)
-            counts.append(trend_dict.get(d, 0))
-
+            counts.append(trend_dict.get(d,0))
         plt.figure(figsize=(6,3))
+        ax = plt.gca()
         plt.plot(dates, counts, marker="o", color="#d90429")
         plt.title("Threat Trend (Last 7 Days)", color="#d90429")
-        ax = plt.gca()
         ax.tick_params(colors='white')
         plt.xticks(rotation=45)
         plt.tight_layout()
@@ -179,6 +167,7 @@ def generate_charts():
         plt.close()
         trend_img = base64.b64encode(buf.getvalue()).decode()
 
+    # Type chart
     if type_rows:
         labels = [x["type"] for x in type_rows]
         values = [x["cnt"] for x in type_rows]
@@ -193,19 +182,16 @@ def generate_charts():
         plt.savefig(buf, format="png", facecolor="#0d1b2a")
         plt.close()
         type_img = base64.b64encode(buf.getvalue()).decode()
-
     return trend_img, type_img
 
 # ---------------- MALAYSIA HEATMAP ----------------
 MALAYSIA_STATES = {
-    "Johor": [1.4927,103.7414], "Kedah": [6.1164,100.3678],
-    "Kelantan": [6.1254,102.2381], "Melaka": [2.1896,102.2501],
-    "Negeri Sembilan": [2.7290,101.9383], "Pahang": [3.8167,103.3333],
-    "Perak": [4.5929,101.0900], "Perlis": [6.4400,100.2000],
-    "Penang": [5.4164,100.3327], "Sabah": [5.9804,116.0735],
-    "Sarawak": [1.5533,110.3592], "Selangor": [3.1390,101.6869],
-    "Terengganu": [5.3300,103.1400], "Kuala Lumpur": [3.1390,101.6869],
-    "Putrajaya": [2.9264,101.6981], "Labuan": [5.2833,115.2333]
+    "Johor":[1.4927,103.7414],"Kedah":[6.1164,100.3678],"Kelantan":[6.1254,102.2381],
+    "Melaka":[2.1896,102.2501],"Negeri Sembilan":[2.7290,101.9383],"Pahang":[3.8167,103.3333],
+    "Perak":[4.5929,101.0900],"Perlis":[6.4400,100.2000],"Penang":[5.4164,100.3327],
+    "Sabah":[5.9804,116.0735],"Sarawak":[1.5533,110.3592],"Selangor":[3.1390,101.6869],
+    "Terengganu":[5.3300,103.1400],"Kuala Lumpur":[3.1390,101.6869],"Putrajaya":[2.9264,101.6981],
+    "Labuan":[5.2833,115.2333]
 }
 
 def generate_malaysia_heatmap():
@@ -213,8 +199,11 @@ def generate_malaysia_heatmap():
     timestamp = (datetime.utcnow() + tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
     folium.Marker([5.4164,100.3327], popup=f"Last update: {timestamp}").add_to(m)
-    heat_data = [[coords[0], coords[1], random.randint(1,10)] for coords in MALAYSIA_STATES.values()]
-    HeatMap(heat_data, radius=25).add_to(m)
+    heat_data = []
+    for coords in MALAYSIA_STATES.values():
+        count = random.randint(1,10)
+        heat_data.append([coords[0], coords[1], count])
+    HeatMap(heat_data,radius=25).add_to(m)
     return m._repr_html_(), timestamp
 
 # ---------------- SECURENATION INDEX ----------------
@@ -226,26 +215,208 @@ def calculate_secure_index():
     conn.close()
     return round(avg_risk,1)
 
-# ---------------- DASHBOARD ----------------
-TEMPLATE = """..."""  # Use the previous HTML template you shared
+# ---------------- DASHBOARD TEMPLATE ----------------
+TEMPLATE = """<html>
+<head>
+<title>RedShark Threat Intelligence Dashboard</title>
+<link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css"/>
+<link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/responsive/2.6.1/css/responsive.dataTables.min.css"/>
+<style>
+body {background:#0d1b2a;color:white;font-family:sans-serif;}
+table {border-collapse: collapse;width:100%; word-wrap: break-word;}
+th, td {padding:8px; text-align:left;}
+th {cursor:pointer; background:crimson; color:white;}
+tr:nth-child(even){background:#1b2a44;}
+tr:nth-child(odd){background:#0d1b2a;}
+a.button {background:#ff7f50;color:white;padding:6px 12px;text-decoration:none;border-radius:4px;}
+.secure-bar {background:#1b2a44;width:300px;height:25px;border-radius:5px;margin:5px 0;}
+.secure-fill {height:25px;border-radius:5px;text-align:center;color:white;font-weight:bold;}
+</style>
+</head>
+<body>
+<h2>RedShark Threat Intelligence Dashboard</h2>
+<p>Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available source.</p>
 
+<h3>SecureNation Index</h3>
+{% set color = "#ff7f50" %}
+{% if gauge >= 90 %} {% set color = "#28a745" %}
+{% elif gauge >= 70 %} {% set color = "#ffc107" %}
+{% elif gauge >= 40 %} {% set color = "#fd7e14" %}
+{% else %} {% set color = "#dc3545" %} {% endif %}
+<div class="secure-bar">
+  <div class="secure-fill" style="width:{{ gauge }}%;background:{{ color }};">{{ gauge }}/100</div>
+</div>
+
+<h3>Malaysia Heatmap (Last Update: {{ heatmap_time }})</h3>
+{{ heatmap | safe }}
+
+<h3>Trend</h3>
+{% if trend %}<img src="data:image/png;base64,{{ trend }}">{% else %}<p>No trend data</p>{% endif %}
+
+<h3>Indicator Types</h3>
+{% if type_chart %}<img src="data:image/png;base64,{{ type_chart }}">{% else %}<p>No type data</p>{% endif %}
+
+<h3>Latest Indicators</h3>
+<table id="indicators" class="display nowrap" style="width:100%">
+<thead>
+<tr><th>ID</th><th style="width:300px;">Pulse</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
+</thead>
+<tbody>
+{% for row in table_data %}
+<tr>
+<td>{{ row['id'] }}</td>
+<td>{{ row['pulse'] }}</td>
+<td>{{ row['indicator'] }}</td>
+<td>{{ row['type'] }}</td>
+<td>{{ row['mitre'] }}</td>
+<td>{{ row['risk_score'] }}</td>
+<td>{{ row['created_at'] }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+
+<h3>Top 20 Indicators</h3>
+<table>
+<tr><th>Indicator</th><th>Count</th></tr>
+{% for row in top20 %}
+<tr><td>{{ row['indicator'] }}</td><td>{{ row['count'] }}</td></tr>
+{% endfor %}
+</table>
+
+<h3>Download Reports</h3>
+<a class="button" href="/report/pdf">Download PDF</a>
+<a class="button" href="/report/csv">Download CSV</a>
+<a class="button" href="/report/json">Download JSON</a>
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+<script src="https://cdn.datatables.net/responsive/2.6.1/js/dataTables.responsive.min.js"></script>
+<script>
+$(document).ready(function() {
+    $('#indicators').DataTable({
+        "pageLength": 50,
+        "scrollX": true,
+        responsive: true
+    });
+});
+</script>
+</body>
+</html>
+"""
+
+# ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
     trend, type_chart = generate_charts()
     heatmap, heatmap_time = generate_malaysia_heatmap()
     gauge = calculate_secure_index()
+
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
     top20 = c.execute("SELECT indicator, COUNT(*) as count FROM threats GROUP BY indicator ORDER BY count DESC LIMIT 20").fetchall()
     conn.close()
-    return render_template_string(TEMPLATE, trend=trend, type_chart=type_chart,
-                                  heatmap=heatmap, heatmap_time=heatmap_time,
-                                  gauge=gauge, table_data=table_data, top20=top20)
+
+    return render_template_string(
+        TEMPLATE,
+        trend=trend,
+        type_chart=type_chart,
+        heatmap=heatmap,
+        heatmap_time=heatmap_time,
+        gauge=gauge,
+        table_data=table_data,
+        top20=top20
+    )
 
 # ---------------- REPORTS ----------------
-# PDF, CSV, JSON routes as fixed above
+@app.route("/report/pdf")
+def pdf_report():
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4,
+                            leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    elements = []
+
+    elements.append(Paragraph("RedShark Threat Intelligence Report", styles["Title"]))
+    elements.append(Spacer(1,12))
+    elements.append(Paragraph(f"Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["Normal"]))
+    elements.append(Spacer(1,6))
+    elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", styles["Normal"]))
+    elements.append(PageBreak())
+
+    trend, type_chart = generate_charts()
+    if trend:
+        img = io.BytesIO(base64.b64decode(trend))
+        elements.append(Image(img,width=doc.width,height=220))
+    if type_chart:
+        elements.append(Spacer(1,12))
+        img2 = io.BytesIO(base64.b64decode(type_chart))
+        elements.append(Image(img2,width=doc.width,height=250))
+
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    # Select top 20 high -> medium -> low
+    high_rows = c.execute("SELECT * FROM threats WHERE classification='High' ORDER BY risk_score DESC LIMIT 20").fetchall()
+    remaining = 20 - len(high_rows)
+    medium_rows = c.execute(f"SELECT * FROM threats WHERE classification='Medium' ORDER BY risk_score DESC LIMIT {remaining}").fetchall() if remaining>0 else []
+    remaining -= len(medium_rows)
+    low_rows = c.execute(f"SELECT * FROM threats WHERE classification='Low' ORDER BY risk_score DESC LIMIT {remaining}").fetchall() if remaining>0 else []
+    rows = high_rows + medium_rows + low_rows
+    conn.close()
+
+    wrap_style = ParagraphStyle(name="wrap", alignment=TA_LEFT, fontSize=8, leading=10)
+    table_data = [["ID","Indicator","Type","Class","Risk"]]
+    for r in rows:
+        table_data.append([r["id"], Paragraph(r["indicator"], wrap_style), r["type"], r["classification"], r["risk_score"]])
+
+    col_widths = [doc.width*0.08, doc.width*0.45, doc.width*0.15, doc.width*0.17, doc.width*0.15]
+    t = Table(table_data, colWidths=col_widths, repeatRows=1)
+    t.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#4B6C8A")),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
+        ('GRID',(0,0),(-1,-1),0.5,colors.black),
+        ('VALIGN',(0,0),(-1,-1),'TOP')
+    ]))
+    elements.append(Spacer(1,12))
+    elements.append(t)
+
+    doc.build(elements)
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name=f"RedShark_report_{timestamp}.pdf", mimetype="application/pdf")
+
+@app.route("/report/csv")
+def csv_report():
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    threats = c.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    si = io.StringIO()
+    cw = csv.writer(si)
+    cw.writerow(["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"])
+    cw.writerows(threats)
+    output = io.BytesIO()
+    output.write(si.getvalue().encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.csv", mimetype="text/csv")
+
+@app.route("/report/json")
+def json_report():
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    threats = c.execute("SELECT * FROM threats").fetchall()
+    conn.close()
+    data = [dict(x) for x in threats]
+    output = io.BytesIO()
+    output.write(str(data).encode())
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json", mimetype="application/json")
 
 # ---------------- START ----------------
 ensure_database()
@@ -254,5 +425,6 @@ cleanup_old_records()
 if not os.getenv("RUN_MAIN"):
     threading.Thread(target=scheduler, daemon=True).start()
 
-if __name__=="__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
+if __name__ == "__main__":
+    # Run Flask app
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
