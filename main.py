@@ -1,6 +1,7 @@
 import os
 import io
 import csv
+import json
 import base64
 import sqlite3
 import threading
@@ -30,7 +31,6 @@ app = Flask(__name__)
 DB = os.getenv("DB_PATH", "/tmp/threats.db")
 OTX_KEY = os.getenv("OTX_KEY")
 OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
-BOXING_RING = "boxing_ring.png"
 
 # ---------------- DATABASE ----------------
 def ensure_database():
@@ -107,20 +107,11 @@ def fetch_otx_data():
             typ = ind.get("type", "domain")
             if not val:
                 continue
-
             created = datetime.utcnow().isoformat()
             c.execute("""
             INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                name,
-                val,
-                typ,
-                "Medium",
-                "OTX",
-                random.randint(60, 95),
-                created
-            ))
+            """, (name, val, typ, "Medium", "OTX", random.randint(60, 95), created))
 
     conn.commit()
     conn.close()
@@ -131,6 +122,8 @@ def scheduler():
         fetch_otx_data()
         cleanup_old_records()
         time.sleep(3600)
+
+threading.Thread(target=scheduler, daemon=True).start()
 
 # ---------------- CHARTS ----------------
 def generate_charts():
@@ -164,7 +157,6 @@ def generate_charts():
             d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
             dates.append(d)
             counts.append(trend_dict.get(d, 0))
-
         plt.figure(figsize=(6,3))
         ax = plt.gca()
         plt.plot(dates, counts, marker="o", color="#d90429")
@@ -219,7 +211,6 @@ def generate_malaysia_heatmap():
     tz = timedelta(hours=8)
     timestamp = (datetime.utcnow() + tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
-    folium.Marker([5.4164,100.3327], popup=f"Last update: {timestamp}").add_to(m)
     heat_data = []
     for coords in MALAYSIA_STATES.values():
         count = random.randint(1,10)
@@ -235,6 +226,32 @@ def calculate_secure_index():
     avg_risk = c.fetchone()[0] or 0
     conn.close()
     return round(avg_risk,1)
+
+# ---------------- SUMMARY ----------------
+def generate_summary_recommendation():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*), AVG(risk_score) FROM threats")
+    total, avg_risk = c.fetchone()
+    c.execute("SELECT type, COUNT(*) FROM threats GROUP BY type ORDER BY COUNT(*) DESC LIMIT 1")
+    top_type = c.fetchone()
+    conn.close()
+    total = total or 0
+    avg_risk = avg_risk or 0
+    top_type_name = top_type[0] if top_type else "N/A"
+
+    summary = f"Total threats recorded: {total}. Average risk score: {avg_risk:.1f}. Most common indicator type: {top_type_name}."
+    
+    if avg_risk >= 90:
+        recommendation = "Immediate action required! Prioritize mitigation of high-risk indicators."
+    elif avg_risk >= 70:
+        recommendation = "Review and strengthen defenses for medium-high risk threats."
+    elif avg_risk >= 40:
+        recommendation = "Monitor and investigate ongoing threats."
+    else:
+        recommendation = "System is relatively secure, continue monitoring."
+
+    return summary, recommendation
 
 # ---------------- DASHBOARD TEMPLATE ----------------
 TEMPLATE = """<html>
@@ -280,7 +297,7 @@ a.button {background:#ff7f50;color:white;padding:6px 12px;text-decoration:none;b
 <h3>Latest Indicators</h3>
 <table id="indicators" class="display nowrap" style="width:100%">
 <thead>
-<tr><th>ID</th><th style="width:300px;">Pulse</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
+<tr><th>ID</th><th>Pulse</th><th>Indicator</th><th>Type</th><th>MITRE</th><th>Risk</th><th>Created</th></tr>
 </thead>
 <tbody>
 {% for row in table_data %}
@@ -304,6 +321,12 @@ a.button {background:#ff7f50;color:white;padding:6px 12px;text-decoration:none;b
 <tr><td>{{ row['indicator'] }}</td><td>{{ row['count'] }}</td></tr>
 {% endfor %}
 </table>
+
+<h3>Summary Observation</h3>
+<p>{{ summary }}</p>
+
+<h3>Recommendation</h3>
+<p>{{ recommendation }}</p>
 
 <h3>Download Reports</h3>
 <a class="button" href="/report/pdf">Download PDF</a>
@@ -332,6 +355,7 @@ def dashboard():
     trend, type_chart = generate_charts()
     heatmap, heatmap_time = generate_malaysia_heatmap()
     gauge = calculate_secure_index()
+    summary, recommendation = generate_summary_recommendation()
 
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -348,7 +372,9 @@ def dashboard():
         heatmap_time=heatmap_time,
         gauge=gauge,
         table_data=table_data,
-        top20=top20
+        top20=top20,
+        summary=summary,
+        recommendation=recommendation
     )
 
 # ---------------- REPORTS ----------------
@@ -363,7 +389,14 @@ def pdf_report():
 
     elements.append(Paragraph("RedShark Threat Intelligence Report", styles["Title"]))
     elements.append(Spacer(1,12))
-    elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", styles["Normal"]))
+    gauge = calculate_secure_index()
+    elements.append(Paragraph(f"SecureNation Index: {gauge}/100", styles["Normal"]))
+
+    summary, recommendation = generate_summary_recommendation()
+    elements.append(Spacer(1,12))
+    elements.append(Paragraph(f"Summary Observation: {summary}", styles["Normal"]))
+    elements.append(Spacer(1,6))
+    elements.append(Paragraph(f"Recommendation: {recommendation}", styles["Normal"]))
     elements.append(PageBreak())
 
     trend, type_chart = generate_charts()
@@ -415,7 +448,12 @@ def csv_report():
     output = io.BytesIO()
     output.write(si.getvalue().encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.csv", mimetype="text/csv")
+        return send_file(
+        output,
+        as_attachment=True,
+        download_name=f"RedShark_report_{timestamp}.csv",
+        mimetype="text/csv"
+    )
 
 @app.route("/report/json")
 def json_report():
@@ -423,20 +461,21 @@ def json_report():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    threats = c.execute("SELECT * FROM threats").fetchall()
+    rows = c.execute("SELECT * FROM threats").fetchall()
     conn.close()
-    data = [dict(x) for x in threats]
+    data = [dict(row) for row in rows]
     output = io.BytesIO()
-    output.write(str(data).encode())
+    output.write(json.dumps(data, indent=2).encode())
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name=f"RedShark_report_{timestamp}.json", mimetype="application/json")
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=f"RedShark_report_{timestamp}.json",
+        mimetype="application/json"
+    )
 
-# ---------------- START ----------------
-ensure_database()
-fetch_otx_data()
-cleanup_old_records()
-if not os.getenv("RUN_MAIN"):
-    threading.Thread(target=scheduler, daemon=True).start()
-
-if __name__=="__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
+# ---------------- RUN APP ----------------
+if __name__ == "__main__":
+    ensure_database()
+    fetch_otx_data()
+    app.run(host="0.0.0.0", port=5000, debug=True)
