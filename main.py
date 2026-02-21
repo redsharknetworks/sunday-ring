@@ -355,7 +355,7 @@ def pdf_report():
     elements.append(Spacer(1,12))
     elements.append(Paragraph(f"SecureNation Index: {calculate_secure_index()}/100", styles["Normal"]))
     tz = timedelta(hours=8)
-    timestamp_gmt8 = (datetime.utcnow() + tz).strftime("%Y-%m-%d GMT+8")
+    timestamp_gmt8 = (datetime.utcnow() + tz).strftime("%Y%m%d %H%M%S GMT+8")
     elements.append(Paragraph(f"Malaysia Map Timestamp: {timestamp_gmt8}", styles["Normal"]))
     elements.append(Paragraph("Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available source.", styles["Normal"]))
     elements.append(PageBreak())
@@ -388,7 +388,6 @@ def pdf_report():
             r["type"],
             r["classification"],
             r["risk_score"],
-            r["created_at"]
         ])
 
     col_count = len(table_data[0])
