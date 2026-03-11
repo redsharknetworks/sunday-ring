@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import time
 import random
+import base64
 from datetime import datetime, timedelta
 
 from flask import Flask, render_template_string, send_file
@@ -13,11 +14,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import folium
 from folium.plugins import HeatMap
+
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
+from reportlab.lib import colors
 
 # ---------------- CONFIG ----------------
 app = Flask(__name__)
@@ -63,7 +65,7 @@ def classify_risk(score):
 def insert_dummy_data():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    for i in range(20):
+    for i in range(5):
         created = datetime.utcnow().isoformat()
         score = random.randint(10,95)
         classification = classify_risk(score)
@@ -83,10 +85,8 @@ def insert_dummy_data():
     conn.commit()
     conn.close()
 
-# ---------------- TALOS LOOKUP (simple example) ----------------
+# ---------------- TALOS LOOKUP ----------------
 def fetch_talos_lookup():
-    # placeholder: normally you'd scrape or pull CSV from Talos community
-    # here we just insert dummy Talos indicators
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     for i in range(5):
@@ -109,9 +109,8 @@ def fetch_talos_lookup():
     conn.commit()
     conn.close()
 
-# ---------------- SURICATA LOGS PARSE ----------------
+# ---------------- SURICATA ----------------
 def parse_suricata_logs():
-    # placeholder: insert dummy suricata alerts
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     for i in range(5):
@@ -141,9 +140,9 @@ def scheduler():
         fetch_talos_lookup()
         parse_suricata_logs()
         cleanup_old_records()
-        time.sleep(3600)  # refresh every hour
+        time.sleep(3600)
 
-# ---------------- CHART GENERATION ----------------
+# ---------------- CHARTS ----------------
 def generate_charts():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -152,7 +151,8 @@ def generate_charts():
     type_rows = c.execute("SELECT type, COUNT(*) cnt FROM threats GROUP BY type").fetchall()
     conn.close()
 
-    imgs = {}
+    trend_img = ""
+    type_img = ""
     # Trend chart
     if trend_rows:
         dates = [r["date"] for r in trend_rows]
@@ -166,7 +166,7 @@ def generate_charts():
         buf = io.BytesIO()
         plt.savefig(buf, format="png", facecolor='#0b1b2a')
         plt.close()
-        imgs["trend"] = base64.b64encode(buf.getvalue()).decode()
+        trend_img = base64.b64encode(buf.getvalue()).decode()
     # Type chart
     if type_rows:
         labels = [r["type"] for r in type_rows]
@@ -180,9 +180,8 @@ def generate_charts():
         buf = io.BytesIO()
         plt.savefig(buf, format="png", facecolor='#0b1b2a')
         plt.close()
-        imgs["type"] = base64.b64encode(buf.getvalue()).decode()
-
-    return imgs.get("trend"), imgs.get("type")
+        type_img = base64.b64encode(buf.getvalue()).decode()
+    return trend_img, type_img
 
 # ---------------- MALAYSIA HEATMAP ----------------
 MALAYSIA_STATES = {
@@ -219,8 +218,11 @@ def generate_malaysia_heatmap():
 def calculate_secure_index():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    c.execute("SELECT risk_score FROM threats")
-    rows = c.fetchall()
+    try:
+        c.execute("SELECT risk_score FROM threats")
+        rows = c.fetchall()
+    except:
+        rows = []
     conn.close()
     if not rows:
         return 0
@@ -228,7 +230,7 @@ def calculate_secure_index():
     max_possible = len(rows)*100
     return round(total_weighted/max_possible*100,1)
 
-# ---------------- DASHBOARD ----------------
+# ---------------- DASHBOARD TEMPLATE ----------------
 TEMPLATE = """
 <html>
 <head>
@@ -305,6 +307,7 @@ $(document).ready(function() {
 </html>
 """
 
+# ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
     trend, type_chart = generate_charts()
@@ -314,22 +317,22 @@ def dashboard():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
-    conn.close()
+    try:
+        table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+    except:
+        table_data = []
+    finally:
+        conn.close()
 
     return render_template_string(
         TEMPLATE,
-        trend=trend,
-        type_chart=type_chart,
+        trend=trend or "",
+        type_chart=type_chart or "",
         heatmap=heatmap,
         heatmap_time=heatmap_time,
         gauge=gauge,
         table_data=table_data
     )
-
-# ---------------- REPORTS ----------------
-# Use the PDF code I provided earlier with matplotlib charts (safe for Railway)
-# CSV and JSON remain unchanged
 
 # ---------------- START ----------------
 ensure_database()
@@ -337,9 +340,7 @@ insert_dummy_data()
 fetch_talos_lookup()
 parse_suricata_logs()
 cleanup_old_records()
-
-if not os.getenv("RUN_MAIN"):
-    threading.Thread(target=scheduler, daemon=True).start()
+threading.Thread(target=scheduler, daemon=True).start()
 
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
