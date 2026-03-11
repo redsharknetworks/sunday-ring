@@ -16,12 +16,12 @@ from folium.plugins import HeatMap
 
 # ---------------- CONFIG ----------------
 app = Flask(__name__)
-PORT = int(os.getenv("PORT", 5000))
-DB = os.getenv("DB_PATH", "/tmp/sundayring.db")
+PORT = int(os.getenv("PORT",5000))
+DB = os.getenv("DB_PATH","/tmp/sundayring.db")
 OTX_KEY = os.getenv("OTX_KEY")
-SURICATA_FILE = os.getenv("SURICATA_FILE", "/tmp/suricata/eve.json")
 ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY")
-OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
+SURICATA_FILE = os.getenv("SURICATA_FILE","/tmp/suricata/eve.json")
+OTX_URL = "https://otx.alienvault.com/api/v2/indicators/pulses"
 
 # ---------------- MALAYSIA STATES ----------------
 MALAYSIA_STATES = {
@@ -74,7 +74,7 @@ def insert_dummy_data(n=50):
         score=random.randint(10,95)
         pulse=f"Dummy Pulse {i+1}"
         indicator=f"malicious{i+1}.com"
-        c.execute("""INSERT OR IGNORE INTO threats 
+        c.execute("""INSERT OR IGNORE INTO threats
         (pulse,indicator,type,classification,mitre,risk_score,source,created_at)
         VALUES (?,?,?,?,?,?,?,?)""",
         (pulse,indicator,"domain",classify_risk(score),"Dummy",score,"Dummy",created))
@@ -83,10 +83,16 @@ def insert_dummy_data(n=50):
 # ---------------- OTX ----------------
 def fetch_otx_data():
     ensure_db()
-    if not OTX_KEY: insert_dummy_data(); return
+    if not OTX_KEY:
+        insert_dummy_data(50)
+        return
     headers={"X-OTX-API-KEY":OTX_KEY}
-    try: pulses=requests.get(OTX_URL,headers=headers,timeout=15).json().get("results",[])
-    except: insert_dummy_data(); return
+    try:
+        r=requests.get(OTX_URL,headers=headers,timeout=15).json()
+        pulses=r.get("results",[])
+    except:
+        insert_dummy_data(50)
+        return
     conn=sqlite3.connect(DB)
     c=conn.cursor()
     for pulse in pulses[:50]:
@@ -97,7 +103,8 @@ def fetch_otx_data():
             score=random.randint(10,95)
             c.execute("""INSERT OR IGNORE INTO threats
             (pulse,indicator,type,classification,mitre,risk_score,source,created_at)
-            VALUES (?,?,?,?,?,?,?,?)""",(name,val,typ,classify_risk(score),"OTX",score,"OTX",datetime.utcnow().isoformat()))
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (name,val,typ,classify_risk(score),"OTX",score,"OTX",datetime.utcnow().isoformat()))
     conn.commit(); conn.close()
 
 # ---------------- SURICATA ----------------
@@ -105,8 +112,7 @@ def parse_suricata():
     if not os.path.exists(SURICATA_FILE): return
     try: lines=open(SURICATA_FILE).readlines()
     except: return
-    conn=sqlite3.connect(DB)
-    c=conn.cursor()
+    conn=sqlite3.connect(DB); c=conn.cursor()
     for line in lines:
         try:
             data=json.loads(line)
@@ -126,8 +132,7 @@ def parse_suricata():
 # ---------------- ABUSEIPDB ----------------
 def fetch_abuseipdb_data():
     if not ABUSEIPDB_KEY: return
-    conn=sqlite3.connect(DB)
-    c=conn.cursor()
+    conn=sqlite3.connect(DB); c=conn.cursor()
     sample_ips=["8.8.8.8","1.1.1.1"]
     headers={"Key":ABUSEIPDB_KEY,"Accept":"application/json"}
     for ip in sample_ips:
@@ -170,15 +175,15 @@ def dashboard():
         for i in range(6,-1,-1):
             x=(today-timedelta(days=i)).strftime("%Y-%m-%d")
             dates.append(x); counts.append(d.get(x,0))
-        plt.figure(figsize=(6,3)); plt.plot(dates,counts,marker="o",color="#00ff90",linewidth=2); plt.fill_between(dates,counts,color="#00ff9044")
-        plt.xticks(rotation=45); plt.grid(color="#111111"); plt.tight_layout()
-        buf=io.BytesIO(); plt.savefig(buf,format="png",facecolor="#0b0f17"); plt.close(); trend_img=base64.b64encode(buf.getvalue()).decode()
+        plt.figure(figsize=(6,3)); plt.plot(dates,counts,marker="o",color="#00bfff",linewidth=2); plt.fill_between(dates,counts,color="#00bfff44")
+        plt.xticks(rotation=45); plt.grid(color="#0b0f17"); plt.tight_layout()
+        buf=io.BytesIO(); plt.savefig(buf,format="png",facecolor="#0b1b2a"); plt.close(); trend_img=base64.b64encode(buf.getvalue()).decode()
     
     # Type chart
     if type_rows:
         labels=[r["type"] for r in type_rows]; values=[r["cnt"] for r in type_rows]
-        plt.figure(figsize=(6,4)); plt.bar(labels,values,color="#00ff90",edgecolor="#00ff90"); plt.xticks(rotation=30); plt.grid(axis="y",color="#111111")
-        buf=io.BytesIO(); plt.savefig(buf,format="png",facecolor="#0b0f17"); plt.close(); type_img=base64.b64encode(buf.getvalue()).decode()
+        plt.figure(figsize=(6,4)); plt.bar(labels,values,color="#00bfff",edgecolor="#00bfff"); plt.xticks(rotation=30); plt.grid(axis="y",color="#0b0f17")
+        buf=io.BytesIO(); plt.savefig(buf,format="png",facecolor="#0b1b2a"); plt.close(); type_img=base64.b64encode(buf.getvalue()).decode()
 
     # Heatmap
     timestamp=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S GMT+8")
@@ -198,15 +203,15 @@ def dashboard():
     <link href="https://fonts.googleapis.com/css?family=Roboto:400,700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css"/>
     <style>
-    body{margin:0;font-family:'Roboto',sans-serif;background:linear-gradient(135deg,#0b0f17,#101728);color:#00fff0;}
-    h1,h3{color:#00ff90;}
-    .card{background:#101728;padding:15px;margin:15px;border-radius:10px;box-shadow:0 0 15px #00ff90;}
-    table{border-collapse:collapse;width:100%;word-wrap:break-word;color:#00fff0;}
-    th{background:#0d1b2a;color:#00ff90;padding:8px;}
+    body{margin:0;font-family:'Roboto',sans-serif;background:linear-gradient(135deg,#0b1b2a,#0d2a4a);color:#00bfff;}
+    h1,h3{color:#00bfff;}
+    .card{background:#0d1b2a;padding:15px;margin:15px;border-radius:10px;box-shadow:0 0 15px #00bfff;}
+    table{border-collapse:collapse;width:100%;word-wrap:break-word;color:#00bfff;}
+    th{background:#0a1b3a;color:#00bfff;padding:8px;}
     td{padding:8px;}
-    tr:nth-child(even){background:#101728;}
-    tr:nth-child(odd){background:#0b0f17;}
-    a.button{background:#00ff90;color:#0b0f17;padding:6px 12px;text-decoration:none;border-radius:4px;}
+    tr:nth-child(even){background:#0b1b2a;}
+    tr:nth-child(odd){background:#0d2a4a;}
+    a.button{background:#00bfff;color:#0b1b2a;padding:6px 12px;text-decoration:none;border-radius:4px;}
     </style>
     </head>
     <body>
@@ -214,8 +219,8 @@ def dashboard():
     <p class="card">Disclaimer: Developed and analysed by <b>darkgrid@redshark.my</b> from publicly available sources.</p>
     <div class="card">
     <h3>SecureNation Index</h3>
-    <div style="width:300px;background:#101728;height:25px;border-radius:5px;">
-      <div style="width:{{gauge}}%;background:#00ff90;height:25px;text-align:center;color:#0b0f17;font-weight:bold;">{{gauge}}/100</div>
+    <div style="width:300px;background:#0d1b2a;height:25px;border-radius:5px;">
+      <div style="width:{{gauge}}%;background:#00bfff;height:25px;text-align:center;color:#0b1b2a;font-weight:bold;">{{gauge}}/100</div>
     </div>
     </div>
     <div class="card">
@@ -270,6 +275,6 @@ def export_json_route():
     return send_file(output,as_attachment=True,download_name="sundayring_threats.json",mimetype="application/json")
 
 # ---------------- START ----------------
-ensure_db(); fetch_otx_data(); parse_suricata(); fetch_abuseipdb_data(); cleanup_old_records()
+ensure_db(); insert_dummy_data(50); cleanup_old_records()
 if not os.getenv("RUN_MAIN"): threading.Thread(target=scheduler,daemon=True).start()
 if __name__=="__main__": app.run(host="0.0.0.0",port=PORT)
