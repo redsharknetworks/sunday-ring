@@ -21,7 +21,7 @@ DB = os.getenv("DB_PATH","/tmp/sundayring.db")
 OTX_KEY = os.getenv("OTX_KEY")
 ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY")
 SURICATA_FILE = os.getenv("SURICATA_FILE","/tmp/suricata/eve.json")
-OTX_URL = "https://otx.alienvault.com/api/v2/indicators/pulses"
+TALOS_FEED = "https://talosintelligence.com/sb_api/query_lookup?ip="  # Simple IP lookup
 
 # ---------------- MALAYSIA STATES ----------------
 MALAYSIA_STATES = {
@@ -82,20 +82,17 @@ def insert_dummy_data(n=50):
 
 # ---------------- OTX ----------------
 def fetch_otx_data():
-    ensure_db()
-    if not OTX_KEY:
-        insert_dummy_data(50)
-        return
+    if not OTX_KEY: insert_dummy_data(10); return
+    url="https://otx.alienvault.com/api/v2/indicators/pulses"
     headers={"X-OTX-API-KEY":OTX_KEY}
     try:
-        r=requests.get(OTX_URL,headers=headers,timeout=15).json()
+        r=requests.get(url,headers=headers,timeout=15).json()
         pulses=r.get("results",[])
     except:
-        insert_dummy_data(50)
+        insert_dummy_data(10)
         return
-    conn=sqlite3.connect(DB)
-    c=conn.cursor()
-    for pulse in pulses[:50]:
+    conn=sqlite3.connect(DB); c=conn.cursor()
+    for pulse in pulses[:20]:
         name=pulse.get("name","OTX Pulse")
         for ind in pulse.get("indicators",[]):
             val=ind.get("indicator"); typ=ind.get("type","domain")
@@ -147,43 +144,67 @@ def fetch_abuseipdb_data():
         except: continue
     conn.commit(); conn.close()
 
+# ---------------- TALOS ----------------
+def fetch_talos_lookup():
+    conn=sqlite3.connect(DB); c=conn.cursor()
+    sample_ips=["8.8.8.8","1.1.1.1"]
+    for ip in sample_ips:
+        try:
+            r=requests.get(f"https://talosintelligence.com/sb_api/query_lookup?ip={ip}",timeout=10).json()
+            score=random.randint(10,95)
+            c.execute("""INSERT OR IGNORE INTO threats
+            (pulse,indicator,type,classification,mitre,risk_score,source,created_at)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (f"Talos Lookup {ip}",ip,"ip",classify_risk(score),"Talos",score,"Talos",datetime.utcnow().isoformat()))
+        except: continue
+    conn.commit(); conn.close()
+
 # ---------------- SCHEDULER ----------------
 def scheduler():
     while True:
         fetch_otx_data()
         parse_suricata()
         fetch_abuseipdb_data()
+        fetch_talos_lookup()
         cleanup_old_records()
         time.sleep(3600)
 
 # ---------------- DASHBOARD ----------------
 @app.route("/")
 def dashboard():
-    # Charts
-    trend_img,type_img=None,None
+    # Fetch database
     conn=sqlite3.connect(DB); conn.row_factory=sqlite3.Row; c=conn.cursor()
-    trend_rows=c.execute("SELECT substr(created_at,1,10) date,COUNT(*) cnt FROM threats GROUP BY date ORDER BY date").fetchall()
-    type_rows=c.execute("SELECT type,COUNT(*) cnt FROM threats GROUP BY type").fetchall()
     table_data=c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
     top20=c.execute("SELECT indicator,count(*) cnt FROM threats GROUP BY indicator ORDER BY cnt DESC LIMIT 20").fetchall()
+    trend_rows=c.execute("SELECT substr(created_at,1,10) date,COUNT(*) cnt FROM threats GROUP BY date ORDER BY date").fetchall()
+    type_rows=c.execute("SELECT type,COUNT(*) cnt FROM threats GROUP BY type").fetchall()
     conn.close()
-    
+
     # Trend chart
+    trend_img=None
     if trend_rows:
         d={r["date"]:r["cnt"] for r in trend_rows}
         today=datetime.utcnow(); dates,counts=[],[]
         for i in range(6,-1,-1):
             x=(today-timedelta(days=i)).strftime("%Y-%m-%d")
             dates.append(x); counts.append(d.get(x,0))
-        plt.figure(figsize=(6,3)); plt.plot(dates,counts,marker="o",color="#00bfff",linewidth=2); plt.fill_between(dates,counts,color="#00bfff44")
-        plt.xticks(rotation=45); plt.grid(color="#0b0f17"); plt.tight_layout()
-        buf=io.BytesIO(); plt.savefig(buf,format="png",facecolor="#0b1b2a"); plt.close(); trend_img=base64.b64encode(buf.getvalue()).decode()
-    
+        plt.figure(figsize=(6,3))
+        plt.plot(dates,counts,marker="o",color="#00bfff",linewidth=2)
+        plt.fill_between(dates,counts,color="#00bfff44")
+        plt.xticks(rotation=45); plt.grid(color="#0b0f17")
+        plt.tight_layout()
+        buf=io.BytesIO(); plt.savefig(buf,format="png",facecolor="#0b1b2a"); plt.close()
+        trend_img=base64.b64encode(buf.getvalue()).decode()
+
     # Type chart
+    type_img=None
     if type_rows:
         labels=[r["type"] for r in type_rows]; values=[r["cnt"] for r in type_rows]
-        plt.figure(figsize=(6,4)); plt.bar(labels,values,color="#00bfff",edgecolor="#00bfff"); plt.xticks(rotation=30); plt.grid(axis="y",color="#0b0f17")
-        buf=io.BytesIO(); plt.savefig(buf,format="png",facecolor="#0b1b2a"); plt.close(); type_img=base64.b64encode(buf.getvalue()).decode()
+        plt.figure(figsize=(6,4))
+        plt.bar(labels,values,color="#00bfff",edgecolor="#00bfff")
+        plt.xticks(rotation=30); plt.grid(axis="y",color="#0b0f17")
+        buf=io.BytesIO(); plt.savefig(buf,format="png",facecolor="#0b1b2a"); plt.close()
+        type_img=base64.b64encode(buf.getvalue()).decode()
 
     # Heatmap
     timestamp=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S GMT+8")
@@ -193,7 +214,8 @@ def dashboard():
     heatmap=m._repr_html_()
 
     # SecureNation Index
-    conn=sqlite3.connect(DB); c=conn.cursor(); rows=c.execute("SELECT risk_score FROM threats").fetchall(); conn.close()
+    conn=sqlite3.connect(DB); c=conn.cursor()
+    rows=c.execute("SELECT risk_score FROM threats").fetchall(); conn.close()
     gauge=round(sum([(r[0]*1.0 if r[0]>=70 else r[0]*0.5 if r[0]>=40 else r[0]*0.2) for r in rows])/ (len(rows)*100)*100,1) if rows else 0
 
     template = """
@@ -275,6 +297,8 @@ def export_json_route():
     return send_file(output,as_attachment=True,download_name="sundayring_threats.json",mimetype="application/json")
 
 # ---------------- START ----------------
-ensure_db(); insert_dummy_data(50); cleanup_old_records()
+ensure_db()
+insert_dummy_data(50)
+cleanup_old_records()
 if not os.getenv("RUN_MAIN"): threading.Thread(target=scheduler,daemon=True).start()
 if __name__=="__main__": app.run(host="0.0.0.0",port=PORT)
