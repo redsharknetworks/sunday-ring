@@ -8,8 +8,8 @@ import requests
 app = Flask(__name__)
 
 # --------- Config ---------
-OTX_API_KEY = os.environ.get("OTX_API_KEY")  # AlienVault OTX API
-ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY")  # AbuseIPDB API
+OTX_API_KEY = os.environ.get("OTX_KEY")  # AlienVault OTX API
+ABUSEIPDB_API_KEY = os.environ.get("ABUSEIP_KEY")  # AbuseIPDB API
 
 # For demo: Malaysian coordinates (lat/lng roughly for cities)
 MALAYSIA_COORDS = [
