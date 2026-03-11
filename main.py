@@ -18,10 +18,8 @@ from folium.plugins import HeatMap
 app = Flask(__name__)
 PORT = int(os.getenv("PORT",5000))
 DB = os.getenv("DB_PATH","/tmp/sundayring.db")
-OTX_KEY = os.getenv("OTX_KEY")
-ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY")
 SURICATA_FILE = os.getenv("SURICATA_FILE","/tmp/suricata/eve.json")
-TALOS_FEED = "https://talosintelligence.com/sb_api/query_lookup?ip="  # Simple IP lookup
+DUMMY_IPS = ["8.8.8.8","1.1.1.1","9.9.9.9"]
 
 # ---------------- MALAYSIA STATES ----------------
 MALAYSIA_STATES = {
@@ -50,16 +48,14 @@ def ensure_db():
         created_at TEXT
     )
     """)
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
 
 def cleanup_old_records():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     cutoff = (datetime.utcnow()-timedelta(days=60)).isoformat()
     c.execute("DELETE FROM threats WHERE created_at<?",(cutoff,))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
 
 def classify_risk(score):
     if score>=70: return "High"
@@ -67,8 +63,7 @@ def classify_risk(score):
     else: return "Low"
 
 def insert_dummy_data(n=50):
-    conn=sqlite3.connect(DB)
-    c=conn.cursor()
+    conn=sqlite3.connect(DB); c=conn.cursor()
     for i in range(n):
         created=datetime.utcnow().isoformat()
         score=random.randint(10,95)
@@ -78,30 +73,6 @@ def insert_dummy_data(n=50):
         (pulse,indicator,type,classification,mitre,risk_score,source,created_at)
         VALUES (?,?,?,?,?,?,?,?)""",
         (pulse,indicator,"domain",classify_risk(score),"Dummy",score,"Dummy",created))
-    conn.commit(); conn.close()
-
-# ---------------- OTX ----------------
-def fetch_otx_data():
-    if not OTX_KEY: insert_dummy_data(10); return
-    url="https://otx.alienvault.com/api/v2/indicators/pulses"
-    headers={"X-OTX-API-KEY":OTX_KEY}
-    try:
-        r=requests.get(url,headers=headers,timeout=15).json()
-        pulses=r.get("results",[])
-    except:
-        insert_dummy_data(10)
-        return
-    conn=sqlite3.connect(DB); c=conn.cursor()
-    for pulse in pulses[:20]:
-        name=pulse.get("name","OTX Pulse")
-        for ind in pulse.get("indicators",[]):
-            val=ind.get("indicator"); typ=ind.get("type","domain")
-            if not val: continue
-            score=random.randint(10,95)
-            c.execute("""INSERT OR IGNORE INTO threats
-            (pulse,indicator,type,classification,mitre,risk_score,source,created_at)
-            VALUES (?,?,?,?,?,?,?,?)""",
-            (name,val,typ,classify_risk(score),"OTX",score,"OTX",datetime.utcnow().isoformat()))
     conn.commit(); conn.close()
 
 # ---------------- SURICATA ----------------
@@ -126,29 +97,10 @@ def parse_suricata():
         except: continue
     conn.commit(); conn.close()
 
-# ---------------- ABUSEIPDB ----------------
-def fetch_abuseipdb_data():
-    if not ABUSEIPDB_KEY: return
-    conn=sqlite3.connect(DB); c=conn.cursor()
-    sample_ips=["8.8.8.8","1.1.1.1"]
-    headers={"Key":ABUSEIPDB_KEY,"Accept":"application/json"}
-    for ip in sample_ips:
-        try:
-            r=requests.get("https://api.abuseipdb.com/api/v2/check",
-                headers=headers,params={"ipAddress":ip,"maxAgeInDays":30},timeout=10).json()
-            confidence=r["data"]["abuseConfidenceScore"]
-            c.execute("""INSERT OR IGNORE INTO threats
-            (pulse,indicator,type,classification,mitre,risk_score,source,created_at)
-            VALUES (?,?,?,?,?,?,?,?)""",
-            (f"AbuseIPDB Lookup {ip}",ip,"ip",classify_risk(confidence),"AbuseIPDB",confidence,"AbuseIPDB",datetime.utcnow().isoformat()))
-        except: continue
-    conn.commit(); conn.close()
-
 # ---------------- TALOS ----------------
 def fetch_talos_lookup():
     conn=sqlite3.connect(DB); c=conn.cursor()
-    sample_ips=["8.8.8.8","1.1.1.1"]
-    for ip in sample_ips:
+    for ip in DUMMY_IPS:
         try:
             r=requests.get(f"https://talosintelligence.com/sb_api/query_lookup?ip={ip}",timeout=10).json()
             score=random.randint(10,95)
@@ -162,9 +114,8 @@ def fetch_talos_lookup():
 # ---------------- SCHEDULER ----------------
 def scheduler():
     while True:
-        fetch_otx_data()
+        insert_dummy_data(10)
         parse_suricata()
-        fetch_abuseipdb_data()
         fetch_talos_lookup()
         cleanup_old_records()
         time.sleep(3600)
@@ -172,7 +123,6 @@ def scheduler():
 # ---------------- DASHBOARD ----------------
 @app.route("/")
 def dashboard():
-    # Fetch database
     conn=sqlite3.connect(DB); conn.row_factory=sqlite3.Row; c=conn.cursor()
     table_data=c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
     top20=c.execute("SELECT indicator,count(*) cnt FROM threats GROUP BY indicator ORDER BY cnt DESC LIMIT 20").fetchall()
@@ -206,10 +156,10 @@ def dashboard():
         buf=io.BytesIO(); plt.savefig(buf,format="png",facecolor="#0b1b2a"); plt.close()
         type_img=base64.b64encode(buf.getvalue()).decode()
 
-    # Heatmap
+    # Heatmap (tanpa islands)
     timestamp=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S GMT+8")
-    m=folium.Map(location=[4.2105,101.9758],zoom_start=6,tiles="CartoDB dark_matter")
-    heat_data=[[v[0],v[1],random.randint(1,10)] for v in MALAYSIA_STATES.values()]
+    m=folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
+    heat_data=[[coords[0],coords[1],random.randint(1,10)] for state, coords in MALAYSIA_STATES.items()]
     HeatMap(heat_data,radius=25).add_to(m)
     heatmap=m._repr_html_()
 
@@ -225,7 +175,7 @@ def dashboard():
     <link href="https://fonts.googleapis.com/css?family=Roboto:400,700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css"/>
     <style>
-    body{margin:0;font-family:'Roboto',sans-serif;background:linear-gradient(135deg,#0b1b2a,#0d2a4a);color:#00bfff;}
+    body{margin:0;font-family:'Roboto',sans-serif;background:#0b1b2a;color:#00bfff;}
     h1,h3{color:#00bfff;}
     .card{background:#0d1b2a;padding:15px;margin:15px;border-radius:10px;box-shadow:0 0 15px #00bfff;}
     table{border-collapse:collapse;width:100%;word-wrap:break-word;color:#00bfff;}
@@ -277,9 +227,9 @@ def dashboard():
     return render_template_string(template,gauge=gauge,trend=trend_img,type_chart=type_img,
                                   heatmap=heatmap,heat_time=timestamp,table_data=table_data,top20=top20)
 
-# ---------------- EXPORT ROUTES ----------------
+# ---------------- EXPORT ----------------
 @app.route("/export/csv")
-def export_csv_route():
+def export_csv():
     conn=sqlite3.connect(DB); c=conn.cursor()
     threats=c.execute("SELECT * FROM threats").fetchall(); conn.close()
     si=io.StringIO(); cw=csv.writer(si)
@@ -289,7 +239,7 @@ def export_csv_route():
     return send_file(output,as_attachment=True,download_name="sundayring_threats.csv",mimetype="text/csv")
 
 @app.route("/export/json")
-def export_json_route():
+def export_json():
     conn=sqlite3.connect(DB); conn.row_factory=sqlite3.Row; c=conn.cursor()
     threats=c.execute("SELECT * FROM threats").fetchall(); conn.close()
     data=[dict(x) for x in threats]
