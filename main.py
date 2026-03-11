@@ -2,7 +2,7 @@ import os, io, csv, json, sqlite3, threading, time, random
 from datetime import datetime, timedelta
 import requests
 from flask import Flask, render_template_string, send_file
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT
@@ -23,7 +23,7 @@ SURICATA_FILE = os.getenv("SURICATA_FILE", "/tmp/suricata/eve.json")
 ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY")
 OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
 
-# ---------------- MALAYSIA ----------------
+# ---------------- MALAYSIA STATES ----------------
 MALAYSIA_STATES = {
     "Johor":[1.4927,103.7414],"Kedah":[6.1164,100.3678],"Kelantan":[6.1254,102.2381],
     "Melaka":[2.1896,102.2501],"Negeri Sembilan":[2.7290,101.9383],"Pahang":[3.8167,103.3333],
@@ -66,16 +66,18 @@ def classify_risk(score):
     elif score>=40: return "Medium"
     else: return "Low"
 
-def insert_dummy_data():
+def insert_dummy_data(n=50):
     conn=sqlite3.connect(DB)
     c=conn.cursor()
-    for i in range(20):
+    for i in range(n):
         created=datetime.utcnow().isoformat()
         score=random.randint(10,95)
+        pulse=f"Dummy Pulse {i+1}"
+        indicator=f"malicious{i+1}.com"
         c.execute("""INSERT OR IGNORE INTO threats 
         (pulse,indicator,type,classification,mitre,risk_score,source,created_at)
         VALUES (?,?,?,?,?,?,?,?)""",
-        (f"Dummy Pulse {i+1}",f"malicious{i+1}.com","domain",classify_risk(score),"OTX",score,"Dummy",created))
+        (pulse,indicator,"domain",classify_risk(score),"Dummy",score,"Dummy",created))
     conn.commit(); conn.close()
 
 # ---------------- OTX ----------------
@@ -152,8 +154,7 @@ def scheduler():
 # ---------------- DASHBOARD ----------------
 @app.route("/")
 def dashboard():
-    from matplotlib import pyplot as plt
-    # Charts, heatmap, secure index
+    # Charts
     trend_img,type_img=None,None
     conn=sqlite3.connect(DB); conn.row_factory=sqlite3.Row; c=conn.cursor()
     trend_rows=c.execute("SELECT substr(created_at,1,10) date,COUNT(*) cnt FROM threats GROUP BY date ORDER BY date").fetchall()
@@ -169,11 +170,14 @@ def dashboard():
         for i in range(6,-1,-1):
             x=(today-timedelta(days=i)).strftime("%Y-%m-%d")
             dates.append(x); counts.append(d.get(x,0))
-        plt.figure(figsize=(6,3)); plt.plot(dates,counts,marker="o",color="#00ff90"); plt.xticks(rotation=45); plt.tight_layout()
+        plt.figure(figsize=(6,3)); plt.plot(dates,counts,marker="o",color="#00ff90",linewidth=2); plt.fill_between(dates,counts,color="#00ff9044")
+        plt.xticks(rotation=45); plt.grid(color="#111111"); plt.tight_layout()
         buf=io.BytesIO(); plt.savefig(buf,format="png",facecolor="#0b0f17"); plt.close(); trend_img=base64.b64encode(buf.getvalue()).decode()
+    
+    # Type chart
     if type_rows:
         labels=[r["type"] for r in type_rows]; values=[r["cnt"] for r in type_rows]
-        plt.figure(figsize=(6,4)); plt.bar(labels,values,color="#00ff90"); plt.xticks(rotation=30); plt.tight_layout()
+        plt.figure(figsize=(6,4)); plt.bar(labels,values,color="#00ff90",edgecolor="#00ff90"); plt.xticks(rotation=30); plt.grid(axis="y",color="#111111")
         buf=io.BytesIO(); plt.savefig(buf,format="png",facecolor="#0b0f17"); plt.close(); type_img=base64.b64encode(buf.getvalue()).decode()
 
     # Heatmap
@@ -187,37 +191,57 @@ def dashboard():
     conn=sqlite3.connect(DB); c=conn.cursor(); rows=c.execute("SELECT risk_score FROM threats").fetchall(); conn.close()
     gauge=round(sum([(r[0]*1.0 if r[0]>=70 else r[0]*0.5 if r[0]>=40 else r[0]*0.2) for r in rows])/ (len(rows)*100)*100,1) if rows else 0
 
-    template = """<html>
-    <head><title>Sunday-Ring Dashboard</title>
+    template = """
+    <html>
+    <head>
+    <title>Sunday-Ring Dashboard</title>
+    <link href="https://fonts.googleapis.com/css?family=Roboto:400,700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css"/>
     <style>
-    body{background:#0b0f17;color:#00fff0;font-family:sans-serif;}
-    table{border-collapse:collapse;width:100%;word-wrap:break-word;}
-    th,td{padding:8px;text-align:left;}
-    th{background:#101728;color:#00fff0;}
+    body{margin:0;font-family:'Roboto',sans-serif;background:linear-gradient(135deg,#0b0f17,#101728);color:#00fff0;}
+    h1,h3{color:#00ff90;}
+    .card{background:#101728;padding:15px;margin:15px;border-radius:10px;box-shadow:0 0 15px #00ff90;}
+    table{border-collapse:collapse;width:100%;word-wrap:break-word;color:#00fff0;}
+    th{background:#0d1b2a;color:#00ff90;padding:8px;}
+    td{padding:8px;}
     tr:nth-child(even){background:#101728;}
     tr:nth-child(odd){background:#0b0f17;}
     a.button{background:#00ff90;color:#0b0f17;padding:6px 12px;text-decoration:none;border-radius:4px;}
-    </style></head>
+    </style>
+    </head>
     <body>
     <h1>Sunday-Ring Dashboard</h1>
-    <p>Disclaimer: Developed and analysed by <b>darkgrid@redshark.my</b> from publicly available sources.</p>
+    <p class="card">Disclaimer: Developed and analysed by <b>darkgrid@redshark.my</b> from publicly available sources.</p>
+    <div class="card">
     <h3>SecureNation Index</h3>
     <div style="width:300px;background:#101728;height:25px;border-radius:5px;">
       <div style="width:{{gauge}}%;background:#00ff90;height:25px;text-align:center;color:#0b0f17;font-weight:bold;">{{gauge}}/100</div>
     </div>
+    </div>
+    <div class="card">
     <h3>Malaysia Heatmap (Last Update: {{heat_time}})</h3>{{heatmap|safe}}
-    <h3>Trend</h3>{% if trend %}<img src="data:image/png;base64,{{trend}}">{% else %}<p>No data</p>{% endif %}
-    <h3>Indicator Types</h3>{% if type_chart %}<img src="data:image/png;base64,{{type_chart}}">{% else %}<p>No data</p>{% endif %}
+    </div>
+    <div class="card">
+    <h3>Trend (Last 7 Days)</h3>{% if trend %}<img src="data:image/png;base64,{{trend}}">{% endif %}
+    </div>
+    <div class="card">
+    <h3>Indicator Types</h3>{% if type_chart %}<img src="data:image/png;base64,{{type_chart}}">{% endif %}
+    </div>
+    <div class="card">
     <h3>Latest Indicators</h3><table id="indicators"><thead>
     <tr><th>ID</th><th>Pulse</th><th>Indicator</th><th>Type</th><th>Class</th><th>Risk</th><th>Source</th><th>Created</th></tr>
     </thead><tbody>{% for row in table_data %}
     <tr><td>{{row['id']}}</td><td>{{row['pulse']}}</td><td>{{row['indicator']}}</td><td>{{row['type']}}</td>
     <td>{{row['classification']}}</td><td>{{row['risk_score']}}</td><td>{{row['source']}}</td><td>{{row['created_at']}}</td></tr>{% endfor %}
     </tbody></table>
+    </div>
+    <div class="card">
     <h3>Top 20 Indicators</h3><ul>{% for t in top20 %}<li>{{t[0]}} ({{t[1]}})</li>{% endfor %}</ul>
+    </div>
+    <div class="card">
     <h3>Download Reports</h3>
     <a class="button" href="/export/csv">CSV</a> <a class="button" href="/export/json">JSON</a>
+    </div>
     <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
     <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
     <script>$(document).ready(function(){$('#indicators').DataTable({"pageLength":50,"scrollX":true});});</script>
