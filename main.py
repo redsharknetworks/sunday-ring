@@ -29,7 +29,7 @@ from folium.plugins import HeatMap
 app = Flask(__name__)
 DB = os.getenv("DB_PATH", "/tmp/threats.db")
 OTX_KEY = os.getenv("OTX_KEY")
-OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
+OTX_URL = "https://otx.alienvault.com/api/v1/indicators/export"
 
 # ---------------- DATABASE ----------------
 def ensure_database():
