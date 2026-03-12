@@ -2,11 +2,9 @@ import os
 import io
 import csv
 import sqlite3
-import threading
 import random
 from datetime import datetime, timedelta
 from flask import Flask, render_template_string, send_file, jsonify
-import folium
 import plotly
 import plotly.graph_objs as go
 import json
@@ -15,7 +13,6 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
-# ---------------- CONFIG ----------------
 app = Flask(__name__)
 DB_PATH = os.getenv("DB_PATH", "/tmp/threats.db")
 
@@ -70,7 +67,7 @@ def classify_risk(score):
     elif score >= 40: return "High"
     else: return "Medium"
 
-def insert_dummy_data(n=3):
+def insert_dummy_data(n=10):
     conn = get_db_connection()
     c = conn.cursor()
     for _ in range(n):
@@ -78,6 +75,7 @@ def insert_dummy_data(n=3):
         score = random.randint(10,95)
         classification = classify_risk(score)
         mitre = random.choice(MITRE_ATTACKS)
+        state = random.choice(list(MALAYSIA_STATES.keys()))
         c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, created_at)
                      VALUES (?, ?, ?, ?, ?, ?, ?)""",
                   (f"Pulse-{random.randint(1,50)}",
@@ -89,14 +87,6 @@ def insert_dummy_data(n=3):
                    created))
     conn.commit()
     conn.close()
-
-# ---------------- SCHEDULER ----------------
-def scheduler():
-    while True:
-        insert_dummy_data(3)
-        cleanup_old_records()
-        # run every 30 min
-        threading.Event().wait(1800)
 
 # ---------------- DASHBOARD DATA ----------------
 def fetch_dashboard_data(limit=50):
@@ -140,24 +130,36 @@ def generate_plotly_charts():
     values = list(mitre_counts.values())
     pie_chart = go.Figure()
     pie_chart.add_trace(go.Pie(labels=labels, values=values, hole=0.4,
-                               marker=dict(colors=[f'rgba(0,255,255,{0.7+0.3*random.random()})' for _ in labels])))
+                               marker=dict(colors=[f'rgba(0,255,255,{0.6+0.3*random.random()})' for _ in labels])))
     pie_chart.update_layout(title="MITRE Attack Distribution", plot_bgcolor='#0b1b2a', paper_bgcolor='#0b1b2a', font_color='#00FFFF')
 
-    return json.dumps(timeline_chart, cls=plotly.utils.PlotlyJSONEncoder), json.dumps(pie_chart, cls=plotly.utils.PlotlyJSONEncoder)
-
-def generate_heatmap():
-    rows = [r for r in fetch_dashboard_data(50) if r["risk_score"]>=70][:10]  # only top 10 critical
-    m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles='CartoDB dark_matter')
-    for r in rows:
+    # Malaysia heatmap using scatter
+    critical_rows = [r for r in rows if r["risk_score"]>=70][:10]
+    heat_x = []
+    heat_y = []
+    heat_text = []
+    for r in critical_rows:
         state = random.choice(list(MALAYSIA_STATES.keys()))
         coords = MALAYSIA_STATES[state]
-        folium.CircleMarker(location=coords,
-                            radius=6,
-                            color='red',
-                            fill=True,
-                            fill_opacity=0.8,
-                            popup=f"{r['indicator']} - {r['classification']}").add_to(m)
-    return m._repr_html_()
+        heat_x.append(coords[1])  # longitude
+        heat_y.append(coords[0])  # latitude
+        heat_text.append(f"{r['indicator']} ({r['classification']})")
+    heatmap_chart = go.Figure()
+    heatmap_chart.add_trace(go.Scattergeo(
+        lon=heat_x,
+        lat=heat_y,
+        text=heat_text,
+        mode='markers',
+        marker=dict(size=10, color='red', opacity=0.8, line=dict(width=1, color='white'))
+    ))
+    heatmap_chart.update_layout(
+        geo=dict(scope='asia', center=dict(lat=4.2105, lon=101.9758), projection_type='natural earth', showcountries=True),
+        title="Malaysia Critical Threats", plot_bgcolor='#0b1b2a', paper_bgcolor='#0b1b2a', font_color='#00FFFF'
+    )
+
+    return json.dumps(timeline_chart, cls=plotly.utils.PlotlyJSONEncoder), \
+           json.dumps(pie_chart, cls=plotly.utils.PlotlyJSONEncoder), \
+           json.dumps(heatmap_chart, cls=plotly.utils.PlotlyJSONEncoder)
 
 # ---------------- PDF ----------------
 def generate_pdf(rows):
@@ -168,7 +170,7 @@ def generate_pdf(rows):
     elements.append(Paragraph("RedShark Threat Intelligence Dashboard", styles['Heading1']))
     elements.append(Spacer(1,12))
     table_data = [["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"]]
-    for r in rows:
+    for r in rows[:30]:  # limit to 30 rows
         table_data.append([r["id"], r["pulse"], r["indicator"], r["type"], r["classification"], r["mitre"], r["risk_score"], r["created_at"]])
     table = Table(table_data, repeatRows=1)
     table.setStyle(TableStyle([
@@ -213,8 +215,8 @@ a.button {background:#00FFFF;color:#0b1b2a;padding:6px 12px;text-decoration:none
 </div>
 
 <div class="card">
-<h3>Malaysia Heatmap</h3>
-{{ heatmap | safe }}
+<h3>Malaysia Critical Threats</h3>
+<div id="heatmap_chart"></div>
 </div>
 
 <div class="card">
@@ -255,6 +257,7 @@ $(document).ready(function() {
     $('#indicators').DataTable({pageLength:50});
     Plotly.newPlot('timeline_chart', {{ timeline | safe }}.data, {{ timeline | safe }}.layout);
     Plotly.newPlot('pie_chart', {{ pie | safe }}.data, {{ pie | safe }}.layout);
+    Plotly.newPlot('heatmap_chart', {{ heatmap | safe }}.data, {{ heatmap | safe }}.layout);
 });
 </script>
 </body>
@@ -266,14 +269,13 @@ $(document).ready(function() {
 def dashboard():
     table_data = fetch_dashboard_data()
     gauge = calculate_secure_index()
-    heatmap = generate_heatmap()
-    timeline, pie = generate_plotly_charts()
+    timeline, pie, heatmap = generate_plotly_charts()
     return render_template_string(TEMPLATE,
                                   table_data=table_data,
                                   gauge=gauge,
-                                  heatmap=heatmap,
                                   timeline=timeline,
-                                  pie=pie)
+                                  pie=pie,
+                                  heatmap=heatmap)
 
 @app.route("/download/csv")
 def download_csv():
@@ -297,13 +299,12 @@ def download_json():
 
 @app.route("/download/pdf")
 def download_pdf():
-    rows = fetch_dashboard_data(50)
+    rows = fetch_dashboard_data(30)  # limit to 30 rows
     buffer = generate_pdf(rows)
     return send_file(buffer, mimetype="application/pdf", download_name="threats.pdf", as_attachment=True)
 
 # ---------------- START ----------------
 if __name__=="__main__":
     ensure_database()
-    insert_dummy_data(5)
-    threading.Thread(target=scheduler, daemon=True).start()
+    insert_dummy_data(10)
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
