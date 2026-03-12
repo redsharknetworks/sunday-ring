@@ -10,9 +10,8 @@ from datetime import datetime
 from flask import Flask, render_template_string, send_file
 import plotly.graph_objs as go
 import plotly
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table
+from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import landscape, A4
-from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
 
@@ -152,15 +151,16 @@ def securenation():
 def malaysia_map():
     rows = db().execute("SELECT lat,lon,severity FROM threats").fetchall()
     lat, lon, sev = [r["lat"] for r in rows], [r["lon"] for r in rows], [r["severity"] for r in rows]
-    colors = []
+    colors, sizes = [], []
     for s in sev:
-        if s>=85: colors.append("red")
-        elif s>=70: colors.append("orange")
-        else: colors.append("yellow")
+        if s>=85: colors.append("red"); sizes.append(18)
+        elif s>=70: colors.append("orange"); sizes.append(12)
+        else: colors.append("yellow"); sizes.append(10)
+    # Pulsing animation: sizes alternate
     fig = go.Figure()
     fig.add_trace(go.Scattermapbox(
         lat=lat, lon=lon, mode="markers",
-        marker=dict(size=14,color=colors,opacity=0.8),
+        marker=dict(size=sizes, color=colors, opacity=0.8),
         text=[f"Severity: {s}" for s in sev],
         hoverinfo="text"
     ))
@@ -169,7 +169,8 @@ def malaysia_map():
         mapbox_center={"lat":4.5,"lon":102},
         mapbox_zoom=4,
         paper_bgcolor="#0b1b2a",
-        margin=dict(l=0,r=0,t=0,b=0)
+        margin=dict(l=0,r=0,t=0,b=0),
+        mapbox=dict(accesstoken=None)
     )
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
@@ -218,9 +219,171 @@ def mitre_chart():
                       xaxis=dict(showgrid=False), yaxis=dict(showgrid=False))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- DASHBOARD HTML, EXPORTS, ROUTES ----------------
-# (Keep same as v3.8.1, including PDF, CSV, JSON export)
-# Include /download_ips for RULE_FILE download
+# ---------------- DASHBOARD HTML ----------------
+HTML = """<html>
+<head>
+<title>RedShark Threat Intelligence Dashboard</title>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.4/css/jquery.dataTables.min.css">
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
+<style>
+body{background:#0b1b2a;color:#A3B8CC;font-family:Arial;}
+.card{background:#13263b;padding:20px;margin:15px;border-radius:8px;}
+table{width:100%;border-collapse:collapse;}
+td,th{padding:8px;border-bottom:1px solid #1f3d5c;text-align:center;}
+a.download-link{color:#DC143C;font-weight:bold;text-decoration:none;}
+.center{text-align:center;}
+.blink {animation: blink-animation 1s infinite;}
+@keyframes blink-animation {0% {opacity:1;}50% {opacity:0;}100% {opacity:1;}}
+</style>
+</head>
+<body>
+<h2>RedShark Threat Intelligence Dashboard</h2>
+
+<div class="card">
+SecureNation Index: <b>{{index}}</b>
+</div>
+
+<div class="card">
+<h3>Malaysia Cyber Attack Map</h3>
+<div id="map" style="height:400px;"></div>
+</div>
+
+<div class="card">
+<h3>Threat Timeline</h3>
+<div id="timeline" style="height:300px;"></div>
+</div>
+
+<div class="card">
+<h3>MITRE ATT&CK Techniques</h3>
+<div id="mitre" style="height:300px;"></div>
+</div>
+
+<div class="card">
+<h3>Sector Targeting</h3>
+<div id="sector" style="height:300px;"></div>
+</div>
+
+<div class="card">
+<h3>Indicator Type Distribution</h3>
+<div id="indicator_type" style="height:300px;"></div>
+</div>
+
+<div class="card">
+<h3>Latest Threat Indicators</h3>
+<table id="threat_table">
+<thead>
+<tr><th>ID</th><th>Indicator</th><th>Type</th><th>Sector</th><th>Severity</th></tr>
+</thead>
+<tbody>
+{% for r in rows %}
+<tr class="{{'blink' if r.severity>=85 else ''}}">
+<td>{{r.id}}</td>
+<td>{{r.indicator}}</td>
+<td>{{r.type}}</td>
+<td>{{r.sector}}</td>
+<td>{{r.severity}}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+
+<div class="card center">
+<a class="download-link" href="/csv">Download CSV</a> |
+<a class="download-link" href="/json">Download JSON</a> |
+<a class="download-link" href="/pdf">Download PDF</a> |
+<a class="download-link" href="/download_ips">Download IPS Signatures</a>
+</div>
+
+<p class="center" style="opacity:0.6;">
+Developed and analyzed by darkgrid@redshark.my using publicly available threat intelligence sources
+</p>
+
+<script>
+var timeline={{timeline|safe}};
+var mitre={{mitre|safe}};
+var sector={{sector|safe}};
+var indicator_type={{indicator_type|safe}};
+var map={{map|safe}};
+Plotly.newPlot("timeline",timeline.data,timeline.layout);
+Plotly.newPlot("mitre",mitre.data,mitre.layout);
+Plotly.newPlot("sector",sector.data,sector.layout);
+Plotly.newPlot("indicator_type",indicator_type.data,indicator_type.layout);
+
+// Animate pulsing for critical red markers
+var mapData = map.data[0];
+var sizes = mapData.marker.size;
+var growing = true;
+setInterval(function(){
+    for(var i=0;i<sizes.length;i++){
+        if(mapData.marker.color[i]=="red"){
+            sizes[i] = growing ? 25 : 18;
+        }
+    }
+    mapData.marker.size = sizes;
+    Plotly.redraw("map");
+    growing = !growing;
+}, 800);
+
+$(document).ready(function(){ $('#threat_table').DataTable(); });
+</script>
+</body>
+</html>
+"""
+
+@app.route("/")
+def dashboard():
+    rows=db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall()
+    return render_template_string(
+        HTML,
+        rows=rows,
+        index=securenation(),
+        timeline=timeline_chart(),
+        mitre=mitre_chart(),
+        sector=sector_chart(),
+        indicator_type=indicator_type_chart(),
+        map=malaysia_map()
+    )
+
+# ---------------- EXPORT ----------------
+@app.route("/csv")
+def csv_export():
+    rows=db().execute("SELECT * FROM threats").fetchall()
+    out=io.StringIO()
+    writer=csv.writer(out)
+    writer.writerow(rows[0].keys())
+    for r in rows:
+        writer.writerow(list(r))
+    mem=io.BytesIO(); mem.write(out.getvalue().encode()); mem.seek(0)
+    return send_file(mem,download_name="threats.csv",as_attachment=True)
+
+@app.route("/json")
+def json_export():
+    rows=db().execute("SELECT * FROM threats").fetchall()
+    data=[dict(r) for r in rows]
+    mem=io.BytesIO(); mem.write(json.dumps(data,indent=2).encode()); mem.seek(0)
+    return send_file(mem,download_name="threats.json",as_attachment=True)
+
+@app.route("/pdf")
+def pdf_export():
+    rows=db().execute("SELECT indicator,type,sector,severity,created FROM threats LIMIT 50").fetchall()
+    buffer=io.BytesIO()
+    data=[["Indicator","Type","Sector","Severity","Timestamp"]]
+    for r in rows:
+        data.append([r["indicator"],r["type"],r["sector"],r["severity"],r["created"]])
+    pdf=SimpleDocTemplate(buffer,pagesize=landscape(A4))
+    table=Table(data)
+    pdf.build([table])
+    buffer.seek(0)
+    return send_file(buffer,download_name="redshark-cti-report.pdf",as_attachment=True)
+
+@app.route("/download_ips")
+def download_ips():
+    if not os.path.exists(RULE_FILE):
+        open(RULE_FILE,"w").close()
+    return send_file(RULE_FILE, download_name="redshark-ips-signatures.rules", as_attachment=True)
 
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
