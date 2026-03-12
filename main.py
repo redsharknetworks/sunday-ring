@@ -146,18 +146,18 @@ def timeline_chart():
 
 def mitre_chart():
     rows=db().execute("SELECT mitre,count(*) c FROM threats GROUP BY mitre").fetchall()
-    labels=mitre_techniques
-    values=[next((r["c"] for r in rows if r["mitre"]==t),0) for t in mitre_techniques]
+    labels = [r["mitre"] for r in rows]
+    values = [r["c"] for r in rows]
     fig=go.Figure(data=[go.Pie(labels=labels,values=values,hole=.4)])
     fig.update_layout(plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff')
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def sector_chart():
     rows=db().execute("SELECT sector,count(*) c FROM threats GROUP BY sector").fetchall()
-    labels=[r["sector"] for r in rows]
-    values=[r["c"] for r in rows]
+    labels=[r["sector"] for r in rows if r["c"]>0]
+    values=[r["c"] for r in rows if r["c"]>0]
     fig=go.Figure(data=[go.Bar(x=labels,y=values,
-        marker=dict(color='#0f3460',line=dict(color='white',width=1)),
+        marker=dict(color='#8B0000',line=dict(color='white',width=1)),
         text=values,textposition='auto')])
     fig.update_layout(plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff')
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
@@ -169,23 +169,13 @@ def malaysia_map():
         lat.append(r["lat"])
         lon.append(r["lon"])
         text_hover.append(f"Indicator: {r['indicator']}<br>Sector: {r['sector']}<br>Severity: {r['severity']}")
-        if r["severity"] >= 85: colors.append("red"); sizes.append(14)
-        elif r["severity"] >= 70: colors.append("orange"); sizes.append(10)
+        if r["severity"] >= 85: colors.append("red"); sizes.append(16)
+        elif r["severity"] >= 70: colors.append("orange"); sizes.append(12)
         else: colors.append("yellow"); sizes.append(8)
-
-    # Lines from random external attacker to threat location
-    lats_lines, lons_lines = [], []
-    for r in rows:
-        attacker_lat, attacker_lon = random.uniform(0,10), random.uniform(90,120)
-        lats_lines += [attacker_lat, r["lat"], None]
-        lons_lines += [attacker_lon, r["lon"], None]
-
     fig=go.Figure(
         data=[go.Scattergeo(lat=lat, lon=lon, mode="markers",
-                             marker=dict(size=sizes,color=colors,opacity=0.9,line=dict(width=2,color='white')),
-                             text=text_hover, hoverinfo="text", name="Threats"),
-              go.Scattergeo(lat=lats_lines, lon=lons_lines, mode='lines',
-                             line=dict(width=2,color='red'), opacity=0.5, name="Attack Path")]
+                             marker=dict(size=sizes,color=colors,opacity=0.8,line=dict(width=2,color='white')),
+                             text=text_hover, hoverinfo="text", name="Threats")]
     )
     fig.update_layout(
         geo=dict(scope="asia",center=dict(lat=4.5,lon=102),projection_type="natural earth"),
@@ -194,10 +184,10 @@ def malaysia_map():
     )
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- HTML ----------------
+# ---------------- DASHBOARD HTML ----------------
 HTML = """<html>
 <head>
-<title>RedShark Threat Intelligence Dashboard </title>
+<title>RedShark CTI Dashboard v2.8.3</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0b1b2a;color:#00eaff;font-family:Arial;}
@@ -208,7 +198,7 @@ th{cursor:pointer;}
 </style>
 </head>
 <body>
-<h2>RedShark CTI Dashboard v2.8.1</h2>
+<h2>RedShark CTI Dashboard v2.8.3</h2>
 <div class="card">
 {% set color = "green" %}
 {% if index >= 85 %}{% set color = "red" %}{% elif index >= 70 %}{% set color="orange" %}{% endif %}
@@ -220,7 +210,8 @@ SecureNation Index: <b style="color:{{color}}">{{index}}</b>
 <div class="card"><h3>Sector Targeting</h3><div id="sector"></div></div>
 <div class="card"><h3>Latest Threat Indicators</h3>
 <table id="threats">
-<tr><th>ID</th><th>Indicator</th><th>Type</th><th>Sector</th><th>Severity</th></tr>
+<tr><th onclick="sortTable(0)">ID</th><th onclick="sortTable(1)">Indicator</th><th onclick="sortTable(2)">Type</th>
+<th onclick="sortTable(3)">Sector</th><th onclick="sortTable(4)">Severity</th></tr>
 {% for r in rows %}
 <tr><td>{{r.id}}</td><td>{{r.indicator}}</td><td>{{r.type}}</td><td>{{r.sector}}</td><td>{{r.severity}}</td></tr>
 {% endfor %}
@@ -240,8 +231,28 @@ Plotly.newPlot("timeline",timeline.data,timeline.layout)
 Plotly.newPlot("mitre",mitre.data,mitre.layout)
 Plotly.newPlot("sector",sector.data,sector.layout)
 Plotly.newPlot("map",map.data,map.layout)
+
+// ---------------- SORT TABLE ----------------
+function sortTable(n){
+  var table=document.getElementById("threats"),rows,i,x,y,shouldSwitch,dir,switchcount=0;
+  shouldSwitch=true;dir="asc";
+  while(shouldSwitch){
+    shouldSwitch=false;
+    var tr=table.rows;
+    for(i=1;i<tr.length-1;i++){
+      var a=tr[i].getElementsByTagName("TD")[n].innerText.toLowerCase();
+      var b=tr[i+1].getElementsByTagName("TD")[n].innerText.toLowerCase();
+      if((dir=="asc" && a>b) || (dir=="desc" && a<b)){
+        tr[i].parentNode.insertBefore(tr[i+1],tr[i]);
+        shouldSwitch=true;
+        switchcount++;
+      }
+    }
+    if(switchcount==0 && dir=="asc"){dir="desc";shouldSwitch=true;}
+  }
+}
 </script>
-<p style="opacity:0.6;text-align:center">Developed and analyzed by darkgrid@redshark.my using public CTI sources</p>
+<p style="opacity:0.6;text-align:center">Developed by darkgrid@redshark.my using public CTI sources</p>
 </body></html>
 """
 
