@@ -228,10 +228,11 @@ body{background:#0b1b2a;color:#A3B8CC;font-family:Arial;}
 .card{background:#13263b;padding:20px;margin:15px;border-radius:8px;}
 table{width:100%;border-collapse:collapse;}
 td,th{padding:8px;border-bottom:1px solid #1f3d5c;text-align:center;}
-a.download-link{color:#FFA500;font-weight:bold;text-decoration:none;}
-.center{text-align:center;}
 .progress-container {width: 100%; background-color: #1f3d5c; border-radius: 8px; height: 25px; margin-top: 5px;}
 .progress-bar {height: 25px; border-radius: 8px; text-align: center; color: #fff; font-weight: bold; line-height: 25px;}
+.download-btn {background-color:#1f2f45;color:#A3B8CC;font-weight:bold;border:none;padding:10px 20px;margin:5px;border-radius:6px;cursor:pointer;transition: background 0.3s;}
+.download-btn:hover {background-color:#3a4a5c;}
+.center{text-align:center;}
 </style>
 </head>
 <body>
@@ -292,10 +293,11 @@ a.download-link{color:#FFA500;font-weight:bold;text-decoration:none;}
 </div>
 
 <div class="card center">
-<a class="download-link" href="/csv">Download CSV</a> |
-<a class="download-link" href="/json">Download JSON</a> |
-<a class="download-link" href="/pdf">Download PDF</a> |
-<a class="download-link" href="/download_ips">Download IPS Signatures</a>
+<h3>Download RedShark CTI Report</h3>
+<button class="download-btn" onclick="location.href='/csv'">CSV</button>
+<button class="download-btn" onclick="location.href='/json'">JSON</button>
+<button class="download-btn" onclick="location.href='/pdf'">PDF</button>
+<button class="download-btn" onclick="location.href='/download_ips'">IPS Rules</button>
 </div>
 
 <p class="center" style="opacity:0.6;">
