@@ -5,7 +5,6 @@ import sqlite3
 import threading
 import time
 import random
-import base64
 from datetime import datetime, timedelta
 
 from flask import Flask, render_template_string, send_file
@@ -15,11 +14,6 @@ from folium.plugins import HeatMap
 import plotly
 import plotly.graph_objs as go
 import json
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_LEFT
-from reportlab.lib import colors
 
 # ---------------- CONFIG ----------------
 app = Flask(__name__)
@@ -29,22 +23,36 @@ ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY")
 OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
 ABUSEIPDB_URL = "https://api.abuseipdb.com/api/v2/check"
 
+# Malaysian states coordinates
+MALAYSIA_STATES = {
+    "Johor":[1.4927,103.7414],"Kedah":[6.1164,100.3678],"Kelantan":[6.1254,102.2381],
+    "Melaka":[2.1896,102.2501],"Negeri Sembilan":[2.7290,101.9383],"Pahang":[3.8167,103.3333],
+    "Perak":[4.5929,101.0900],"Perlis":[6.4400,100.2000],"Penang":[5.4164,100.3327],
+    "Sabah":[5.9804,116.0735],"Sarawak":[1.5533,110.3592],"Selangor":[3.1390,101.6869],
+    "Terengganu":[5.3300,103.1400],"Kuala Lumpur":[3.1390,101.6869],"Putrajaya":[2.9264,101.6981],
+    "Labuan":[5.2833,115.2333]
+}
+
+ASSETS = ["Server-1","Server-2","Laptop-1","Firewall-1","DB-Prod"]
+EVENT_TYPES = ["Malware","Suspicious Login","Phishing","Port Scan","Data Exfiltration"]
+
 # ---------------- DATABASE ----------------
 def ensure_database():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     c.execute("""
-    CREATE TABLE IF NOT EXISTS threats (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        pulse TEXT,
-        indicator TEXT,
-        type TEXT,
-        classification TEXT,
-        mitre TEXT,
-        risk_score INTEGER,
-        source TEXT,
-        created_at TEXT
-    )
+        CREATE TABLE IF NOT EXISTS threats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pulse TEXT,
+            indicator TEXT,
+            type TEXT,
+            classification TEXT,
+            mitre TEXT,
+            risk_score INTEGER,
+            source TEXT,
+            state TEXT,
+            created_at TEXT
+        )
     """)
     conn.commit()
     conn.close()
@@ -57,55 +65,30 @@ def cleanup_old_records():
     conn.commit()
     conn.close()
 
-# ---------------- DATA SOURCES ----------------
 def classify_risk(score):
     if score >= 70: return "High"
     elif score >= 40: return "Medium"
     else: return "Low"
 
-def insert_dummy_data():
+# ---------------- DATA INGESTION ----------------
+def insert_dummy_data(n=3):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    for i in range(3):
-        created = datetime.utcnow().isoformat()
+    for _ in range(n):
         score = random.randint(10,95)
         classification = classify_risk(score)
-        c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                  (f"Dummy Pulse {i+1}", f"malicious{i+1}.com", "domain", classification, "OTX", score, "dummy", created))
-    conn.commit()
-    conn.close()
-
-def fetch_talos_lookup():
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    for i in range(3):
+        state = random.choice(list(MALAYSIA_STATES.keys()))
         created = datetime.utcnow().isoformat()
-        score = random.randint(40,90)
-        classification = classify_risk(score)
-        c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                  (f"Talos Pulse {i+1}", f"badip{i+1}.talos.com", "ip", classification, "Talos", score, "talos", created))
-    conn.commit()
-    conn.close()
-
-def parse_suricata_logs():
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    for i in range(3):
-        created = datetime.utcnow().isoformat()
-        score = random.randint(50,95)
-        classification = classify_risk(score)
-        c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                  (f"Suricata Alert {i+1}", f"malicious{i+1}.suricata", "domain", classification, "Suricata", score, "suricata", created))
+        c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, state, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (f"Dummy Pulse", f"malicious{random.randint(1,100)}.com", "domain", classification, "OTX", score, "dummy", state, created))
     conn.commit()
     conn.close()
 
 def fetch_otx_data():
     if not OTX_KEY: return
-    headers = {"X-OTX-API-KEY": OTX_KEY}
     try:
+        headers = {"X-OTX-API-KEY": OTX_KEY}
         r = requests.get(OTX_URL, headers=headers, timeout=15)
         r.raise_for_status()
         pulses = r.json().get("results", [])
@@ -119,10 +102,11 @@ def fetch_otx_data():
                 if val:
                     score = random.randint(40,95)
                     classification = classify_risk(score)
+                    state = random.choice(list(MALAYSIA_STATES.keys()))
                     created = datetime.utcnow().isoformat()
-                    c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, created_at)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                              (name, val, typ, classification, "OTX", score, "otx", created))
+                    c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, state, created_at)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                              (name, val, typ, classification, "OTX", score, "otx", state, created))
         conn.commit()
         conn.close()
     except:
@@ -130,20 +114,21 @@ def fetch_otx_data():
 
 def fetch_abuseipdb(ip="8.8.8.8"):
     if not ABUSEIPDB_KEY: return
-    headers = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
-    params = {"ipAddress": ip, "maxAgeInDays": 90}
     try:
+        headers = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
+        params = {"ipAddress": ip, "maxAgeInDays": 90}
         r = requests.get(ABUSEIPDB_URL, headers=headers, params=params, timeout=10)
         r.raise_for_status()
-        data = r.json()
-        score = data.get("data", {}).get("abuseConfidenceScore", 0)
+        data = r.json().get("data",{})
+        score = data.get("abuseConfidenceScore",0)
         classification = classify_risk(score)
+        state = random.choice(list(MALAYSIA_STATES.keys()))
+        created = datetime.utcnow().isoformat()
         conn = sqlite3.connect(DB)
         c = conn.cursor()
-        created = datetime.utcnow().isoformat()
-        c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                  ("AbuseIPDB", ip, "ip", classification, "AbuseIPDB", score, "abuseipdb", created))
+        c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, state, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  ("AbuseIPDB", ip, "ip", classification, "AbuseIPDB", score, "abuseipdb", state, created))
         conn.commit()
         conn.close()
     except:
@@ -153,14 +138,12 @@ def fetch_abuseipdb(ip="8.8.8.8"):
 def scheduler():
     while True:
         insert_dummy_data()
-        fetch_talos_lookup()
-        parse_suricata_logs()
         fetch_otx_data()
         fetch_abuseipdb()
         cleanup_old_records()
         time.sleep(3600)
 
-# ---------------- CHARTS ----------------
+# ---------------- DASHBOARD CHARTS ----------------
 def generate_plotly_charts():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -169,53 +152,47 @@ def generate_plotly_charts():
     type_rows = c.execute("SELECT type, COUNT(*) cnt FROM threats GROUP BY type").fetchall()
     conn.close()
 
-    # Threat trend chart
     trend_chart = {}
+    type_chart = {}
     if trend_rows:
         dates = [r["date"] for r in trend_rows]
         counts = [r["cnt"] for r in trend_rows]
         trace = go.Scatter(x=dates, y=counts, mode='lines+markers', line=dict(color='#00FFFF'))
         layout = go.Layout(plot_bgcolor='#0b1b2a', paper_bgcolor='#0b1b2a', font=dict(color='#00FFFF'), title="Threat Trend (Last 7 Days)")
         trend_chart = json.dumps(go.Figure(data=[trace], layout=layout), cls=plotly.utils.PlotlyJSONEncoder)
-
-    # Indicator type chart
-    type_chart = {}
     if type_rows:
         labels = [r["type"] for r in type_rows]
         values = [r["cnt"] for r in type_rows]
         trace = go.Bar(x=labels, y=values, marker=dict(color='#00FFFF'))
         layout = go.Layout(plot_bgcolor='#0b1b2a', paper_bgcolor='#0b1b2a', font=dict(color='#00FFFF'), title="Indicator Types")
         type_chart = json.dumps(go.Figure(data=[trace], layout=layout), cls=plotly.utils.PlotlyJSONEncoder)
-
     return trend_chart, type_chart
 
 # ---------------- MALAYSIA HEATMAP ----------------
-MALAYSIA_STATES = {
-    "Johor": [1.4927,103.7414],"Kedah": [6.1164,100.3678],"Kelantan": [6.1254,102.2381],"Melaka": [2.1896,102.2501],
-    "Negeri Sembilan": [2.7290,101.9383],"Pahang": [3.8167,103.3333],"Perak": [4.5929,101.0900],"Perlis": [6.4400,100.2000],
-    "Penang": [5.4164,100.3327],"Sabah": [5.9804,116.0735],"Sarawak": [1.5533,110.3592],"Selangor": [3.1390,101.6869],
-    "Terengganu": [5.3300,103.1400],"Kuala Lumpur": [3.1390,101.6869],"Putrajaya": [2.9264,101.6981],"Labuan": [5.2833,115.2333]
-}
 def generate_malaysia_heatmap():
-    tz = timedelta(hours=8)
-    timestamp = (datetime.utcnow()+tz).strftime("%Y-%m-%d %H:%M:%S GMT+8")
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    heat_data = []
+    for state, coords in MALAYSIA_STATES.items():
+        count = c.execute("SELECT COUNT(*) FROM threats WHERE state=?", (state,)).fetchone()[0]
+        if count>0: heat_data.append([coords[0], coords[1], count])
+    conn.close()
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
-    heat_data = [[coords[0], coords[1], random.randint(1,10)] for coords in MALAYSIA_STATES.values()]
     HeatMap(heat_data, radius=25).add_to(m)
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
     return m._repr_html_(), timestamp
 
 # ---------------- SECURENATION INDEX ----------------
 def calculate_secure_index():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    c.execute("SELECT risk_score FROM threats")
-    rows = c.fetchall()
+    rows = c.execute("SELECT risk_score FROM threats").fetchall()
     conn.close()
     if not rows: return 0
     total_weighted = sum([(s*1.0 if s>=70 else s*0.5 if s>=40 else s*0.2) for (s,) in rows])
     return round(total_weighted/(len(rows)*100)*100,1)
 
-# ---------------- DASHBOARD TEMPLATE ----------------
+# ---------------- DASHBOARD ROUTE ----------------
 TEMPLATE = """<html>
 <head>
 <title>Sunday-Ring SOC Dashboard</title>
@@ -261,10 +238,10 @@ a.button {background:#00FFFF;color:#0b1b2a;padding:6px 12px;text-decoration:none
 <div class="card">
 <h3>Latest Indicators</h3>
 <table id="indicators">
-<thead><tr><th>ID</th><th>Pulse</th><th>Indicator</th><th>Type</th><th>Class</th><th>Risk</th><th>Source</th><th>Created</th></tr></thead>
+<thead><tr><th>ID</th><th>Pulse</th><th>Indicator</th><th>Type</th><th>Class</th><th>Risk</th><th>Source</th><th>State</th><th>Created</th></tr></thead>
 <tbody>
 {% for row in table_data %}
-<tr><td>{{ row['id'] }}</td><td>{{ row['pulse'] }}</td><td>{{ row['indicator'] }}</td><td>{{ row['type'] }}</td><td>{{ row['classification'] }}</td><td>{{ row['risk_score'] }}</td><td>{{ row['source'] }}</td><td>{{ row['created_at'] }}</td></tr>
+<tr><td>{{ row['id'] }}</td><td>{{ row['pulse'] }}</td><td>{{ row['indicator'] }}</td><td>{{ row['type'] }}</td><td>{{ row['classification'] }}</td><td>{{ row['risk_score'] }}</td><td>{{ row['source'] }}</td><td>{{ row['state'] }}</td><td>{{ row['created_at'] }}</td></tr>
 {% endfor %}
 </tbody></table>
 </div>
@@ -284,7 +261,6 @@ $(document).ready(function() {
 </html>
 """
 
-# ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
     trend, type_chart = generate_plotly_charts()
@@ -294,9 +270,8 @@ def dashboard():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    try: table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
-    except: table_data = []
-    finally: conn.close()
+    table_data = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+    conn.close()
 
     return render_template_string(TEMPLATE,
                                   trend=trend,
@@ -309,8 +284,6 @@ def dashboard():
 # ---------------- START ----------------
 ensure_database()
 insert_dummy_data()
-fetch_talos_lookup()
-parse_suricata_logs()
 fetch_otx_data()
 fetch_abuseipdb()
 cleanup_old_records()
