@@ -25,7 +25,12 @@ def init_db():
 init_db()
 
 # ---------------- Insert Threat -----------------
-def insert_threat(indicator,type_,source,city="Kuala Lumpur",severity="Medium"):
+CITIES=["Kuala Lumpur","Penang","Johor Bahru","Kota Kinabalu","Kuching"]
+SEVERITIES=["Low","Medium","High","Critical"]
+
+def insert_threat(indicator,type_,source,city=None,severity=None):
+    city=city or random.choice(CITIES)
+    severity=severity or random.choice(SEVERITIES)
     with sqlite3.connect(DB) as conn:
         conn.execute("""
         INSERT INTO threats (indicator,type,source,city,severity,created_at)
@@ -33,9 +38,6 @@ def insert_threat(indicator,type_,source,city="Kuala Lumpur",severity="Medium"):
         """,(indicator,type_,source,city,severity,datetime.utcnow().isoformat()))
 
 # ---------------- External Feeds -----------------
-CITIES=["Kuala Lumpur","Penang","Johor Bahru","Kota Kinabalu","Kuching"]
-SEVERITIES=["Low","Medium","High","Critical"]
-
 def fetch_urlhaus():
     url="https://urlhaus.abuse.ch/downloads/csv_online/"
     try:
@@ -44,7 +46,7 @@ def fetch_urlhaus():
         entries=list(reader)[9:50]
         for row in entries:
             if len(row)<3: continue
-            insert_threat(row[2].strip(),"URL","URLhaus",random.choice(CITIES),random.choice(SEVERITIES))
+            insert_threat(row[2].strip(),"URL","URLhaus")
     except: pass
 
 def fetch_spamhaus_drop():
@@ -53,7 +55,7 @@ def fetch_spamhaus_drop():
         resp=requests.get(url,timeout=10)
         for line in resp.text.splitlines():
             if line.startswith(";") or not line.strip(): continue
-            insert_threat(line.split(";")[0].strip(),"IP","Spamhaus",random.choice(CITIES),random.choice(SEVERITIES))
+            insert_threat(line.split(";")[0].strip(),"IP","Spamhaus")
     except: pass
 
 def fetch_firehol():
@@ -62,7 +64,7 @@ def fetch_firehol():
         resp=requests.get(url,timeout=10)
         for line in resp.text.splitlines():
             if line.startswith("#") or not line.strip(): continue
-            insert_threat(line.strip(),"IP","FireHOL",random.choice(CITIES),random.choice(SEVERITIES))
+            insert_threat(line.strip(),"IP","FireHOL")
     except: pass
 
 # ---------------- Scheduler -----------------
@@ -97,31 +99,44 @@ def type_chart():
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-def malaysia_heatmap():
+# ---------------- Malaysia Heatmap (CTI Style) -----------------
+CITY_COORDS={
+    "Kuala Lumpur":[3.1390,101.6869],
+    "Penang":[5.4164,100.3327],
+    "Johor Bahru":[1.4927,103.7414],
+    "Kota Kinabalu":[5.9804,116.0735],
+    "Kuching":[1.5533,110.3592]
+}
+
+def heatmap_chart():
     with sqlite3.connect(DB) as conn:
         conn.row_factory=sqlite3.Row
         rows=conn.execute("SELECT city, COUNT(*) as cnt FROM threats GROUP BY city").fetchall()
-    heat=[]
+    lats,lons,sizes,texts=[],[],[],[]
     for r in rows:
-        lat,lng={"Kuala Lumpur":[3.1390,101.6869],
-                  "Penang":[5.4164,100.3327],
-                  "Johor Bahru":[1.4927,103.7414],
-                  "Kota Kinabalu":[5.9804,116.0735],
-                  "Kuching":[1.5533,110.3592]}.get(r["city"],[3.1390,101.6869])
-        heat.append({"city":r["city"],"lat":lat,"lng":lng,"cnt":r["cnt"]})
-    return heat
+        lat,lng=CITY_COORDS.get(r["city"],[3.1390,101.6869])
+        lats.append(lat)
+        lons.append(lng)
+        sizes.append(r["cnt"]*5)
+        texts.append(f"{r['city']}: {r['cnt']} threats")
+    fig=go.Figure(go.Scattermapbox(
+        lat=lats, lon=lons, mode="markers",
+        marker=go.scattermapbox.Marker(size=sizes,color="#00e6ff",opacity=0.7),
+        text=texts, hoverinfo="text"
+    ))
+    fig.update_layout(mapbox_style="open-street-map", mapbox_zoom=5, mapbox_center={"lat":4.2,"lon":101.9758})
+    fig.update_layout(paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff",margin=dict(l=0,r=0,t=0,b=0))
+    return json.dumps(fig,cls=PlotlyJSONEncoder)
 
 def top_indicators():
     with sqlite3.connect(DB) as conn:
         conn.row_factory=sqlite3.Row
-        rows=conn.execute("SELECT indicator, COUNT(*) as cnt FROM threats GROUP BY indicator ORDER BY cnt DESC LIMIT 10").fetchall()
-    return rows
+        return conn.execute("SELECT indicator, COUNT(*) as cnt FROM threats GROUP BY indicator ORDER BY cnt DESC LIMIT 10").fetchall()
 
 def severity_stats():
     with sqlite3.connect(DB) as conn:
         conn.row_factory=sqlite3.Row
-        rows=conn.execute("SELECT severity, COUNT(*) as cnt FROM threats GROUP BY severity").fetchall()
-    return rows
+        return conn.execute("SELECT severity, COUNT(*) as cnt FROM threats GROUP BY severity").fetchall()
 
 # ---------------- Dashboard Template -----------------
 TEMPLATE="""
@@ -154,12 +169,7 @@ tr:nth-child(even){background:#00384d;}
 
 <div class="card">
 <h2>Malaysia Threat Heatmap</h2>
-<table>
-<tr><th>City</th><th>Threat Count</th></tr>
-{% for h in heat %}
-<tr><td>{{h.city}}</td><td>{{h.cnt}}</td></tr>
-{% endfor %}
-</table>
+<div id="heatmap" style="height:500px;"></div>
 </div>
 
 <div class="card">
@@ -185,10 +195,9 @@ tr:nth-child(even){background:#00384d;}
 </div>
 
 <script>
-var trend={{trend|safe}};
-Plotly.newPlot('trend',trend.data,trend.layout,{responsive:true});
-var types={{types|safe}};
-Plotly.newPlot('types',types.data,types.layout,{responsive:true});
+Plotly.newPlot('trend', {{trend|safe}}.data, {{trend|safe}}.layout, {responsive:true});
+Plotly.newPlot('types', {{types|safe}}.data, {{types|safe}}.layout, {responsive:true});
+Plotly.newPlot('heatmap', {{heatmap|safe}}.data, {{heatmap|safe}}.layout, {responsive:true});
 </script>
 </body></html>
 """
@@ -199,7 +208,7 @@ def dashboard():
     return render_template_string(TEMPLATE,
                                   trend=trend_chart(),
                                   types=type_chart(),
-                                  heat=malaysia_heatmap(),
+                                  heatmap=heatmap_chart(),
                                   top=top_indicators(),
                                   severity=severity_stats())
 
