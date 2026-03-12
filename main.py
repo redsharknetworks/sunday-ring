@@ -20,7 +20,7 @@ from plotly.utils import PlotlyJSONEncoder
 app = Flask(__name__)
 DB = os.getenv("DB_PATH", "/tmp/threats.db")
 
-# Malaysian states coordinates
+# ---------------- MALAYSIA STATES ----------------
 MALAYSIA_STATES = {
     "Johor":[1.4927,103.7414],"Kedah":[6.1164,100.3678],"Kelantan":[6.1254,102.2381],
     "Melaka":[2.1896,102.2501],"Negeri Sembilan":[2.7290,101.9383],"Pahang":[3.8167,103.3333],
@@ -69,13 +69,23 @@ def classify_risk(score):
     elif score >= 40: return "High"
     else: return "Medium"
 
-# ---------------- FETCH PUBLIC FEEDS ----------------
+# ---------------- INSERT THREAT ----------------
+def insert_threat(pulse, indicator, typ, severity, score, source, city):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, city, severity, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+              (pulse, indicator, typ, severity, "MITRE-T", score, source, city, severity, datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+# ---------------- FETCH PUBLIC CTI FEEDS ----------------
 def fetch_urlhaus():
     url = "https://urlhaus.abuse.ch/downloads/csv/"
     try:
         r = requests.get(url, timeout=15)
         lines = r.text.splitlines()
-        for line in lines[1:21]:  # limit top 20
+        for line in lines[1:21]:
             parts = line.split(',')
             if len(parts) > 0:
                 indicator = parts[0].strip()
@@ -100,15 +110,6 @@ def fetch_maldom():
             insert_threat("MalwareDomainList", indicator, "domain", severity, score, "MalwareDomainList", city)
     except:
         pass
-
-def insert_threat(pulse, indicator, typ, severity, score, source, city):
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, city, severity, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-              (pulse, indicator, typ, severity, "MITRE-T", score, source, city, severity, datetime.utcnow().isoformat()))
-    conn.commit()
-    conn.close()
 
 # ---------------- DUMMY DATA ----------------
 def insert_dummy_data(n=20):
@@ -204,7 +205,7 @@ def generate_pdf():
     return buffer
 
 # ---------------- DASHBOARD TEMPLATE ----------------
-TEMPLATE = """[HTML with Leaflet heatmap, plotly charts, table, download buttons]"""  # omitted for brevity, same as previous style
+TEMPLATE = """[FULL HTML template from previous message]"""  # Replace with the Leaflet + Plotly template I gave you
 
 # ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
@@ -213,13 +214,17 @@ def dashboard():
     type_chart = generate_type_chart()
     critical_cities = generate_heatmap()
     gauge = calculate_secure_index()
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    table_data = conn.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+    conn.close()
     return render_template_string(TEMPLATE,
                                   trend=trend,
                                   type_chart=type_chart,
                                   critical_cities=critical_cities,
                                   positions=MALAYSIA_STATES,
                                   gauge=gauge,
-                                  table_data=sqlite3.connect(DB).execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall())
+                                  table_data=table_data)
 
 # ---------------- DOWNLOAD ROUTES ----------------
 @app.route("/download/csv")
