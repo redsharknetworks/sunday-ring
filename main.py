@@ -163,6 +163,7 @@ def mitre_chart():
     fig.update_layout(plot_bgcolor='#0b1b2a',paper_bgcolor='#0b1b2a',font=dict(color='#00FFFF'))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
+# ---------------- SECTOR TARGETING (DARK CRIMSON) ----------------
 def sector_chart():
     rows=db().execute("SELECT sector,count(*) c FROM threats GROUP BY sector").fetchall()
     labels=[r["sector"] for r in rows]; values=[r["c"] for r in rows]
@@ -170,8 +171,8 @@ def sector_chart():
         x=labels,
         y=values,
         marker=dict(
-            color='rgb(25,50,102)',           # Dark blue-grey
-            line=dict(color='rgba(0,255,255,0.6)', width=3)  # Glow
+            color='rgb(139,0,0)',             # Dark crimson
+            line=dict(color='rgba(255,0,0,0.6)', width=3)  # Glow
         ),
         hovertemplate='%{x}: %{y}<extra></extra>'
     ))
@@ -184,6 +185,7 @@ def sector_chart():
     )
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
+# ---------------- MALAYSIA MAP ----------------
 def malaysia_map():
     rows=db().execute("SELECT lat,lon,severity FROM threats ORDER BY id DESC LIMIT 50").fetchall()
     victim_lat, victim_lon, colors, sizes = [], [], [], []
@@ -377,4 +379,4 @@ def pdf_export():
     return send_file(buffer,download_name="redshark-cti-report.pdf",as_attachment=True)
 
 if __name__=="__main__":
-    app.run(host="0.0.0.0",port=int(os.environ.get("PORT",5000)))
+    app.run(host="0.0.0.0",port=int(os.environ.get("PORT
