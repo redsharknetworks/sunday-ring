@@ -238,11 +238,12 @@ td,th{padding:8px;border-bottom:1px solid #1f3d5c;text-align:center;}
 <body>
 <h2>RedShark Threat Intelligence Dashboard</h2>
 
+<!-- SECURENATION INDEX -->
 <div class="card">
 <h3>SecureNation Index</h3>
 <div class="progress-container">
-  <div class="progress-bar" style="width:{{index}}%; background-color:{{'green' if index<=60 else 'orange' if index<85 else 'red'}};">
-    {{index}}
+  <div id="progress-bar" class="progress-bar" style="width:0%; background-color:green;">
+    0
   </div>
 </div>
 </div>
@@ -292,6 +293,7 @@ td,th{padding:8px;border-bottom:1px solid #1f3d5c;text-align:center;}
 </table>
 </div>
 
+<!-- DOWNLOAD BUTTONS -->
 <div class="card center">
 <h3>Download RedShark CTI Report</h3>
 <button class="download-btn" onclick="location.href='/csv'">CSV</button>
@@ -330,6 +332,20 @@ setInterval(function(){
     Plotly.redraw("map");
     growing = !growing;
 }, 800);
+
+// Animate SecureNation progress bar
+var targetIndex = {{index}};
+var bar = document.getElementById("progress-bar");
+var width = 0;
+var interval = setInterval(function() {
+    if(width >= targetIndex){ clearInterval(interval); return;}
+    width += 1;
+    bar.style.width = width + "%";
+    if(width <= 60) bar.style.backgroundColor="green";
+    else if(width < 85) bar.style.backgroundColor="orange";
+    else bar.style.backgroundColor="red";
+    bar.innerHTML = width;
+}, 50);
 
 $(document).ready(function(){ $('#threat_table').DataTable(); });
 </script>
@@ -390,4 +406,4 @@ def download_ips():
     return send_file(RULE_FILE, download_name="redshark-ips-signatures.rules", as_attachment=True)
 
 if __name__=="__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
+    app.run(host="0.0
