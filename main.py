@@ -3,12 +3,10 @@ import io
 import csv
 import sqlite3
 import threading
-import time
 import random
 from datetime import datetime, timedelta
 from flask import Flask, render_template_string, send_file, jsonify
 import folium
-from folium.plugins import MarkerCluster
 import plotly
 import plotly.graph_objs as go
 import json
@@ -23,13 +21,9 @@ DB_PATH = os.getenv("DB_PATH", "/tmp/threats.db")
 
 # ---------------- DATABASE ----------------
 def get_db_connection():
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
-    except Exception as e:
-        print("DB connection failed:", e)
-        return None
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def ensure_database():
     conn = get_db_connection()
@@ -57,7 +51,7 @@ def cleanup_old_records():
     conn.commit()
     conn.close()
 
-# ---------------- DATA FEEDS ----------------
+# ---------------- SAMPLE DATA ----------------
 MITRE_ATTACKS = ["Initial Access","Execution","Persistence","Privilege Escalation",
                  "Defense Evasion","Credential Access","Discovery","Lateral Movement",
                  "Collection","Exfiltration","Command and Control"]
@@ -76,7 +70,7 @@ def classify_risk(score):
     elif score >= 40: return "High"
     else: return "Medium"
 
-def insert_dummy_data(n=5):
+def insert_dummy_data(n=3):
     conn = get_db_connection()
     c = conn.cursor()
     for _ in range(n):
@@ -101,18 +95,20 @@ def scheduler():
     while True:
         insert_dummy_data(3)
         cleanup_old_records()
-        time.sleep(1800)  # every 30 minutes
+        # run every 30 min
+        threading.Event().wait(1800)
 
 # ---------------- DASHBOARD DATA ----------------
 def fetch_dashboard_data(limit=50):
     conn = get_db_connection()
-    c = conn.cursor()
-    rows = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+    rows = conn.cursor().execute(
+        "SELECT * FROM threats ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 def calculate_secure_index():
-    rows = fetch_dashboard_data(100)
+    rows = fetch_dashboard_data(50)
     if not rows: return 0
     total = 0
     for r in rows:
@@ -123,7 +119,7 @@ def calculate_secure_index():
     return round(total/(len(rows)*100)*100,1)
 
 def generate_plotly_charts():
-    rows = fetch_dashboard_data(100)
+    rows = fetch_dashboard_data(50)
     # Timeline
     date_counts = {}
     for r in rows:
@@ -150,21 +146,20 @@ def generate_plotly_charts():
     return json.dumps(timeline_chart, cls=plotly.utils.PlotlyJSONEncoder), json.dumps(pie_chart, cls=plotly.utils.PlotlyJSONEncoder)
 
 def generate_heatmap():
-    rows = fetch_dashboard_data(50)
+    rows = [r for r in fetch_dashboard_data(50) if r["risk_score"]>=70][:10]  # only top 10 critical
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles='CartoDB dark_matter')
     for r in rows:
-        if r["risk_score"]>=70:
-            state = random.choice(list(MALAYSIA_STATES.keys()))
-            coords = MALAYSIA_STATES[state]
-            folium.CircleMarker(location=coords,
-                                radius=6,
-                                color='red',
-                                fill=True,
-                                fill_opacity=0.8,
-                                popup=f"{r['indicator']} - {r['classification']}").add_to(m)
+        state = random.choice(list(MALAYSIA_STATES.keys()))
+        coords = MALAYSIA_STATES[state]
+        folium.CircleMarker(location=coords,
+                            radius=6,
+                            color='red',
+                            fill=True,
+                            fill_opacity=0.8,
+                            popup=f"{r['indicator']} - {r['classification']}").add_to(m)
     return m._repr_html_()
 
-# ---------------- PDF EXPORT ----------------
+# ---------------- PDF ----------------
 def generate_pdf(rows):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4))
@@ -188,7 +183,7 @@ def generate_pdf(rows):
     buffer.seek(0)
     return buffer
 
-# ---------------- DASHBOARD TEMPLATE ----------------
+# ---------------- TEMPLATE ----------------
 TEMPLATE = """<html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
@@ -282,7 +277,7 @@ def dashboard():
 
 @app.route("/download/csv")
 def download_csv():
-    rows = fetch_dashboard_data(200)
+    rows = fetch_dashboard_data(50)
     si = io.StringIO()
     cw = csv.DictWriter(si, fieldnames=["id","pulse","indicator","type","classification","mitre","risk_score","created_at"])
     cw.writeheader()
@@ -294,7 +289,7 @@ def download_csv():
 
 @app.route("/download/json")
 def download_json():
-    rows = fetch_dashboard_data(200)
+    rows = fetch_dashboard_data(50)
     output = io.BytesIO()
     output.write(json.dumps(rows, indent=2).encode())
     output.seek(0)
@@ -302,13 +297,13 @@ def download_json():
 
 @app.route("/download/pdf")
 def download_pdf():
-    rows = fetch_dashboard_data(200)
+    rows = fetch_dashboard_data(50)
     buffer = generate_pdf(rows)
     return send_file(buffer, mimetype="application/pdf", download_name="threats.pdf", as_attachment=True)
 
 # ---------------- START ----------------
 if __name__=="__main__":
     ensure_database()
-    insert_dummy_data(5)  # small initial data to avoid blocking
+    insert_dummy_data(5)
     threading.Thread(target=scheduler, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
