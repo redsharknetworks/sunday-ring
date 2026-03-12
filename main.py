@@ -2,42 +2,44 @@ import os
 import sqlite3
 import requests
 import csv
-import random
 import json
+import random
 from datetime import datetime
 from flask import Flask, render_template_string
-import plotly
+
 import plotly.graph_objs as go
+from plotly.utils import PlotlyJSONEncoder
 
 app = Flask(__name__)
 
-DB="soc.db"
+DB = "soc.db"
 
-# Malaysia states coordinates
-MALAYSIA={
-"Johor":(1.48,103.76),
-"Kedah":(6.12,100.36),
-"Kelantan":(6.12,102.23),
-"Melaka":(2.18,102.25),
-"Negeri Sembilan":(2.72,101.94),
-"Pahang":(3.81,103.32),
-"Perak":(4.59,101.09),
-"Perlis":(6.44,100.20),
-"Penang":(5.41,100.33),
-"Sabah":(5.98,116.07),
-"Sarawak":(1.55,110.35),
-"Selangor":(3.07,101.52),
-"Terengganu":(5.31,103.13),
-"Kuala Lumpur":(3.13,101.69),
-"Putrajaya":(2.92,101.69),
-"Labuan":(5.27,115.24)
+# Malaysia coordinates
+MALAYSIA = {
+"Johor": (1.48,103.76),
+"Kedah": (6.12,100.36),
+"Kelantan": (6.12,102.23),
+"Melaka": (2.18,102.25),
+"Negeri Sembilan": (2.72,101.94),
+"Pahang": (3.81,103.32),
+"Perak": (4.59,101.09),
+"Perlis": (6.44,100.20),
+"Penang": (5.41,100.33),
+"Sabah": (5.98,116.07),
+"Sarawak": (1.55,110.35),
+"Selangor": (3.07,101.52),
+"Terengganu": (5.31,103.13),
+"Kuala Lumpur": (3.13,101.69),
+"Putrajaya": (2.92,101.69),
+"Labuan": (5.27,115.24)
 }
 
-# ---------------- DB ----------------
+# ---------------- DATABASE ----------------
 
 def init_db():
-    conn=sqlite3.connect(DB)
-    c=conn.cursor()
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
 
     c.execute("""
     CREATE TABLE IF NOT EXISTS threats(
@@ -57,106 +59,110 @@ def init_db():
 
 init_db()
 
-# ---------------- RISK ----------------
+# ---------------- RISK CLASSIFICATION ----------------
 
 def classify(score):
 
-    if score<40:
+    if score < 40:
         return "Low"
-    elif score<70:
+    elif score < 70:
         return "Medium"
     else:
         return "High"
 
-# ---------------- INGEST ----------------
+# ---------------- SAFE INSERT ----------------
 
-def ingest():
+def insert_threat(indicator, type_, source):
 
-    conn=sqlite3.connect(DB)
-    c=conn.cursor()
+    try:
 
-    headers={"User-Agent":"SundayRingSOC"}
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+
+        score = random.randint(60,95)
+
+        c.execute("""
+        INSERT INTO threats
+        (indicator,type,source,risk_score,classification,state,created_at)
+        VALUES(?,?,?,?,?,?,?)
+        """,(
+            indicator,
+            type_,
+            source,
+            score,
+            classify(score),
+            random.choice(list(MALAYSIA.keys())),
+            datetime.utcnow().isoformat()
+        ))
+
+        conn.commit()
+        conn.close()
+
+    except:
+        pass
+
+# ---------------- INGEST FEEDS ----------------
+
+def ingest_feeds():
+
+    headers = {"User-Agent":"SundayRingSOC"}
 
     # Spamhaus
     try:
-        r=requests.get(
+
+        r = requests.get(
         "https://www.spamhaus.org/drop/drop.txt",
         headers=headers,
-        timeout=20)
+        timeout=10)
 
-        for line in r.text.splitlines():
+        for line in r.text.splitlines()[:40]:
 
             if line.startswith(";") or not line.strip():
                 continue
 
-            ip=line.split(";")[0].strip()
+            ip = line.split(";")[0].strip()
 
-            score=random.randint(60,95)
-
-            c.execute("""
-            INSERT INTO threats
-            (indicator,type,source,risk_score,classification,state,created_at)
-            VALUES(?,?,?,?,?,?,?)
-            """,(
-                ip,
-                "ip",
-                "Spamhaus",
-                score,
-                classify(score),
-                random.choice(list(MALAYSIA.keys())),
-                datetime.utcnow().isoformat()
-            ))
+            insert_threat(ip,"ip","Spamhaus")
 
     except:
-        pass
+        print("Spamhaus feed failed")
 
-    # URLhaus
+    # URLHaus
     try:
-        r=requests.get(
+
+        r = requests.get(
         "https://urlhaus.abuse.ch/downloads/csv_online/",
         headers=headers,
-        timeout=20)
+        timeout=10)
 
-        reader=csv.reader(r.text.splitlines())
+        reader = csv.reader(r.text.splitlines())
 
-        for row in list(reader)[9:80]:
+        rows = list(reader)
 
-            if len(row)<3:
+        for row in rows[9:50]:
+
+            if len(row) < 3:
                 continue
 
-            url=row[2]
+            url = row[2].strip()
 
-            score=random.randint(70,95)
+            if url == "":
+                continue
 
-            c.execute("""
-            INSERT INTO threats
-            (indicator,type,source,risk_score,classification,state,created_at)
-            VALUES(?,?,?,?,?,?,?)
-            """,(
-                url,
-                "url",
-                "URLhaus",
-                score,
-                classify(score),
-                random.choice(list(MALAYSIA.keys())),
-                datetime.utcnow().isoformat()
-            ))
+            insert_threat(url,"url","URLHaus")
 
     except:
-        pass
-
-    conn.commit()
-    conn.close()
+        print("URLHaus feed failed")
 
 # ---------------- HEATMAP ----------------
 
 def malaysia_heatmap():
 
-    conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
-    c=conn.cursor()
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
 
-    rows=c.execute("""
+    rows = c.execute("""
     SELECT state,COUNT(*) c
     FROM threats
     GROUP BY state
@@ -171,47 +177,50 @@ def malaysia_heatmap():
 
     for r in rows:
 
-        s=r["state"]
+        state = r["state"]
 
-        la,lo=MALAYSIA[s]
+        if state not in MALAYSIA:
+            continue
+
+        la,lo = MALAYSIA[state]
 
         lat.append(la)
         lon.append(lo)
         size.append(r["c"]*2)
-        text.append(f"{s} : {r['c']}")
+        text.append(f"{state}: {r['c']}")
 
-    fig=go.Figure(go.Scattergeo(
+    fig = go.Figure(go.Scattergeo(
         lat=lat,
         lon=lon,
         text=text,
         marker=dict(
-        size=size,
-        color="red",
-        opacity=0.7
+            size=size,
+            color="red",
+            opacity=0.7
         )
     ))
 
     fig.update_layout(
-    geo=dict(
-    scope="asia",
-    center=dict(lat=4.5,lon=102),
-    projection_scale=8,
-    bgcolor="#0b1b2a"
-    ),
-    paper_bgcolor="#0b1b2a"
+        geo=dict(
+            scope="asia",
+            center=dict(lat=4.5,lon=102),
+            projection_scale=7,
+            bgcolor="#0b1b2a"
+        ),
+        paper_bgcolor="#0b1b2a"
     )
 
-    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+    return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-# ---------------- SOURCE PIE ----------------
+# ---------------- SOURCE CHART ----------------
 
 def source_chart():
 
-    conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
-    c=conn.cursor()
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
 
-    rows=c.execute("""
+    rows = c.execute("""
     SELECT source,COUNT(*) c
     FROM threats
     GROUP BY source
@@ -222,94 +231,47 @@ def source_chart():
     labels=[r["source"] for r in rows]
     values=[r["c"] for r in rows]
 
-    fig=go.Figure([go.Pie(labels=labels,values=values)])
+    fig = go.Figure([go.Pie(labels=labels,values=values)])
 
     fig.update_layout(
-    paper_bgcolor="#0b1b2a",
-    font=dict(color="cyan")
+        paper_bgcolor="#0b1b2a",
+        font=dict(color="cyan")
     )
 
-    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
-
-# ---------------- TREND ----------------
-
-def trend_chart():
-
-    conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
-    c=conn.cursor()
-
-    rows=c.execute("""
-    SELECT substr(created_at,1,10) d,COUNT(*) c
-    FROM threats
-    GROUP BY d
-    """).fetchall()
-
-    conn.close()
-
-    x=[r["d"] for r in rows]
-    y=[r["c"] for r in rows]
-
-    fig=go.Figure([go.Scatter(x=x,y=y,mode="lines+markers")])
-
-    fig.update_layout(
-    paper_bgcolor="#0b1b2a",
-    font=dict(color="cyan"),
-    title="Threat Trend"
-    )
-
-    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
-
-# ---------------- TOP INDICATORS ----------------
-
-def top_indicators():
-
-    conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
-    c=conn.cursor()
-
-    rows=c.execute("""
-    SELECT indicator,COUNT(*) c
-    FROM threats
-    GROUP BY indicator
-    ORDER BY c DESC
-    LIMIT 10
-    """).fetchall()
-
-    conn.close()
-
-    return rows
+    return json.dumps(fig,cls=PlotlyJSONEncoder)
 
 # ---------------- DASHBOARD ----------------
 
 @app.route("/")
 def dashboard():
 
-    ingest()
+    try:
+        ingest_feeds()
+    except Exception as e:
+        print("Ingest error:",e)
 
-    conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
-    c=conn.cursor()
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
 
-    rows=c.execute("""
-    SELECT * FROM threats
+    rows = c.execute("""
+    SELECT *
+    FROM threats
     ORDER BY created_at DESC
     LIMIT 50
     """).fetchall()
 
     conn.close()
 
-    heatmap=malaysia_heatmap()
-    source=source_chart()
-    trend=trend_chart()
-    top=top_indicators()
+    heatmap = malaysia_heatmap()
+    source = source_chart()
 
-    template="""
+    template = """
 
 <html>
 <head>
 
-<title>Sunday Ring SOC</title>
+<title>Sunday-Ring SOC</title>
 
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 
@@ -328,7 +290,7 @@ border-collapse:collapse;
 }
 
 th,td{
-border:1px solid #0ff;
+border:1px solid #00ffff;
 padding:6px;
 }
 
@@ -353,32 +315,8 @@ margin-bottom:40px;
 </div>
 
 <div class="card">
-<div id="trend"></div>
-</div>
-
-<div class="card">
 <div id="source"></div>
 </div>
-
-<h3>Top Dangerous Indicators</h3>
-
-<table>
-
-<tr>
-<th>Indicator</th>
-<th>Count</th>
-</tr>
-
-{% for r in top %}
-
-<tr>
-<td>{{r["indicator"]}}</td>
-<td>{{r["c"]}}</td>
-</tr>
-
-{% endfor %}
-
-</table>
 
 <h3>Latest Threat Intelligence</h3>
 
@@ -398,7 +336,6 @@ margin-bottom:40px;
 {% for r in rows %}
 
 <tr>
-
 <td>{{r["id"]}}</td>
 <td>{{r["indicator"]}}</td>
 <td>{{r["type"]}}</td>
@@ -407,7 +344,6 @@ margin-bottom:40px;
 <td>{{r["classification"]}}</td>
 <td>{{r["state"]}}</td>
 <td>{{r["created_at"]}}</td>
-
 </tr>
 
 {% endfor %}
@@ -422,9 +358,6 @@ Plotly.newPlot("heatmap",heat.data,heat.layout);
 var src={{source|safe}};
 Plotly.newPlot("source",src.data,src.layout);
 
-var tr={{trend|safe}};
-Plotly.newPlot("trend",tr.data,tr.layout);
-
 </script>
 
 </body>
@@ -432,19 +365,16 @@ Plotly.newPlot("trend",tr.data,tr.layout);
 
 """
 
-    return render_template_string(
-    template,
-    rows=rows,
-    heatmap=heatmap,
-    source=source,
-    trend=trend,
-    top=top
+    return render_template_string(template,
+        rows=rows,
+        heatmap=heatmap,
+        source=source
     )
 
 # ---------------- RUN ----------------
 
-if __name__=="__main__":
+if __name__ == "__main__":
 
-    port=int(os.environ.get("PORT",5000))
+    port = int(os.environ.get("PORT",5000))
 
     app.run(host="0.0.0.0",port=port)
