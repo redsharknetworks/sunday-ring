@@ -9,7 +9,6 @@ import threading
 from datetime import datetime
 
 from flask import Flask, render_template_string, send_file
-
 import plotly.graph_objs as go
 import plotly
 
@@ -19,22 +18,20 @@ from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
 
-DB="/tmp/threats.db"
-RULE_FILE="/tmp/redshark.rules"
+DB = "/tmp/threats.db"
+RULE_FILE = "/tmp/redshark.rules"
 
 
 # ---------------- DATABASE ----------------
 
 def db():
-    conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
-
-    conn=db()
-
+    conn = db()
     conn.execute("""
     CREATE TABLE IF NOT EXISTS threats(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,16 +45,15 @@ def init_db():
         created TEXT
     )
     """)
-
     conn.commit()
 
 
 init_db()
 
 
-# ---------------- STATES ----------------
+# ---------------- MALAYSIA STATES ----------------
 
-states={
+states = {
 "Johor":[1.49,103.74],
 "Kedah":[6.11,100.36],
 "Kelantan":[6.12,102.23],
@@ -74,14 +70,13 @@ states={
 "Kuala Lumpur":[3.13,101.68]
 }
 
-sectors=[
-"Government","Banking","Telecommunications",
-"Energy","Healthcare","Education",
-"Manufacturing","Transportation",
-"Retail","Technology"
+sectors = [
+"Government","Banking","Telecommunications","Energy",
+"Healthcare","Education","Manufacturing",
+"Transportation","Retail","Technology"
 ]
 
-mitre=[
+mitre = [
 "Reconnaissance","Initial Access","Execution",
 "Persistence","Privilege Escalation",
 "Defense Evasion","Credential Access",
@@ -105,11 +100,11 @@ def rand_mitre():
 
 # ---------------- INSERT THREAT ----------------
 
-def insert_threat(indicator,typ,severity):
+def insert_threat(indicator, typ, severity):
 
-    lat,lon=rand_loc()
+    lat, lon = rand_loc()
 
-    conn=db()
+    conn = db()
 
     conn.execute("""
     INSERT INTO threats(indicator,type,mitre,sector,severity,lat,lon,created)
@@ -128,56 +123,46 @@ def insert_threat(indicator,typ,severity):
     conn.commit()
 
 
-# ---------------- FEEDS ----------------
+# ---------------- THREAT FEEDS ----------------
 
 def fetch_threatfox():
-
     try:
-
-        url="https://threatfox.abuse.ch/export/json/recent/"
-        r=requests.get(url,timeout=10).json()
+        url = "https://threatfox.abuse.ch/export/json/recent/"
+        r = requests.get(url,timeout=10).json()
 
         for i in r.get("data",[])[:20]:
-
             insert_threat(
                 i.get("ioc","unknown"),
                 i.get("ioc_type","unknown"),
                 85
             )
-
     except:
         pass
 
 
 def fetch_feodo():
-
     try:
-
-        url="https://feodotracker.abuse.ch/downloads/ipblocklist.json"
-        data=requests.get(url,timeout=10).json()
+        url = "https://feodotracker.abuse.ch/downloads/ipblocklist.json"
+        data = requests.get(url,timeout=10).json()
 
         for i in data[:20]:
-
             insert_threat(
                 i.get("ip_address","0.0.0.0"),
                 "ip",
                 90
             )
-
     except:
         pass
 
 
 def fetch_feeds():
-
     fetch_threatfox()
     fetch_feodo()
 
 
 def scheduler():
-
     fetch_feeds()
-    threading.Timer(900,scheduler).start()
+    threading.Timer(900, scheduler).start()
 
 
 scheduler()
@@ -187,7 +172,7 @@ scheduler()
 
 def securenation():
 
-    rows=db().execute("""
+    rows = db().execute("""
     SELECT severity FROM threats
     ORDER BY id DESC LIMIT 100
     """).fetchall()
@@ -195,7 +180,7 @@ def securenation():
     if not rows:
         return 0
 
-    score=sum([r["severity"] for r in rows])/len(rows)
+    score = sum([r["severity"] for r in rows]) / len(rows)
 
     return round(score,1)
 
@@ -204,15 +189,13 @@ def securenation():
 
 def malaysia_map():
 
-    rows=db().execute("""
-    SELECT lat,lon,severity FROM threats
-    """).fetchall()
+    rows = db().execute("SELECT lat,lon,severity FROM threats").fetchall()
 
     lat=[r["lat"] for r in rows]
     lon=[r["lon"] for r in rows]
     sev=[r["severity"] for r in rows]
 
-    fig=go.Figure(go.Densitymapbox(
+    fig = go.Figure(go.Densitymapbox(
         lat=lat,
         lon=lon,
         z=sev,
@@ -233,7 +216,7 @@ def malaysia_map():
 
 def timeline_chart():
 
-    rows=db().execute("""
+    rows = db().execute("""
     SELECT substr(created,1,10) d, COUNT(*) c
     FROM threats
     GROUP BY d
@@ -243,7 +226,7 @@ def timeline_chart():
     x=[r["d"] for r in rows]
     y=[r["c"] for r in rows]
 
-    fig=go.Figure()
+    fig = go.Figure()
 
     fig.add_trace(go.Scatter(
         x=x,
@@ -262,7 +245,7 @@ def timeline_chart():
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 
-# ---------------- SECTOR CHART ----------------
+# ---------------- SECTOR TARGETING ----------------
 
 def sector_chart():
 
@@ -330,7 +313,6 @@ def generate_pdf():
     data=[["Indicator","Type","Sector","Severity","Timestamp"]]
 
     for r in rows:
-
         data.append([
             r["indicator"],
             r["type"],
@@ -350,9 +332,9 @@ def generate_pdf():
     return buffer
 
 
-# ---------------- DASHBOARD ----------------
+# ---------------- HTML DASHBOARD ----------------
 
-HTML="""
+HTML = """
 <html>
 <head>
 
@@ -375,6 +357,16 @@ margin:15px;
 border-radius:8px;
 }
 
+.download a{
+color:#dc143c;
+font-weight:bold;
+text-decoration:none;
+}
+
+.download a:hover{
+color:#ff4d6d;
+}
+
 table{
 width:100%;
 border-collapse:collapse;
@@ -383,6 +375,9 @@ border-collapse:collapse;
 td,th{
 padding:8px;
 border-bottom:1px solid #1f3d5c;
+}
+
+th{
 cursor:pointer;
 }
 
@@ -401,65 +396,29 @@ SecureNation Index:
 
 </div>
 
-
 <div class="card">
 <h3>Malaysia Threat Heatmap</h3>
 <div id="map"></div>
 </div>
-
 
 <div class="card">
 <h3>Threat Timeline</h3>
 <div id="timeline"></div>
 </div>
 
-
 <div class="card">
 <h3>Sector Targeting</h3>
 <div id="sector"></div>
 </div>
 
+<div class="card download">
 
-<div class="card">
-
-<h3>Latest Threat Indicators</h3>
-
-<table id="tbl">
-
-<tr>
-<th>ID</th>
-<th>Indicator</th>
-<th>Type</th>
-<th>Sector</th>
-<th>Severity</th>
-</tr>
-
-{% for r in rows %}
-
-<tr>
-<td>{{r.id}}</td>
-<td>{{r.indicator}}</td>
-<td>{{r.type}}</td>
-<td>{{r.sector}}</td>
-<td>{{r.severity}}</td>
-</tr>
-
-{% endfor %}
-
-</table>
-
-</div>
-
-
-<div class="card">
-
-<a href="/csv">CSV</a> |
-<a href="/json">JSON</a> |
-<a href="/pdf">PDF Report</a> |
+<a href="/csv">Download CSV</a> |
+<a href="/json">Download JSON</a> |
+<a href="/pdf">Download PDF Report</a> |
 <a href="/rules">Download IPS Signatures</a>
 
 </div>
-
 
 <script>
 
@@ -501,9 +460,7 @@ def dashboard():
 
 @app.route("/pdf")
 def pdf():
-
     pdf=generate_pdf()
-
     return send_file(
         pdf,
         download_name="redshark-cti-report.pdf",
@@ -515,6 +472,9 @@ def pdf():
 def csv_export():
 
     rows=db().execute("SELECT * FROM threats").fetchall()
+
+    if not rows:
+        return "No data"
 
     out=io.StringIO()
 
@@ -552,9 +512,16 @@ def json_export():
 def rules():
 
     if not os.path.exists(RULE_FILE):
-        open(RULE_FILE,"w").close()
 
-    return send_file(RULE_FILE,download_name="redshark-ips-signatures.rules",as_attachment=True)
+        with open(RULE_FILE,"w") as f:
+            f.write("# RedShark IPS Signatures\n")
+
+    return send_file(
+        RULE_FILE,
+        download_name="redshark-ips-signatures.rules",
+        as_attachment=True,
+        mimetype="text/plain"
+    )
 
 
 # ---------------- RUN ----------------
