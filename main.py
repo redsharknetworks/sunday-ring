@@ -230,15 +230,22 @@ table{width:100%;border-collapse:collapse;}
 td,th{padding:8px;border-bottom:1px solid #1f3d5c;text-align:center;}
 a.download-link{color:#FFA500;font-weight:bold;text-decoration:none;}
 .center{text-align:center;}
-.blink {animation: blink-animation 1s infinite;color:#DC143C;font-weight:bold;}
+.blink {animation: blink-animation 5s infinite;color:#DC143C;font-weight:bold;}
 @keyframes blink-animation {0% {opacity:1;}50% {opacity:0;}100% {opacity:1;}}
+.progress-container {width: 100%; background-color: #1f3d5c; border-radius: 8px; height: 25px; margin-top: 5px;}
+.progress-bar {height: 25px; border-radius: 8px; text-align: center; color: #fff; font-weight: bold; line-height: 25px;}
 </style>
 </head>
 <body>
 <h2>RedShark Threat Intelligence Dashboard</h2>
 
 <div class="card">
-SecureNation Index: <b>{{index}}</b>
+<h3>SecureNation Index</h3>
+<div class="progress-container">
+  <div class="progress-bar" style="width:{{index}}%; background-color:{{'green' if index<=60 else 'orange' if index<85 else 'red'}};">
+    {{index}}
+  </div>
+</div>
 </div>
 
 <div class="card">
