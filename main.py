@@ -13,7 +13,7 @@ from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import landscape, A4
 
 app = Flask(__name__)
-DB = "/tmp/threats.db"
+DB = "threats.db"  # relative path, safe for deploy
 
 # ---------------- DATABASE ----------------
 def db():
@@ -93,39 +93,35 @@ def insert_threat(indicator,typ,severity):
     conn.commit()
 
 # ---------------- FETCH EXTERNAL FEEDS ----------------
+def safe_fetch(fetch_func):
+    try: fetch_func()
+    except Exception as e: print(f"Feed fetch failed: {e}")
+
 def fetch_threatfox():
-    try:
-        url="https://threatfox.abuse.ch/export/json/recent/"
-        r=requests.get(url,timeout=10).json()
-        for i in r["data"][:20]:
-            insert_threat(i["ioc"],i["ioc_type"],85)
-    except: pass
+    url="https://threatfox.abuse.ch/export/json/recent/"
+    r=requests.get(url,timeout=10).json()
+    for i in r.get("data",[])[:20]: insert_threat(i.get("ioc",""),i.get("ioc_type",""),85)
 
 def fetch_urlhaus():
-    try:
-        url="https://urlhaus.abuse.ch/downloads/csv_recent/"
-        data=requests.get(url,timeout=10).text.splitlines()
-        reader=csv.reader(data)
-        for row in list(reader)[10:30]:
-            if len(row)>2: insert_threat(row[2],"malware_url",70)
-    except: pass
+    url="https://urlhaus.abuse.ch/downloads/csv_recent/"
+    data=requests.get(url,timeout=10).text.splitlines()
+    reader=csv.reader(data)
+    for row in list(reader)[10:30]:
+        if len(row)>2: insert_threat(row[2],"malware_url",70)
 
 def fetch_feodo():
-    try:
-        url="https://feodotracker.abuse.ch/downloads/ipblocklist.json"
-        data=requests.get(url,timeout=10).json()
-        for item in data[:20]: insert_threat(item["ip_address"],"ip",90)
-    except: pass
+    url="https://feodotracker.abuse.ch/downloads/ipblocklist.json"
+    data=requests.get(url,timeout=10).json()
+    for item in data[:20]: insert_threat(item.get("ip_address",""),"ip",90)
 
 def fetch_hashes():
-    try:
-        url="https://mb-api.abuse.ch/api/v1/"
-        r=requests.post(url,data={"query":"get_recent"},timeout=10).json()
-        for item in r["data"][:20]: insert_threat(item["sha256_hash"],"hash",75)
-    except: pass
+    url="https://mb-api.abuse.ch/api/v1/"
+    r=requests.post(url,data={"query":"get_recent"},timeout=10).json()
+    for item in r.get("data",[])[:20]: insert_threat(item.get("sha256_hash",""),"hash",75)
 
 def fetch_feeds():
-    fetch_threatfox(); fetch_urlhaus(); fetch_feodo(); fetch_hashes()
+    for f in [fetch_threatfox, fetch_urlhaus, fetch_feodo, fetch_hashes]:
+        safe_fetch(f)
 
 fetch_feeds()
 
@@ -150,14 +146,15 @@ def state_threat_score():
 # ---------------- CHARTS ----------------
 def timeline_chart():
     rows=db().execute("SELECT substr(created,1,10) d,count(*) c FROM threats GROUP BY d").fetchall()
+    if not rows: return json.dumps({"data":[],"layout":{}})
     x=[r["d"] for r in rows]; y=[r["c"] for r in rows]
-    fig=go.Figure()
-    fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(color='#00FFFF')))
+    fig=go.Figure(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(color='#00FFFF')))
     fig.update_layout(plot_bgcolor='#0b1b2a',paper_bgcolor='#0b1b2a',font=dict(color='#00FFFF'),title="Threat Timeline")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def mitre_chart():
     rows=db().execute("SELECT mitre,count(*) c FROM threats GROUP BY mitre").fetchall()
+    if not rows: return json.dumps({"data":[],"layout":{}})
     labels=[r["mitre"] for r in rows]; values=[r["c"] for r in rows]
     fig=go.Figure(data=[go.Pie(labels=labels,values=values,hole=.4)])
     fig.update_layout(plot_bgcolor='#0b1b2a',paper_bgcolor='#0b1b2a',font=dict(color='#00FFFF'))
@@ -166,29 +163,22 @@ def mitre_chart():
 # ---------------- SECTOR TARGETING (DARK-BLUE-GREY GLOW) ----------------
 def sector_chart():
     rows=db().execute("SELECT sector,count(*) c FROM threats GROUP BY sector").fetchall()
+    if not rows: return json.dumps({"data":[],"layout":{}})
     labels=[r["sector"] for r in rows]; values=[r["c"] for r in rows]
     fig=go.Figure(go.Bar(
-        x=labels,
-        y=values,
-        marker=dict(
-            color='rgb(25, 25, 112)',             # dark-blue-grey
-            line=dict(color='rgba(0,191,255,0.6)', width=3)  # glow
-        ),
+        x=labels,y=values,
+        marker=dict(color='rgb(25,25,112)',line=dict(color='rgba(0,191,255,0.6)',width=3)),
         hovertemplate='%{x}: %{y}<extra></extra>'
     ))
-    fig.update_layout(
-        plot_bgcolor='#0b1b2a',
-        paper_bgcolor='#0b1b2a',
-        font=dict(color='white'),
-        title="Sector Targeting (Critical Sectors Under Attack)",
-        xaxis_tickangle=-45
-    )
+    fig.update_layout(plot_bgcolor='#0b1b2a',paper_bgcolor='#0b1b2a',font=dict(color='white'),
+                      title="Sector Targeting (Critical Sectors Under Attack)",xaxis_tickangle=-45)
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 # ---------------- MALAYSIA MAP ----------------
 def malaysia_map():
     rows=db().execute("SELECT lat,lon,severity FROM threats ORDER BY id DESC LIMIT 50").fetchall()
-    victim_lat, victim_lon, colors, sizes = [], [], [], []
+    if not rows: return json.dumps({"data":[],"layout":{}})
+    victim_lat,victim_lon,colors,sizes=[],[],[],[]
     for r in rows:
         victim_lat.append(r["lat"]); victim_lon.append(r["lon"])
         if r["severity"]>=85: colors.append("red"); sizes.append(16)
@@ -201,31 +191,32 @@ def malaysia_map():
         src=random.choice(attack_sources)
         fig.add_trace(go.Scattergeo(lat=[src[0],vlat],lon=[src[1],vlon],mode="lines",
             line=dict(width=1,color="rgba(255,50,50,0.5)"),opacity=0.5))
-    fig.update_layout(geo=dict(scope="asia",center=dict(lat=4.5,lon=102),projection_type="natural earth",bgcolor="#0b1b2a"),
+    fig.update_layout(geo=dict(scope="asia",center=dict(lat=4.5,lon=102),
+                               projection_type="natural earth",bgcolor="#0b1b2a"),
                       margin=dict(l=0,r=0,t=0,b=0))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 # ---------------- DASHBOARD STATUS ----------------
 def dashboard_status():
-    status = {}
-    rows = db().execute("SELECT substr(created,1,10) d,count(*) c FROM threats GROUP BY d").fetchall()
-    status["Timeline"] = "OK" if rows else "No Data"
-    rows = db().execute("SELECT lat,lon FROM threats LIMIT 1").fetchall()
-    status["Heatmap"] = "OK" if rows else "No Data"
-    rows = db().execute("SELECT mitre FROM threats LIMIT 1").fetchall()
-    status["MITRE ATT&CK"] = "OK" if rows else "No Data"
-    rows = db().execute("SELECT sector FROM threats LIMIT 1").fetchall()
-    status["Sector Targeting"] = "OK" if rows else "No Data"
-    score = securenation_score()
-    status["SecureNation Index"] = f"{score} - OK" if score>0 else "No Data"
-    rows = db().execute("SELECT * FROM threats LIMIT 1").fetchall()
-    status["Download CSV/JSON/PDF"] = "OK" if rows else "No Data"
+    status={}
+    rows=db().execute("SELECT substr(created,1,10) d,count(*) c FROM threats GROUP BY d").fetchall()
+    status["Timeline"]="OK" if rows else "No Data"
+    rows=db().execute("SELECT lat,lon FROM threats LIMIT 1").fetchall()
+    status["Heatmap"]="OK" if rows else "No Data"
+    rows=db().execute("SELECT mitre FROM threats LIMIT 1").fetchall()
+    status["MITRE ATT&CK"]="OK" if rows else "No Data"
+    rows=db().execute("SELECT sector FROM threats LIMIT 1").fetchall()
+    status["Sector Targeting"]="OK" if rows else "No Data"
+    score=securenation_score()
+    status["SecureNation Index"]=f"{score} - OK" if score>0 else "No Data"
+    rows=db().execute("SELECT * FROM threats LIMIT 1").fetchall()
+    status["Download CSV/JSON/PDF"]="OK" if rows else "No Data"
     return status
 
 # ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
-    index_score = securenation_score()
+    index_score=securenation_score()
     return render_template_string(HTML,
         rows=db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall(),
         index=index_score,
@@ -242,6 +233,7 @@ def dashboard():
 @app.route("/csv")
 def csv_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
+    if not rows: return "No data to export",200
     out=io.StringIO()
     writer=csv.writer(out)
     writer.writerow(rows[0].keys())
@@ -252,6 +244,7 @@ def csv_export():
 @app.route("/json")
 def json_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
+    if not rows: return "No data to export",200
     data=[dict(r) for r in rows]
     mem=io.BytesIO(); mem.write(json.dumps(data,indent=2).encode()); mem.seek(0)
     return send_file(mem,download_name="threats.json",as_attachment=True)
@@ -259,6 +252,7 @@ def json_export():
 @app.route("/pdf")
 def pdf_export():
     rows=db().execute("SELECT indicator,type,sector,severity FROM threats LIMIT 50").fetchall()
+    if not rows: return "No data to export",200
     buffer=io.BytesIO()
     data=[["Indicator","Type","Sector","Severity"]]
     for r in rows: data.append([r["indicator"],r["type"],r["sector"],r["severity"]])
