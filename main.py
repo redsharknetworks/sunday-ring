@@ -12,8 +12,8 @@ import plotly.graph_objs as go
 import json
 from plotly.utils import PlotlyJSONEncoder
 import folium
-from folium import Popup, IFrame
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from folium import CircleMarker
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
@@ -83,12 +83,15 @@ def insert_dummy_data(n=30):
         insert_threat(f"Pulse {random.randint(1,50)}", f"malicious{random.randint(1,100)}.com",
                       random.choice(EVENT_TYPES), severity, score, "dummy", city)
 
-# ---------------- SCHEDULER ----------------
-def scheduler():
-    while True:
-        insert_dummy_data()
-        cleanup_old_records()
-        time.sleep(3600)
+# ---------------- SECURENATION INDEX ----------------
+def calculate_secure_index():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    rows = c.execute("SELECT risk_score FROM threats").fetchall()
+    conn.close()
+    if not rows: return 0
+    total = sum([r[0] if r[0]>=70 else r[0]*0.7 if r[0]>=40 else r[0]*0.4 for r in rows])
+    return round(total/(len(rows)*100)*100,1)
 
 # ---------------- CHARTS ----------------
 def generate_trend_chart():
@@ -128,12 +131,12 @@ def generate_malaysia_heatmap():
     for city in critical_cities:
         coords = MALAYSIA_STATES.get(city)
         if coords:
-            folium.CircleMarker(location=coords,
-                                radius=8,
-                                color="#ff0000",
-                                fill=True,
-                                fill_opacity=0.8,
-                                popup=f"{city} - Critical Threat").add_to(m)
+            CircleMarker(location=coords,
+                         radius=7,
+                         color="#ff0000",
+                         fill=True,
+                         fill_opacity=0.8,
+                         popup=f"{city} - Critical Threat").add_to(m)
     return m._repr_html_()
 
 # ---------------- DASHBOARD TEMPLATE ----------------
@@ -160,6 +163,13 @@ a.button {background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none
 <body>
 <h2>RedShark Threat Intelligence Dashboard</h2>
 <p>Disclaimer: Developed & analyzed by darkgrid@redshark.my using publicly available sources.</p>
+
+<div class="card">
+<h3>SecureNation Index: {{ gauge }}/100</h3>
+<div style="background:#00274d;width:300px;height:25px;border-radius:5px;">
+  <div style="height:25px;width:{{ gauge }}%;background:#00e6ff;text-align:center;color:#0b1b2a;font-weight:bold;">{{ gauge }}/100</div>
+</div>
+</div>
 
 <div class="card">
 <h3>Malaysia Critical Threats Map</h3>
@@ -196,6 +206,7 @@ a.button {background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none
 </table>
 <a class="button" href="/download/csv">Download CSV</a>
 <a class="button" href="/download/json">Download JSON</a>
+<a class="button" href="/download/pdf">Download PDF</a>
 </div>
 
 <script>
@@ -211,33 +222,34 @@ $(document).ready(function() {
 </html>
 """
 
-# ---------------- DOWNLOAD ----------------
-@app.route("/download/csv")
-def download_csv():
+# ---------------- DOWNLOAD PDF ----------------
+@app.route("/download/pdf")
+def download_pdf():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
     conn.close()
-    si = io.StringIO()
-    cw = csv.DictWriter(si, fieldnames=rows[0].keys() if rows else [])
-    if rows: cw.writeheader()
-    cw.writerows([dict(r) for r in rows])
-    output = io.BytesIO()
-    output.write(si.getvalue().encode("utf-8"))
-    output.seek(0)
-    return send_file(output, mimetype="text/csv", download_name="threats.csv", as_attachment=True)
 
-@app.route("/download/json")
-def download_json():
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
-    conn.close()
-    data = [dict(r) for r in rows]
-    output = io.BytesIO()
-    output.write(json.dumps(data, indent=2).encode("utf-8"))
-    output.seek(0)
-    return send_file(output, mimetype="application/json", download_name="threats.json", as_attachment=True)
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    elements = []
+    styles = getSampleStyleSheet()
+    elements.append(Paragraph("RedShark Threat Intelligence Dashboard", styles['Title']))
+    elements.append(Spacer(1,12))
+
+    # Table
+    data = [["ID","Pulse","Indicator","Type","Severity","City","Created"]]
+    for r in rows[:50]:
+        data.append([r["id"],r["pulse"],r["indicator"],r["type"],r["severity"],r["city"],r["created_at"]])
+    table = Table(data, hAlign='LEFT')
+    table.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.darkblue),
+                               ('TEXTCOLOR',(0,0),(-1,0),colors.white),
+                               ('BACKGROUND',(0,1),(-1,-1),colors.HexColor('#00274d')),
+                               ('GRID',(0,0),(-1,-1),1,colors.white)]))
+    elements.append(table)
+    doc.build(elements)
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name="threats.pdf", mimetype="application/pdf")
 
 # ---------------- DASHBOARD ----------------
 @app.route("/")
@@ -249,15 +261,17 @@ def dashboard():
     trend = generate_trend_chart()
     type_chart = generate_type_chart()
     heatmap = generate_malaysia_heatmap()
+    gauge = calculate_secure_index()
     return render_template_string(TEMPLATE, table_data=table_data,
                                   trend=trend,
                                   type_chart=type_chart,
-                                  heatmap=heatmap)
+                                  heatmap=heatmap,
+                                  gauge=gauge)
 
 # ---------------- START ----------------
 ensure_database()
 insert_dummy_data()
-threading.Thread(target=scheduler, daemon=True).start()
+threading.Thread(target=lambda: scheduler(), daemon=True).start()
 
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
