@@ -88,7 +88,7 @@ def insert_threat(indicator,typ,severity):
     conn = db()
     conn.execute(
         "INSERT INTO threats(indicator,type,mitre,sector,severity,lat,lon,created) VALUES(?,?,?,?,?,?,?,?)",
-        (indicator,typ,random_mitre(),random_sector(),severity,lat,lon,datetime.utcnow())
+        (indicator,typ,random_mitre(),random_sector(),severity,lat,lon,datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
     )
     conn.commit()
 
@@ -169,7 +169,7 @@ def sector_chart():
     fig=go.Figure(go.Bar(
         x=labels,
         y=values,
-        marker=dict(color='#003366', line=dict(color='cyan', width=1.5)),  # Dark blue bars
+        marker=dict(color='darkgrey', line=dict(color='cyan', width=2)),  # Dark grey bold with glow
         hovertemplate='%{x}: %{y}<extra></extra>'
     ))
     fig.update_layout(
@@ -214,6 +214,7 @@ table{width:100%;border-collapse:collapse;}
 td,th{padding:8px;border-bottom:1px solid #1f3d5c;}
 a{border-radius:5px;padding:8px 16px;background:#FFA500;color:#333;text-decoration:none;transition:all 0.3s;}
 a:hover{background:#ffb84d;color:#000;box-shadow:0 0 8px rgba(255,165,0,0.7);}
+p.disclaimer{text-align:center;font-weight:bold;color:darkgrey;opacity:0.8;}
 </style>
 </head>
 <body>
@@ -245,15 +246,22 @@ a:hover{background:#ffb84d;color:#000;box-shadow:0 0 8px rgba(255,165,0,0.7);}
 <a href="/pdf">PDF</a>
 </div>
 
-<p style="opacity:0.6; color:grey;">
+<p class="disclaimer">
     Developed and analyzed by darkgrid@redshark.my using publicly available threat intelligence sources
 </p>
 
 <script>
-Plotly.newPlot("timeline",{{timeline|safe}}.data,{{timeline|safe}}.layout);
-Plotly.newPlot("mitre",{{mitre|safe}}.data,{{mitre|safe}}.layout);
-Plotly.newPlot("sector",{{sector|safe}}.data,{{sector|safe}}.layout);
-Plotly.newPlot("map",{{map|safe}}.data,{{map|safe}}.layout);
+var timeline_fig = {{ timeline|safe }};
+Plotly.newPlot("timeline", timeline_fig.data, timeline_fig.layout);
+
+var mitre_fig = {{ mitre|safe }};
+Plotly.newPlot("mitre", mitre_fig.data, mitre_fig.layout);
+
+var sector_fig = {{ sector|safe }};
+Plotly.newPlot("sector", sector_fig.data, sector_fig.layout);
+
+var map_fig = {{ map|safe }};
+Plotly.newPlot("map", map_fig.data, map_fig.layout);
 
 setInterval(function(){
     Plotly.restyle("map",{'marker.size': [[18]]});
@@ -272,10 +280,10 @@ def dashboard():
         index=index_score,
         securenation_color=securenation_color(index_score),
         state_score=state_threat_score(),
-        timeline=timeline_chart(),
-        mitre=mitre_chart(),
-        sector=sector_chart(),
-        map=malaysia_map()
+        timeline=json.dumps(json.loads(timeline_chart())),
+        mitre=json.dumps(json.loads(mitre_chart())),
+        sector=json.dumps(json.loads(sector_chart())),
+        map=json.dumps(json.loads(malaysia_map()))
     )
 
 # ---------------- EXPORT ----------------
