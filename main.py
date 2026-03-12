@@ -11,10 +11,12 @@ import plotly
 import plotly.graph_objs as go
 import json
 from plotly.utils import PlotlyJSONEncoder
+import folium
+from folium import Popup, IFrame
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
 
 app = Flask(__name__)
 DB = "/tmp/threats.db"
@@ -23,6 +25,7 @@ DB = "/tmp/threats.db"
 ASSETS = ["Server-1","Server-2","Firewall-1","DB-Prod","Laptop-1"]
 EVENT_TYPES = ["Malware","Phishing","Port Scan","Data Exfiltration","Suspicious Login"]
 
+# Malaysia states center coordinates
 MALAYSIA_STATES = {
     "Johor":[1.4927,103.7414],"Kedah":[6.1164,100.3678],"Kelantan":[6.1254,102.2381],
     "Melaka":[2.1896,102.2501],"Negeri Sembilan":[2.7290,101.9383],"Pahang":[3.8167,103.3333],
@@ -71,14 +74,16 @@ def insert_threat(pulse, indicator, typ, severity, score, source, city):
     conn.commit()
     conn.close()
 
-def insert_dummy_data(n=20):
+# ---------------- DATA INGESTION ----------------
+def insert_dummy_data(n=30):
     for _ in range(n):
         score = random.randint(10,95)
         severity = "Critical" if score >= 70 else "High" if score>=40 else "Medium"
         city = random.choice(list(MALAYSIA_STATES.keys()))
-        insert_threat(f"Pulse {random.randint(1,20)}", f"malicious{random.randint(1,50)}.com",
+        insert_threat(f"Pulse {random.randint(1,50)}", f"malicious{random.randint(1,100)}.com",
                       random.choice(EVENT_TYPES), severity, score, "dummy", city)
 
+# ---------------- SCHEDULER ----------------
 def scheduler():
     while True:
         insert_dummy_data()
@@ -110,12 +115,26 @@ def generate_type_chart():
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-def generate_critical_cities():
+# ---------------- MALAYSIA HEATMAP ----------------
+def generate_malaysia_heatmap():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT city FROM threats WHERE severity='Critical'").fetchall()
+    critical_rows = conn.execute("SELECT city FROM threats WHERE severity='Critical'").fetchall()
     conn.close()
-    return [r["city"] for r in rows]
+    critical_cities = [r["city"] for r in critical_rows]
+    
+    m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
+    
+    for city in critical_cities:
+        coords = MALAYSIA_STATES.get(city)
+        if coords:
+            folium.CircleMarker(location=coords,
+                                radius=8,
+                                color="#ff0000",
+                                fill=True,
+                                fill_opacity=0.8,
+                                popup=f"{city} - Critical Threat").add_to(m)
+    return m._repr_html_()
 
 # ---------------- DASHBOARD TEMPLATE ----------------
 TEMPLATE = """
@@ -143,6 +162,11 @@ a.button {background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none
 <p>Disclaimer: Developed & analyzed by darkgrid@redshark.my using publicly available sources.</p>
 
 <div class="card">
+<h3>Malaysia Critical Threats Map</h3>
+{{ heatmap|safe }}
+</div>
+
+<div class="card">
 <h3>Threat Timeline</h3>
 <div id="trend_chart"></div>
 </div>
@@ -150,15 +174,6 @@ a.button {background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none
 <div class="card">
 <h3>Threat Type Distribution</h3>
 <div id="type_chart"></div>
-</div>
-
-<div class="card">
-<h3>Critical Threats by State</h3>
-<ul>
-{% for city in critical_cities %}
-<li>{{ city }}</li>
-{% endfor %}
-</ul>
 </div>
 
 <div class="card">
@@ -233,11 +248,11 @@ def dashboard():
     conn.close()
     trend = generate_trend_chart()
     type_chart = generate_type_chart()
-    critical_cities = generate_critical_cities()
+    heatmap = generate_malaysia_heatmap()
     return render_template_string(TEMPLATE, table_data=table_data,
                                   trend=trend,
                                   type_chart=type_chart,
-                                  critical_cities=critical_cities)
+                                  heatmap=heatmap)
 
 # ---------------- START ----------------
 ensure_database()
