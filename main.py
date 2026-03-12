@@ -3,7 +3,7 @@ import io
 import csv
 import sqlite3
 import threading
-import time
+import requests
 import random
 from datetime import datetime, timedelta
 from flask import Flask, render_template_string, send_file
@@ -13,7 +13,7 @@ import json
 from plotly.utils import PlotlyJSONEncoder
 import folium
 from folium import CircleMarker
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
@@ -25,7 +25,7 @@ DB = "/tmp/threats.db"
 ASSETS = ["Server-1","Server-2","Firewall-1","DB-Prod","Laptop-1"]
 EVENT_TYPES = ["Malware","Phishing","Port Scan","Data Exfiltration","Suspicious Login"]
 
-# Malaysia states center coordinates
+# Malaysia states coordinates
 MALAYSIA_STATES = {
     "Johor":[1.4927,103.7414],"Kedah":[6.1164,100.3678],"Kelantan":[6.1254,102.2381],
     "Melaka":[2.1896,102.2501],"Negeri Sembilan":[2.7290,101.9383],"Pahang":[3.8167,103.3333],
@@ -74,24 +74,58 @@ def insert_threat(pulse, indicator, typ, severity, score, source, city):
     conn.commit()
     conn.close()
 
-# ---------------- DATA INGESTION ----------------
-def insert_dummy_data(n=30):
-    for _ in range(n):
-        score = random.randint(10,95)
-        severity = "Critical" if score >= 70 else "High" if score>=40 else "Medium"
-        city = random.choice(list(MALAYSIA_STATES.keys()))
-        insert_threat(f"Pulse {random.randint(1,50)}", f"malicious{random.randint(1,100)}.com",
-                      random.choice(EVENT_TYPES), severity, score, "dummy", city)
+# ---------------- CTI FEEDS ----------------
+def fetch_talos_feed():
+    try:
+        # Talos public domain/IP list CSV
+        url = "https://talosintelligence.com/documents/ip-blacklist"  # example placeholder CSV URL
+        r = requests.get(url, timeout=10)
+        # Parse CSV lines
+        lines = r.text.splitlines()
+        for line in lines[1:20]:  # first 20 for demo
+            parts = line.split(',')
+            indicator = parts[0]
+            typ = "ip" if indicator.replace('.','').isdigit() else "domain"
+            score = random.randint(50,95)
+            severity = "Critical" if score>=70 else "High" if score>=40 else "Medium"
+            city = random.choice(list(MALAYSIA_STATES.keys()))
+            insert_threat("Talos Feed", indicator, typ, severity, score, "Talos", city)
+    except:
+        pass
+
+def fetch_abusech_urlhaus():
+    try:
+        url = "https://urlhaus.abuse.ch/download/csv/"  # public feed CSV
+        r = requests.get(url, timeout=10)
+        lines = r.text.splitlines()
+        for line in lines[1:20]:
+            parts = line.split(',')
+            indicator = parts[1]
+            typ = "domain"
+            score = random.randint(50,95)
+            severity = "Critical" if score>=70 else "High" if score>=40 else "Medium"
+            city = random.choice(list(MALAYSIA_STATES.keys()))
+            insert_threat("Abuse.ch URLhaus", indicator, typ, severity, score, "Abuse.ch", city)
+    except:
+        pass
 
 # ---------------- SECURENATION INDEX ----------------
 def calculate_secure_index():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    rows = c.execute("SELECT risk_score FROM threats").fetchall()
+    rows = c.execute("SELECT severity FROM threats").fetchall()
     conn.close()
-    if not rows: return 0
-    total = sum([r[0] if r[0]>=70 else r[0]*0.7 if r[0]>=40 else r[0]*0.4 for r in rows])
-    return round(total/(len(rows)*100)*100,1)
+    if not rows: return 0, {}
+    total = 0
+    counts = {"Critical":0,"High":0,"Medium":0,"Low":0}
+    for (sev,) in rows:
+        counts[sev] = counts.get(sev,0)+1
+        if sev=="Critical": total+=1.0
+        elif sev=="High": total+=0.7
+        elif sev=="Medium": total+=0.4
+        else: total+=0.1
+    gauge = round(total/len(rows)*100,1)
+    return gauge, counts
 
 # ---------------- CHARTS ----------------
 def generate_trend_chart():
@@ -114,6 +148,7 @@ def generate_type_chart():
     labels = [r["type"] for r in rows] if rows else ["No Data"]
     values = [r["cnt"] for r in rows] if rows else [0]
     fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3)])
+    fig.update_traces(textinfo='label+percent', hoverinfo='label+value')
     fig.update_layout(title="Threat Type Distribution",
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
@@ -127,7 +162,6 @@ def generate_malaysia_heatmap():
     critical_cities = [r["city"] for r in critical_rows]
     
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
-    
     for city in critical_cities:
         coords = MALAYSIA_STATES.get(city)
         if coords:
@@ -141,7 +175,6 @@ def generate_malaysia_heatmap():
 
 # ---------------- DASHBOARD TEMPLATE ----------------
 TEMPLATE = """
-<!DOCTYPE html>
 <html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
@@ -156,7 +189,7 @@ th, td {padding:8px;text-align:left;}
 th {background:#00274d;color:#00e6ff;cursor:pointer;}
 tr:nth-child(even){background:#0c2a4a;}
 tr:nth-child(odd){background:#0b1b2a;}
-a.button {background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none;border-radius:4px;}
+a.button {background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none;border-radius:4px;margin:3px;}
 .card {background:#00274d;padding:10px;margin:5px;border-radius:5px;}
 </style>
 </head>
@@ -166,9 +199,7 @@ a.button {background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none
 
 <div class="card">
 <h3>SecureNation Index: {{ gauge }}/100</h3>
-<div style="background:#00274d;width:300px;height:25px;border-radius:5px;">
-  <div style="height:25px;width:{{ gauge }}%;background:#00e6ff;text-align:center;color:#0b1b2a;font-weight:bold;">{{ gauge }}/100</div>
-</div>
+<div id="secure_index" style="width:400px;height:25px;"></div>
 </div>
 
 <div class="card">
@@ -207,7 +238,6 @@ a.button {background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none
 <a class="button" href="/download/csv">Download CSV</a>
 <a class="button" href="/download/json">Download JSON</a>
 <a class="button" href="/download/pdf">Download PDF</a>
-</div>
 
 <script>
 $(document).ready(function() {
@@ -216,6 +246,12 @@ $(document).ready(function() {
     var type_chart = {{ type_chart|safe }};
     Plotly.newPlot('trend_chart', trend.data, trend.layout);
     Plotly.newPlot('type_chart', type_chart.data, type_chart.layout);
+
+    // SecureNation Index Bar
+    var gauge_val = {{ gauge }};
+    var trace = {x:[gauge_val], y:["SecureNation Index"], type:'bar', orientation:'h',
+                 marker:{color:['#00FF00']}, text:[`Critical: {{ counts['Critical'] }}, High: {{ counts['High'] }}, Medium: {{ counts['Medium'] }}`], hoverinfo:'text+x'};
+    Plotly.newPlot('secure_index',[trace],{paper_bgcolor:'#0b1b2a',plot_bgcolor:'#0b1b2a',font:{color:'#00e6ff'}});
 });
 </script>
 </body>
@@ -237,7 +273,6 @@ def download_pdf():
     elements.append(Paragraph("RedShark Threat Intelligence Dashboard", styles['Title']))
     elements.append(Spacer(1,12))
 
-    # Table
     data = [["ID","Pulse","Indicator","Type","Severity","City","Created"]]
     for r in rows[:50]:
         data.append([r["id"],r["pulse"],r["indicator"],r["type"],r["severity"],r["city"],r["created_at"]])
@@ -261,17 +296,25 @@ def dashboard():
     trend = generate_trend_chart()
     type_chart = generate_type_chart()
     heatmap = generate_malaysia_heatmap()
-    gauge = calculate_secure_index()
+    gauge, counts = calculate_secure_index()
     return render_template_string(TEMPLATE, table_data=table_data,
                                   trend=trend,
                                   type_chart=type_chart,
                                   heatmap=heatmap,
-                                  gauge=gauge)
+                                  gauge=gauge,
+                                  counts=counts)
+
+# ---------------- SCHEDULER ----------------
+def scheduler():
+    while True:
+        fetch_talos_feed()
+        fetch_abusech_urlhaus()
+        cleanup_old_records()
+        threading.Event().wait(3600)
 
 # ---------------- START ----------------
 ensure_database()
-insert_dummy_data()
-threading.Thread(target=lambda: scheduler(), daemon=True).start()
+threading.Thread(target=scheduler, daemon=True).start()
 
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
