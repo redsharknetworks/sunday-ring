@@ -143,7 +143,6 @@ def severity_chart():
         rows=conn.execute("SELECT severity, COUNT(*) as cnt FROM threats GROUP BY severity").fetchall()
     labels=[r["severity"] for r in rows] if rows else SEVERITIES
     values=[r["cnt"] for r in rows] if rows else [1,1,1,1]
-    # Glowing effect on pie chart sectors
     fig=go.Figure(data=[go.Pie(
         labels=labels,
         values=values,
@@ -157,22 +156,30 @@ def severity_chart():
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-# ---------------- Malaysia Leaflet Map -----------------
+# ---------------- Malaysia Leaflet Map (Packed Lines) -----------------
 def malaysia_leaflet_map():
     with sqlite3.connect(DB) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT indicator,source,city,severity,mitre FROM threats").fetchall()
-    attacks=[]
+    city_pairs = {}
     for r in rows:
         if r["severity"] != "Critical":
-            continue  # Only Critical
-        victim_lat, victim_lon = MALAYSIA_STATES.get(r["city"], [3.1390,101.9758])
-        attacker_lat, attacker_lon = victim_lat + random.uniform(0.5,2), victim_lon + random.uniform(0.5,2)
+            continue
+        victim = r["city"]
+        attacker = f"Feed-{r['source']}"
+        key = (attacker,victim)
+        city_pairs[key] = city_pairs.get(key,0)+1
+    # show top 15 pairs only
+    top_pairs = sorted(city_pairs.items(), key=lambda x:x[1], reverse=True)[:15]
+    attacks=[]
+    for (attacker,victim),count in top_pairs:
+        victim_lat,victim_lon = MALAYSIA_STATES.get(victim,[3.1390,101.9758])
+        attacker_lat,attacker_lon = victim_lat+random.uniform(0.5,2), victim_lon+random.uniform(0.5,2)
         attacks.append({
-            "attacker":[attacker_lat, attacker_lon],
-            "victim":[victim_lat, victim_lon],
+            "attacker":[attacker_lat,attacker_lon],
+            "victim":[victim_lat,victim_lon],
             "color": COLOR_MAP["Critical"],
-            "info": f"{r['indicator']} | {r['source']} → {r['city']} | {r['severity']} | {r['mitre']}"
+            "info": f"{attacker} → {victim} | {count} attacks"
         })
     return attacks
 
