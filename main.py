@@ -78,7 +78,7 @@ def insert_threat(indicator,typ,severity):
     VALUES(?,?,?,?,?,?,?,?)
     """, (indicator, typ, m, s, severity, lat, lon, created))
     conn.commit()
-    # Append IPS rule with MITRE technique
+    # Append IPS rule
     rule_line = f'alert ip any any -> any any (msg:"RedShark {typ} {indicator} | MITRE: {m}"; sid:{1000000+random.randint(1,9999)}; rev:1;)\n'
     with open(RULE_FILE,"a") as f:
         f.write(rule_line)
@@ -139,7 +139,7 @@ def malaysia_map():
     fig = go.Figure()
     fig.add_trace(go.Scattermapbox(
         lat=lat, lon=lon, mode="markers",
-        marker=dict(size=12,color=colors,opacity=0.8),
+        marker=dict(size=14,color=colors,opacity=0.8),
         text=[f"Severity: {s}" for s in sev],
         hoverinfo="text"
     ))
@@ -172,10 +172,19 @@ def timeline_chart():
 def sector_chart():
     rows=db().execute("SELECT sector, COUNT(*) c FROM threats GROUP BY sector ORDER BY c DESC").fetchall()
     labels=[r["sector"] for r in rows]; values=[r["c"] for r in rows]
-    fig=go.Figure(go.Bar(x=values, y=labels, orientation="h",
+    fig=go.Figure(go.Bar(x=labels, y=values,
                          marker=dict(color="#3a4a5c", line=dict(color="#6f8fbf",width=2))))
     fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a",
                       font_color="#A3B8CC", title="Sector Targeting")
+    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+
+def indicator_type_chart():
+    rows=db().execute("SELECT type, COUNT(*) c FROM threats GROUP BY type").fetchall()
+    labels=[r["type"] for r in rows]; values=[r["c"] for r in rows]
+    fig=go.Figure(go.Pie(labels=labels, values=values, hole=0.3,
+                          marker=dict(colors=["#00ffff","#ff00ff","#ff9900","#00ff99"])))
+    fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a",
+                      font_color="#A3B8CC", title="Indicator Types")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def mitre_chart():
@@ -233,6 +242,7 @@ a.download{color:crimson;font-weight:bold;text-decoration:none;}
 <div class="card"><h3>Threat Timeline</h3><div id="timeline" style="height:300px;"></div></div>
 <div class="card"><h3>MITRE ATT&CK Distribution</h3><div id="mitre" style="height:300px;"></div></div>
 <div class="card"><h3>Sector Targeting</h3><div id="sector" style="height:300px;"></div></div>
+<div class="card"><h3>Indicator Types</h3><div id="indicator_type" style="height:300px;"></div></div>
 
 <div class="card"><h3>Latest Threat Indicators</h3>
 <table id="indicator" class="tablesorter">
@@ -264,8 +274,8 @@ Plotly.newPlot("map",{{map|safe}}.data,{{map|safe}}.layout);
 Plotly.newPlot("timeline",{{timeline|safe}}.data,{{timeline|safe}}.layout);
 Plotly.newPlot("sector",{{sector|safe}}.data,{{sector|safe}}.layout);
 Plotly.newPlot("mitre",{{mitre|safe}}.data,{{mitre|safe}}.layout);
+Plotly.newPlot("indicator_type",{{indicator_type|safe}}.data,{{indicator_type|safe}}.layout);
 </script>
-
 </body></html>
 """
 
@@ -277,7 +287,8 @@ def dashboard():
                                   map=malaysia_map(),
                                   timeline=timeline_chart(),
                                   sector=sector_chart(),
-                                  mitre=mitre_chart())
+                                  mitre=mitre_chart(),
+                                  indicator_type=indicator_type_chart())
 
 @app.route("/pdf")
 def pdf():
