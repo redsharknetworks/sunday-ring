@@ -18,10 +18,6 @@ import json
 # ---------------- CONFIG ----------------
 app = Flask(__name__)
 DB = os.getenv("DB_PATH", "/tmp/threats.db")
-OTX_KEY = os.getenv("OTX_KEY")
-ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY")
-OTX_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
-ABUSEIPDB_URL = "https://api.abuseipdb.com/api/v2/check"
 
 # Malaysian states coordinates
 MALAYSIA_STATES = {
@@ -70,78 +66,61 @@ def classify_risk(score):
     elif score >= 40: return "Medium"
     else: return "Low"
 
-# ---------------- DATA INGESTION ----------------
-def insert_dummy_data(n=3):
+# ---------------- DATA INGESTION FROM PUBLIC FEEDS ----------------
+FEEDS = [
+    {
+        "name": "Abuse.ch URLhaus",
+        "url": "https://urlhaus.abuse.ch/downloads/csv_online/",
+        "type": "url",
+        "source": "URLhaus"
+    },
+    {
+        "name": "Spamhaus DROP",
+        "url": "https://www.spamhaus.org/drop/drop.txt",
+        "type": "ip",
+        "source": "Spamhaus"
+    },
+    {
+        "name": "PhishTank",
+        "url": "https://data.phishtank.com/data/online-valid.csv",
+        "type": "url",
+        "source": "PhishTank"
+    }
+]
+
+def fetch_public_feeds():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    for _ in range(n):
-        score = random.randint(10,95)
-        classification = classify_risk(score)
-        state = random.choice(list(MALAYSIA_STATES.keys()))
-        created = datetime.utcnow().isoformat()
-        c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, state, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                  (f"Dummy Pulse", f"malicious{random.randint(1,100)}.com", "domain", classification, "OTX", score, "dummy", state, created))
+    for feed in FEEDS:
+        try:
+            r = requests.get(feed["url"], timeout=15)
+            r.raise_for_status()
+            lines = r.text.splitlines()
+            for line in lines[1:50]:  # Limit 50 rows per feed
+                if not line.strip() or line.startswith("#"): continue
+                indicator = line.split(",")[0].strip()
+                if not indicator: continue
+                pulse = f"{feed['source']} Pulse"
+                typ = feed["type"]
+                score = random.randint(50,95)
+                classification = classify_risk(score)
+                state = random.choice(list(MALAYSIA_STATES.keys()))
+                created = datetime.utcnow().isoformat()
+                c.execute("""INSERT INTO threats 
+                    (pulse, indicator, type, classification, mitre, risk_score, source, state, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                          (pulse, indicator, typ, classification, feed["source"], score, feed["source"], state, created))
+        except:
+            continue
     conn.commit()
     conn.close()
-
-def fetch_otx_data():
-    if not OTX_KEY: return
-    try:
-        headers = {"X-OTX-API-KEY": OTX_KEY}
-        r = requests.get(OTX_URL, headers=headers, timeout=15)
-        r.raise_for_status()
-        pulses = r.json().get("results", [])
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        for pulse in pulses[:5]:
-            name = pulse.get("name","OTX Pulse")
-            for ind in pulse.get("indicators", []):
-                val = ind.get("indicator")
-                typ = ind.get("type","domain")
-                if val:
-                    score = random.randint(40,95)
-                    classification = classify_risk(score)
-                    state = random.choice(list(MALAYSIA_STATES.keys()))
-                    created = datetime.utcnow().isoformat()
-                    c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, state, created_at)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                              (name, val, typ, classification, "OTX", score, "otx", state, created))
-        conn.commit()
-        conn.close()
-    except:
-        insert_dummy_data()
-
-def fetch_abuseipdb(ip="8.8.8.8"):
-    if not ABUSEIPDB_KEY: return
-    try:
-        headers = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
-        params = {"ipAddress": ip, "maxAgeInDays": 90}
-        r = requests.get(ABUSEIPDB_URL, headers=headers, params=params, timeout=10)
-        r.raise_for_status()
-        data = r.json().get("data",{})
-        score = data.get("abuseConfidenceScore",0)
-        classification = classify_risk(score)
-        state = random.choice(list(MALAYSIA_STATES.keys()))
-        created = datetime.utcnow().isoformat()
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, state, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                  ("AbuseIPDB", ip, "ip", classification, "AbuseIPDB", score, "abuseipdb", state, created))
-        conn.commit()
-        conn.close()
-    except:
-        pass
 
 # ---------------- SCHEDULER ----------------
 def scheduler():
     while True:
-        insert_dummy_data()
-        fetch_otx_data()
-        fetch_abuseipdb()
+        fetch_public_feeds()
         cleanup_old_records()
-        time.sleep(3600)
+        time.sleep(3600)  # every hour
 
 # ---------------- DASHBOARD CHARTS ----------------
 def generate_plotly_charts():
@@ -178,7 +157,7 @@ def generate_malaysia_heatmap():
         if count>0: heat_data.append([coords[0], coords[1], count])
     conn.close()
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles="CartoDB dark_matter")
-    HeatMap(heat_data, radius=25).add_to(m)
+    if heat_data: HeatMap(heat_data, radius=25).add_to(m)
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
     return m._repr_html_(), timestamp
 
@@ -283,9 +262,7 @@ def dashboard():
 
 # ---------------- START ----------------
 ensure_database()
-insert_dummy_data()
-fetch_otx_data()
-fetch_abuseipdb()
+fetch_public_feeds()
 cleanup_old_records()
 threading.Thread(target=scheduler, daemon=True).start()
 
