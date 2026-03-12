@@ -143,8 +143,17 @@ def severity_chart():
         rows=conn.execute("SELECT severity, COUNT(*) as cnt FROM threats GROUP BY severity").fetchall()
     labels=[r["severity"] for r in rows] if rows else SEVERITIES
     values=[r["cnt"] for r in rows] if rows else [1,1,1,1]
-    fig=go.Figure(data=[go.Pie(labels=labels, values=values, marker_colors=[COLOR_MAP[s] for s in labels])])
-    fig.update_layout(title="Severity Distribution",
+    # Glowing effect on pie chart sectors
+    fig=go.Figure(data=[go.Pie(
+        labels=labels,
+        values=values,
+        marker=dict(colors=[COLOR_MAP[s] for s in labels],
+                    line=dict(color="#00FFFF", width=3)),
+        hoverinfo='label+percent',
+        textinfo='label+value',
+        textfont=dict(color="#00FFFF",size=14)
+    )])
+    fig.update_layout(title="Severity Distribution (Glowing Sectors)",
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
@@ -156,8 +165,8 @@ def malaysia_leaflet_map():
     attacks=[]
     for r in rows:
         if r["severity"] != "Critical":
-            continue  # Only show Critical attacks
-        victim_lat, victim_lon = MALAYSIA_STATES.get(r["city"], [3.1390, 101.9758])
+            continue  # Only Critical
+        victim_lat, victim_lon = MALAYSIA_STATES.get(r["city"], [3.1390,101.9758])
         attacker_lat, attacker_lon = victim_lat + random.uniform(0.5,2), victim_lon + random.uniform(0.5,2)
         attacks.append({
             "attacker":[attacker_lat, attacker_lon],
