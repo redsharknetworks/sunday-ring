@@ -169,15 +169,14 @@ def sector_chart():
     fig=go.Figure(go.Bar(
         x=labels,
         y=values,
-        marker=dict(color='darkgrey', line=dict(color='cyan', width=2)),  # glowing dark grey
+        marker=dict(color='darkblue', line=dict(color='cyan', width=2)),
         hovertemplate='%{x}: %{y}<extra></extra>'
     ))
     fig.update_layout(
         plot_bgcolor='#0b1b2a',
         paper_bgcolor='#0b1b2a',
         font=dict(color='white'),
-        title="Sector Targeting",
-        title_font=dict(size=18, color='white', family='Arial'),
+        title="Sector Targeting (Critical Sectors Under Attack)",
         xaxis_tickangle=-45
     )
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
@@ -228,9 +227,12 @@ body{background:#0b1b2a;color:#00eaff;font-family:Arial;}
 .card{background:#13263b;padding:20px;margin:15px;border-radius:8px;box-shadow:0 0 15px rgba(0,255,255,0.2);}
 table{width:100%;border-collapse:collapse;}
 td,th{padding:8px;border-bottom:1px solid #1f3d5c;}
+th{cursor:pointer;}
+td.wrap{word-break:break-word;max-width:200px;}
 a{border-radius:5px;padding:8px 16px;background:#FFA500;color:#333;text-decoration:none;transition:all 0.3s;}
 a:hover{background:#ffb84d;color:#000;box-shadow:0 0 8px rgba(255,165,0,0.7);}
-p.disclaimer{text-align:center;font-weight:bold;color:darkgrey;opacity:0.8;}
+p.disclaimer{text-align:center;font-weight:bold;color:#CCCCCC;opacity:0.8;}
+.hidden{display:none;}
 </style>
 </head>
 <body>
@@ -250,7 +252,13 @@ p.disclaimer{text-align:center;font-weight:bold;color:darkgrey;opacity:0.8;}
 <table>
 <tr><th>ID</th><th>Indicator</th><th>Type</th><th>Sector</th><th>Severity</th></tr>
 {% for r in rows %}
-<tr><td>{{r.id}}</td><td>{{r.indicator}}</td><td>{{r.type}}</td><td>{{r.sector}}</td><td>{{r.severity}}</td></tr>
+<tr>
+<td>{{r.id}}</td>
+<td class="wrap">{{r.indicator}}</td>
+<td>{{r.type}}</td>
+<td>{{r.sector}}</td>
+<td>{{r.severity}}</td>
+</tr>
 {% endfor %}
 </table>
 </div>
@@ -263,13 +271,17 @@ p.disclaimer{text-align:center;font-weight:bold;color:darkgrey;opacity:0.8;}
 </div>
 
 <div class="card">
-<h3>Dashboard Status Check</h3>
+<h3 style="cursor:pointer;" onclick="document.getElementById('status-body').classList.toggle('hidden')">
+Dashboard Status Check (click to expand/collapse)
+</h3>
+<div id="status-body" class="hidden">
 <table>
 <tr><th>Module</th><th>Status</th></tr>
 {% for module,stat in status.items() %}
 <tr><td>{{module}}</td><td>{{stat}}</td></tr>
 {% endfor %}
 </table>
+</div>
 </div>
 
 <p class="disclaimer">
@@ -289,10 +301,27 @@ Plotly.newPlot("sector", sector_fig.data, sector_fig.layout);
 var map_fig = {{ map|safe }};
 Plotly.newPlot("map", map_fig.data, map_fig.layout);
 
+// Heatmap blink animation
 setInterval(function(){
     Plotly.restyle("map",{'marker.size': [[18]]});
     setTimeout(function(){Plotly.restyle("map",{'marker.size': [[12]]});},700);
 },1500);
+
+// Column sorting
+function sortTable(n) {
+    var table=document.querySelector("table");
+    var rows=Array.from(table.rows).slice(1);
+    var asc=true;
+    rows.sort(function(a,b){
+        var x=a.cells[n].innerText.toLowerCase();
+        var y=b.cells[n].innerText.toLowerCase();
+        if(asc) return x>y?1:-1;
+        else return x<y?1:-1;
+    });
+    asc=!asc;
+    rows.forEach(r=>table.appendChild(r));
+}
+document.querySelectorAll("th").forEach((th,i)=>{ th.onclick=()=>sortTable(i); });
 </script>
 </body>
 </html>
@@ -342,7 +371,7 @@ def pdf_export():
     table=Table(data)
     pdf.build([table])
     buffer.seek(0)
-    return send_file(buffer,download_name="report.pdf",as_attachment=True)
+    return send_file(buffer,download_name="redshark-cti-report.pdf",as_attachment=True)
 
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=int(os.environ.get("PORT",5000)))
