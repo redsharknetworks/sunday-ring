@@ -8,8 +8,8 @@ import requests
 app = Flask(__name__)
 
 # ---------------- CONFIG ----------------
-OTX_API_KEY = os.environ.get("OTX_KEY")          # AlienVault OTX API Key
-ABUSEIPDB_API_KEY = os.environ.get("ABUSEIP_KEY")  # AbuseIPDB API Key
+OTX_API_KEY = os.environ.get("OTX_KEY")           # AlienVault OTX API Key
+ABUSEIPDB_API_KEY = os.environ.get("ABUSEIP_KEY") # AbuseIPDB API Key
 
 # Malaysian city coordinates
 MALAYSIA_COORDS = [
@@ -36,45 +36,45 @@ def generate_events(n=50):
             "type": random.choice(EVENT_TYPES),
             "severity": random.choice(SEVERITIES),
             "source_ip": f"103.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}",
-            "city": random.choice(MALAYSIA_COORDS)["city"]
+            "city": random.choice(MALAYSIA_COORDS)["city"],
+            "otx": [],
+            "abuse": {}
         })
     return events
 
 EVENTS = generate_events(100)
 
-# ---------------- OTX LOOKUP ----------------
+# ---------------- SAFE OTX LOOKUP ----------------
 def check_otx(ip):
     if not OTX_API_KEY:
         return []
-    url = f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general"
-    headers = {"X-OTX-API-KEY": OTX_API_KEY}
     try:
+        url = f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general"
+        headers = {"X-OTX-API-KEY": OTX_API_KEY}
         resp = requests.get(url, headers=headers, timeout=5)
-        if resp.status_code == 200:
-            pulses = [p["name"] for p in resp.json().get("pulse_info", {}).get("pulses", [])]
-            return pulses[:5]
+        resp.raise_for_status()
+        pulses = [p["name"] for p in resp.json().get("pulse_info", {}).get("pulses", [])]
+        return pulses[:5]
     except:
         return []
-    return []
 
-# ---------------- AbuseIPDB LOOKUP ----------------
+# ---------------- SAFE AbuseIPDB LOOKUP ----------------
 def check_abuseipdb(ip):
     if not ABUSEIPDB_API_KEY:
         return {}
-    url = "https://api.abuseipdb.com/api/v2/check"
-    headers = {
-        "Key": ABUSEIPDB_API_KEY,
-        "Accept": "application/json"
-    }
-    params = {"ipAddress": ip, "maxAgeInDays": 90}
     try:
+        url = "https://api.abuseipdb.com/api/v2/check"
+        headers = {"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"}
+        params = {"ipAddress": ip, "maxAgeInDays": 90}
         resp = requests.get(url, headers=headers, params=params, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()["data"]
-            return {"abuseConfidence": data["abuseConfidenceScore"], "country": data["countryCode"]}
+        resp.raise_for_status()
+        data = resp.json().get("data", {})
+        return {
+            "abuseConfidence": data.get("abuseConfidenceScore",0),
+            "country": data.get("countryCode","")
+        }
     except:
         return {}
-    return {}
 
 # ---------------- DASHBOARD ----------------
 @app.route("/")
@@ -84,10 +84,12 @@ def dashboard():
     for e in EVENTS:
         severity_count[e["severity"]] += 1
 
-    # Add threat intel for each event
+    # Fetch threat intel safely
     for e in EVENTS:
-        e["otx"] = check_otx(e["source_ip"])
-        e["abuse"] = check_abuseipdb(e["source_ip"])
+        if not e["otx"]:
+            e["otx"] = check_otx(e["source_ip"])
+        if not e["abuse"]:
+            e["abuse"] = check_abuseipdb(e["source_ip"])
 
     template = """
 <!DOCTYPE html>
@@ -174,7 +176,7 @@ events.forEach(e=>{
                                   severity_values=list(severity_count.values()),
                                   city_coords=MALAYSIA_COORDS)
 
-# ---------------- CSV / JSON ----------------
+# ---------------- CSV / JSON EXPORT ----------------
 @app.route("/download/csv")
 def download_csv():
     si = io.StringIO()
