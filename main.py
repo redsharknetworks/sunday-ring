@@ -13,7 +13,7 @@ from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import landscape, A4
 
 app = Flask(__name__)
-DB = "threats.db"  # relative path, safe for deploy
+DB = "threats.db"  # relative path
 
 # ---------------- DATABASE ----------------
 def db():
@@ -160,7 +160,6 @@ def mitre_chart():
     fig.update_layout(plot_bgcolor='#0b1b2a',paper_bgcolor='#0b1b2a',font=dict(color='#00FFFF'))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- SECTOR TARGETING (DARK-BLUE-GREY GLOW) ----------------
 def sector_chart():
     rows=db().execute("SELECT sector,count(*) c FROM threats GROUP BY sector").fetchall()
     if not rows: return json.dumps({"data":[],"layout":{}})
@@ -174,7 +173,6 @@ def sector_chart():
                       title="Sector Targeting (Critical Sectors Under Attack)",xaxis_tickangle=-45)
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- MALAYSIA MAP ----------------
 def malaysia_map():
     rows=db().execute("SELECT lat,lon,severity FROM threats ORDER BY id DESC LIMIT 50").fetchall()
     if not rows: return json.dumps({"data":[],"layout":{}})
@@ -213,19 +211,91 @@ def dashboard_status():
     status["Download CSV/JSON/PDF"]="OK" if rows else "No Data"
     return status
 
+# ---------------- HTML TEMPLATE ----------------
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>RedShark CTI Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body { background-color:#0b1b2a; color:#ffffff; font-family:Arial, sans-serif; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { padding: 8px; border: 1px solid #ccc; color:#ffffff; }
+        th { cursor:pointer; background-color:#1b2b3a; }
+        .disclaimer { color:grey; font-weight:bold; text-align:center; margin-top:10px; }
+        .btn { padding:8px 12px; margin:5px; background-color:orange; color:white; border:none; cursor:pointer; }
+    </style>
+</head>
+<body>
+    <h1 style="text-align:center; color:#ffffff;">RedShark CTI Dashboard</h1>
+
+    <!-- Charts -->
+    <div id="timeline" style="width:100%;height:400px;"></div>
+    <div id="mitre" style="width:100%;height:400px;"></div>
+    <div id="sector" style="width:100%;height:400px;"></div>
+    <div id="map" style="width:100%;height:500px;"></div>
+
+    <!-- Threat table -->
+    <h2>Recent Threats</h2>
+    <table id="threatTable">
+        <thead>
+            <tr>
+                <th>Indicator</th><th>Type</th><th>MITRE</th><th>Sector</th><th>Severity</th><th>Created</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td>{{row['indicator']}}</td>
+                <td>{{row['type']}}</td>
+                <td>{{row['mitre']}}</td>
+                <td>{{row['sector']}}</td>
+                <td>{{row['severity']}}</td>
+                <td>{{row['created']}}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <!-- Downloads -->
+    <h2>Download RedShark CTI Reports</h2>
+    <a href="/csv"><button class="btn">CSV</button></a>
+    <a href="/json"><button class="btn">JSON</button></a>
+    <a href="/pdf"><button class="btn">PDF</button></a>
+
+    <p class="disclaimer">Developed and analyzed by darkgrid@redshark.my using publicly available sources.</p>
+
+    <script>
+        var timeline_data = {{timeline|safe}};
+        Plotly.newPlot('timeline', timeline_data.data, timeline_data.layout);
+
+        var mitre_data = {{mitre|safe}};
+        Plotly.newPlot('mitre', mitre_data.data, mitre_data.layout);
+
+        var sector_data = {{sector|safe}};
+        Plotly.newPlot('sector', sector_data.data, sector_data.layout);
+
+        var map_data = {{map|safe}};
+        Plotly.newPlot('map', map_data.data, map_data.layout);
+    </script>
+</body>
+</html>
+"""
+
 # ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
-    index_score=securenation_score()
+    index_score = securenation_score()
     return render_template_string(HTML,
         rows=db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall(),
         index=index_score,
         securenation_color=securenation_color(index_score),
         state_score=state_threat_score(),
-        timeline=json.dumps(json.loads(timeline_chart())),
-        mitre=json.dumps(json.loads(mitre_chart())),
-        sector=json.dumps(json.loads(sector_chart())),
-        map=json.dumps(json.loads(malaysia_map())),
+        timeline=json.loads(timeline_chart()),
+        mitre=json.loads(mitre_chart()),
+        sector=json.loads(sector_chart()),
+        map=json.loads(malaysia_map()),
         status=dashboard_status()
     )
 
