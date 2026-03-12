@@ -169,7 +169,7 @@ def sector_chart():
     fig=go.Figure(go.Bar(
         x=labels,
         y=values,
-        marker=dict(color='darkgrey', line=dict(color='cyan', width=2)),  # Dark grey bold with glow
+        marker=dict(color='darkgrey', line=dict(color='cyan', width=2)),  # glowing dark grey
         hovertemplate='%{x}: %{y}<extra></extra>'
     ))
     fig.update_layout(
@@ -201,9 +201,25 @@ def malaysia_map():
                       margin=dict(l=0,r=0,t=0,b=0))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
+# ---------------- STATUS CHECK ----------------
+def dashboard_status():
+    status = {}
+    rows = db().execute("SELECT substr(created,1,10) d,count(*) c FROM threats GROUP BY d").fetchall()
+    status["Timeline"] = "OK" if rows else "No Data"
+    rows = db().execute("SELECT lat,lon FROM threats LIMIT 1").fetchall()
+    status["Heatmap"] = "OK" if rows else "No Data"
+    rows = db().execute("SELECT mitre FROM threats LIMIT 1").fetchall()
+    status["MITRE ATT&CK"] = "OK" if rows else "No Data"
+    rows = db().execute("SELECT sector FROM threats LIMIT 1").fetchall()
+    status["Sector Targeting"] = "OK" if rows else "No Data"
+    score = securenation_score()
+    status["SecureNation Index"] = f"{score} - OK" if score>0 else "No Data"
+    rows = db().execute("SELECT * FROM threats LIMIT 1").fetchall()
+    status["Download CSV/JSON/PDF"] = "OK" if rows else "No Data"
+    return status
+
 # ---------------- DASHBOARD HTML ----------------
-HTML="""
-<html>
+HTML = """<html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
@@ -246,6 +262,16 @@ p.disclaimer{text-align:center;font-weight:bold;color:darkgrey;opacity:0.8;}
 <a href="/pdf">PDF</a>
 </div>
 
+<div class="card">
+<h3>Dashboard Status Check</h3>
+<table>
+<tr><th>Module</th><th>Status</th></tr>
+{% for module,stat in status.items() %}
+<tr><td>{{module}}</td><td>{{stat}}</td></tr>
+{% endfor %}
+</table>
+</div>
+
 <p class="disclaimer">
     Developed and analyzed by darkgrid@redshark.my using publicly available threat intelligence sources
 </p>
@@ -272,6 +298,7 @@ setInterval(function(){
 </html>
 """
 
+# ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
     index_score = securenation_score()
@@ -283,7 +310,8 @@ def dashboard():
         timeline=json.dumps(json.loads(timeline_chart())),
         mitre=json.dumps(json.loads(mitre_chart())),
         sector=json.dumps(json.loads(sector_chart())),
-        map=json.dumps(json.loads(malaysia_map()))
+        map=json.dumps(json.loads(malaysia_map())),
+        status=dashboard_status()
     )
 
 # ---------------- EXPORT ----------------
