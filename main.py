@@ -130,11 +130,16 @@ def fetch_feeds():
 fetch_feeds()
 
 # ---------------- METRICS ----------------
-def securenation():
+def securenation_score():
     rows=db().execute("SELECT severity FROM threats ORDER BY id DESC LIMIT 100").fetchall()
     if not rows: return 0
     score=sum([r["severity"] for r in rows])/len(rows)
     return round(score,1)
+
+def securenation_color(score):
+    if score>=85: return 'red'
+    elif score>=70: return 'orange'
+    else: return 'lime'
 
 def state_threat_score():
     rows=db().execute("SELECT severity FROM threats").fetchall()
@@ -161,8 +166,20 @@ def mitre_chart():
 def sector_chart():
     rows=db().execute("SELECT sector,count(*) c FROM threats GROUP BY sector").fetchall()
     labels=[r["sector"] for r in rows]; values=[r["c"] for r in rows]
-    fig=go.Figure(data=[go.Bar(x=labels,y=values,marker=dict(color='navy'))])
-    fig.update_layout(plot_bgcolor='#0b1b2a',paper_bgcolor='#0b1b2a',font=dict(color='#00FFFF'),title="Sector Targeting")
+    fig=go.Figure(go.Bar(
+        x=labels,
+        y=values,
+        marker=dict(color='navy', line=dict(color='cyan', width=1.5)),
+        hovertemplate='%{x}: %{y}<extra></extra>'
+    ))
+    fig.update_layout(
+        plot_bgcolor='#0b1b2a',
+        paper_bgcolor='#0b1b2a',
+        font=dict(color='white'),
+        title="Sector Targeting",
+        title_font=dict(size=18, color='white', family='Arial'),
+        xaxis_tickangle=-45
+    )
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def malaysia_map():
@@ -192,18 +209,19 @@ HTML="""
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0b1b2a;color:#00eaff;font-family:Arial;}
-.card{background:#13263b;padding:20px;margin:15px;border-radius:8px;}
+.card{background:#13263b;padding:20px;margin:15px;border-radius:8px;box-shadow:0 0 15px rgba(0,255,255,0.2);}
 table{width:100%;border-collapse:collapse;}
 td,th{padding:8px;border-bottom:1px solid #1f3d5c;}
-a:hover{opacity:0.8;}
+a{border-radius:5px;padding:8px 16px;background:#FFA500;color:#333;text-decoration:none;transition:all 0.3s;}
+a:hover{background:#ffb84d;color:#000;box-shadow:0 0 8px rgba(255,165,0,0.7);}
 </style>
 </head>
 <body>
-<h2 style="color:#333333; font-weight:bold;">RedShark Threat Intelligence Dashboard</h2>
+<h2 style="color:#00FFFF; font-weight:bold;">RedShark Threat Intelligence Dashboard</h2>
 
 <div class="card">
-    SecureNation Index: <b style="color:#333333;">{{index}}</b> | 
-    State Threat Level: <b style="color:#333333;">{{state_score}}</b>
+    SecureNation Index: <b style="color:{{securenation_color}};">{{index}}</b> | 
+    State Threat Level: <b style="color:#FFD700;">{{state_score}}</b>
 </div>
 
 <div class="card"><h3>Malaysia Cyber Attack Map</h3><div id="map"></div></div>
@@ -221,10 +239,10 @@ a:hover{opacity:0.8;}
 </div>
 
 <div class="card">
-<h3 style="color:#333333; font-weight:bold;">Download CTI Reports</h3>
-<a href="/csv" style="background:#FFA500; color:#333; padding:8px 16px; margin-right:10px; border-radius:5px; text-decoration:none;">CSV</a>
-<a href="/json" style="background:#FFA500; color:#333; padding:8px 16px; margin-right:10px; border-radius:5px; text-decoration:none;">JSON</a>
-<a href="/pdf" style="background:#FFA500; color:#333; padding:8px 16px; border-radius:5px; text-decoration:none;">PDF</a>
+<h3 style="color:#00FFFF; font-weight:bold;">Download CTI Reports</h3>
+<a href="/csv">CSV</a>
+<a href="/json">JSON</a>
+<a href="/pdf">PDF</a>
 </div>
 
 <p style="opacity:0.6; color:grey;">
@@ -248,10 +266,11 @@ setInterval(function(){
 
 @app.route("/")
 def dashboard():
-    rows=db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall()
+    index_score = securenation_score()
     return render_template_string(HTML,
-        rows=rows,
-        index=securenation(),
+        rows=db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall(),
+        index=index_score,
+        securenation_color=securenation_color(index_score),
         state_score=state_threat_score(),
         timeline=timeline_chart(),
         mitre=mitre_chart(),
