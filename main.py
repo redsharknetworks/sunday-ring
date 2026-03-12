@@ -406,4 +406,4 @@ def download_ips():
     return send_file(RULE_FILE, download_name="redshark-ips-signatures.rules", as_attachment=True)
 
 if __name__=="__main__":
-    app.run(host="0.0
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
