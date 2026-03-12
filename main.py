@@ -162,48 +162,61 @@ def sector_chart():
     fig.update_layout(plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff')
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
-def malaysia_map_blink():
-    rows=db().execute("SELECT lat,lon,severity,indicator,sector FROM threats ORDER BY id DESC LIMIT 50").fetchall()
-    lat, lon, colors, sizes, text_hover, critical_idx = [], [], [], [], [], []
-    for i,r in enumerate(rows):
+def malaysia_map_pulsing():
+    rows = db().execute("SELECT lat,lon,severity,indicator,sector FROM threats ORDER BY id DESC LIMIT 50").fetchall()
+    lat, lon, colors, sizes, text_hover = [], [], [], [], []
+
+    for r in rows:
         lat.append(r["lat"])
         lon.append(r["lon"])
         text_hover.append(f"Indicator: {r['indicator']}<br>Sector: {r['sector']}<br>Severity: {r['severity']}")
         if r["severity"] >= 85:
-            colors.append("red"); sizes.append(16); critical_idx.append(i)
+            colors.append("red")
+            sizes.append(16)
         elif r["severity"] >= 70:
-            colors.append("orange"); sizes.append(12)
+            colors.append("orange")
+            sizes.append(12)
         else:
-            colors.append("yellow"); sizes.append(8)
-    fig=go.Figure()
+            colors.append("yellow")
+            sizes.append(8)
+
+    fig = go.Figure()
+    # Static + pulsing using opacity animation
     fig.add_trace(go.Scattergeo(
         lat=lat, lon=lon, mode="markers",
-        marker=dict(size=sizes,color=colors,opacity=0.8,line=dict(width=2,color='white')),
-        text=text_hover, hoverinfo="text", name="Threats"
+        marker=dict(size=sizes,color=colors,opacity=0.7,line=dict(width=2,color='white')),
+        text=text_hover, hoverinfo="text"
     ))
-    frames = []
-    for op in [0.3,1.0]:
+
+    # Animation frames for pulsing red markers
+    frames=[]
+    for op in [0.4,1.0]:
         frame_colors = colors.copy()
-        for idx in critical_idx:
-            frame_colors[idx] = 'red' if op==1.0 else 'rgba(255,0,0,0.3)'
-        frames.append(go.Frame(data=[go.Scattergeo(lat=lat, lon=lon,
-            mode="markers",
-            marker=dict(size=sizes,color=frame_colors,opacity=1.0,line=dict(width=2,color='white')),
-            text=text_hover, hoverinfo="text")]))
+        frame_sizes = sizes.copy()
+        for i,c in enumerate(colors):
+            if c=="red":
+                frame_sizes[i]=18
+        frames.append(go.Frame(data=[go.Scattergeo(
+            lat=lat, lon=lon, mode="markers",
+            marker=dict(size=frame_sizes,color=frame_colors,opacity=op,line=dict(width=2,color='white')),
+            text=text_hover, hoverinfo="text"
+        )]))
     fig.frames = frames
-    fig.update_layout(updatemenus=[dict(type="buttons", showactive=False, buttons=[dict(label="Play",
-        method="animate", args=[None, {"frame": {"duration": 500, "redraw": True}, "fromcurrent": True, "transition": {"duration": 0}}])])])
+
     fig.update_layout(
-        geo=dict(scope="asia", center=dict(lat=4.5,lon=102), projection_type="natural earth"),
+        geo=dict(scope="asia", center=dict(lat=4.5, lon=102), projection_type="natural earth"),
         margin=dict(l=0,r=0,t=0,b=0),
-        plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff'
+        plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff',
+        transition=dict(duration=800),
+        updatemenus=[]
     )
+
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 # ---------------- DASHBOARD ----------------
 HTML = """<html>
 <head>
-<title>RedShark CTI Dashboard v2.9</title>
+<title>RedShark CTI Dashboard v2.9.1</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0b1b2a;color:#00eaff;font-family:Arial;}
@@ -214,7 +227,7 @@ th{cursor:pointer;}
 </style>
 </head>
 <body>
-<h2>RedShark CTI Dashboard v2.9</h2>
+<h2>RedShark CTI Dashboard v2.9.1</h2>
 <div class="card">
 {% set color = "green" %}
 {% if index >= 85 %}{% set color = "red" %}{% elif index >= 70 %}{% set color="orange" %}{% endif %}
@@ -280,7 +293,7 @@ def dashboard():
         timeline=timeline_chart(),
         mitre=mitre_chart(),
         sector=sector_chart(),
-        map=malaysia_map_blink()
+        map=malaysia_map_pulsing()
     )
 
 # ---------------- EXPORT ----------------
