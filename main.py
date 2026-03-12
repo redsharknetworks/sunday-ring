@@ -127,12 +127,8 @@ def generate_heatmap():
     with sqlite3.connect(DB) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT city FROM threats WHERE severity='Critical'").fetchall()
-    lines=[]
     critical_cities = [r["city"] for r in rows]
-    for dest in critical_cities:
-        src = random.choice(list(MALAYSIA_STATES.keys()))
-        lines.append((src,dest))
-    return lines, critical_cities
+    return critical_cities
 
 # ---------------- SECURE INDEX ----------------
 def calculate_secure_index():
@@ -244,31 +240,25 @@ $(document).ready(function() {
     Plotly.newPlot('trend_chart', trend_chart.data, trend_chart.layout);
     Plotly.newPlot('type_chart', type_chart.data, type_chart.layout);
 
-    // Heatmap canvas
+    // Heatmap canvas with glowing circles for Critical events
     var heatmapCanvas = document.getElementById('heatmap');
     var ctx = heatmapCanvas.getContext('2d');
     ctx.clearRect(0,0,heatmapCanvas.width,heatmapCanvas.height);
-    var lines = {{ heatmap_lines | safe }};
+
     var critical_cities = {{ critical_cities | safe }};
     var positions = {{ positions | safe }};
-    ctx.strokeStyle="#ff0000"; ctx.lineWidth=2;
-    lines.forEach(function(l){
-        var src = positions[l[0]]; var dst = positions[l[1]];
-        if(src && dst){
-            ctx.beginPath();
-            ctx.moveTo(src[0],src[1]);
-            ctx.lineTo(dst[0],dst[1]);
-            ctx.stroke();
-        }
-    });
-    // Fallback glowing dot for critical cities
-    ctx.fillStyle="#ff3300";
+    
     critical_cities.forEach(function(c){
         var p = positions[c];
         if(p){
+            ctx.save();
             ctx.beginPath();
-            ctx.arc(p[0],p[1],5,0,2*Math.PI);
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = "#ff3300";
+            ctx.fillStyle = "#ff6600";
+            ctx.arc(p[0], p[1], 6, 0, 2*Math.PI);
             ctx.fill();
+            ctx.restore();
         }
     });
 });
@@ -282,7 +272,7 @@ $(document).ready(function() {
 def dashboard():
     trend = generate_trend_chart()
     type_chart = generate_type_chart()
-    heatmap_lines, critical_cities = generate_heatmap()
+    critical_cities = generate_heatmap()
     gauge = calculate_secure_index()
 
     # map city name to canvas positions
@@ -299,7 +289,6 @@ def dashboard():
     return render_template_string(TEMPLATE,
                                   trend=trend,
                                   type_chart=type_chart,
-                                  heatmap_lines=heatmap_lines,
                                   critical_cities=critical_cities,
                                   positions=positions,
                                   gauge=gauge,
