@@ -1,5 +1,5 @@
 import os, sqlite3, threading, random
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask, render_template_string
 import plotly.graph_objs as go
 from plotly.utils import PlotlyJSONEncoder
@@ -41,7 +41,7 @@ def fetch_urlhaus():
     try:
         resp=requests.get(url,timeout=10)
         reader=csv.reader(resp.text.splitlines())
-        entries=list(reader)[9:50]  # skip headers
+        entries=list(reader)[9:50]
         for row in entries:
             if len(row)<3: continue
             insert_threat(row[2].strip(),"URL","URLhaus",random.choice(CITIES),random.choice(SEVERITIES))
@@ -98,7 +98,6 @@ def type_chart():
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
 def malaysia_heatmap():
-    # Count threats per city
     with sqlite3.connect(DB) as conn:
         conn.row_factory=sqlite3.Row
         rows=conn.execute("SELECT city, COUNT(*) as cnt FROM threats GROUP BY city").fetchall()
@@ -127,7 +126,7 @@ def severity_stats():
 # ---------------- Dashboard Template -----------------
 TEMPLATE="""
 <html><head>
-<title>Professional SOC Dashboard</title>
+<title>Sunday-Ring SOC Dashboard</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0b1b2a;color:#00e6ff;font-family:sans-serif;margin:0;padding:0;}
@@ -141,7 +140,7 @@ tr:nth-child(even){background:#00384d;}
 </style>
 </head><body>
 <div class="container">
-<h1>Professional SOC Dashboard</h1>
+<h1>Sunday-Ring SOC Dashboard</h1>
 
 <div class="card">
 <h2>Threat Timeline</h2>
