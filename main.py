@@ -163,7 +163,7 @@ def mitre_chart():
     fig.update_layout(plot_bgcolor='#0b1b2a',paper_bgcolor='#0b1b2a',font=dict(color='#00FFFF'))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- SECTOR TARGETING (DARK CRIMSON) ----------------
+# ---------------- SECTOR TARGETING (DARK-BLUE-GREY GLOW) ----------------
 def sector_chart():
     rows=db().execute("SELECT sector,count(*) c FROM threats GROUP BY sector").fetchall()
     labels=[r["sector"] for r in rows]; values=[r["c"] for r in rows]
@@ -171,8 +171,8 @@ def sector_chart():
         x=labels,
         y=values,
         marker=dict(
-            color='rgb(139,0,0)',             # Dark crimson
-            line=dict(color='rgba(255,0,0,0.6)', width=3)  # Glow
+            color='rgb(25, 25, 112)',             # dark-blue-grey
+            line=dict(color='rgba(0,191,255,0.6)', width=3)  # glow
         ),
         hovertemplate='%{x}: %{y}<extra></extra>'
     ))
@@ -205,7 +205,7 @@ def malaysia_map():
                       margin=dict(l=0,r=0,t=0,b=0))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- STATUS CHECK ----------------
+# ---------------- DASHBOARD STATUS ----------------
 def dashboard_status():
     status = {}
     rows = db().execute("SELECT substr(created,1,10) d,count(*) c FROM threats GROUP BY d").fetchall()
@@ -221,116 +221,6 @@ def dashboard_status():
     rows = db().execute("SELECT * FROM threats LIMIT 1").fetchall()
     status["Download CSV/JSON/PDF"] = "OK" if rows else "No Data"
     return status
-
-# ---------------- DASHBOARD HTML ----------------
-HTML = """<html>
-<head>
-<title>RedShark Threat Intelligence Dashboard</title>
-<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-<style>
-body{background:#0b1b2a;color:#00eaff;font-family:Arial;}
-.card{background:#13263b;padding:20px;margin:15px;border-radius:8px;box-shadow:0 0 15px rgba(0,255,255,0.2);}
-table{width:100%;border-collapse:collapse;}
-td,th{padding:8px;border-bottom:1px solid #1f3d5c;}
-th{cursor:pointer;}
-td.wrap{word-break:break-word;max-width:200px;}
-a{border-radius:5px;padding:8px 16px;background:#FFA500;color:#333;text-decoration:none;transition:all 0.3s;}
-a:hover{background:#ffb84d;color:#000;box-shadow:0 0 8px rgba(255,165,0,0.7);}
-p.disclaimer{text-align:center;font-weight:bold;color:#CCCCCC;opacity:0.8;}
-.hidden{display:none;}
-</style>
-</head>
-<body>
-<h2 style="color:#00FFFF; font-weight:bold;">RedShark Threat Intelligence Dashboard</h2>
-
-<div class="card">
-    SecureNation Index: <b style="color:{{securenation_color}};">{{index}}</b> | 
-    State Threat Level: <b style="color:#FFD700;">{{state_score}}</b>
-</div>
-
-<div class="card"><h3>Malaysia Cyber Attack Map</h3><div id="map"></div></div>
-<div class="card"><h3>Threat Timeline</h3><div id="timeline"></div></div>
-<div class="card"><h3>MITRE ATT&CK Distribution</h3><div id="mitre"></div></div>
-<div class="card"><h3>Sector Targeting</h3><div id="sector"></div></div>
-
-<div class="card"><h3>Latest Threat Indicators</h3>
-<table>
-<tr><th>ID</th><th>Indicator</th><th>Type</th><th>Sector</th><th>Severity</th></tr>
-{% for r in rows %}
-<tr>
-<td>{{r.id}}</td>
-<td class="wrap">{{r.indicator}}</td>
-<td>{{r.type}}</td>
-<td>{{r.sector}}</td>
-<td>{{r.severity}}</td>
-</tr>
-{% endfor %}
-</table>
-</div>
-
-<div class="card">
-<h3 style="color:#00FFFF; font-weight:bold;">Download RedShark CTI Reports</h3>
-<a href="/csv">CSV</a>
-<a href="/json">JSON</a>
-<a href="/pdf">PDF</a>
-</div>
-
-<div class="card">
-<h3 style="cursor:pointer;" onclick="document.getElementById('status-body').classList.toggle('hidden')">
-Dashboard Status Check (click to expand/collapse)
-</h3>
-<div id="status-body" class="hidden">
-<table>
-<tr><th>Module</th><th>Status</th></tr>
-{% for module,stat in status.items() %}
-<tr><td>{{module}}</td><td>{{stat}}</td></tr>
-{% endfor %}
-</table>
-</div>
-</div>
-
-<p class="disclaimer">
-    Developed and analyzed by darkgrid@redshark.my using publicly available threat intelligence sources
-</p>
-
-<script>
-var timeline_fig = {{ timeline|safe }};
-Plotly.newPlot("timeline", timeline_fig.data, timeline_fig.layout);
-
-var mitre_fig = {{ mitre|safe }};
-Plotly.newPlot("mitre", mitre_fig.data, mitre_fig.layout);
-
-var sector_fig = {{ sector|safe }};
-Plotly.newPlot("sector", sector_fig.data, sector_fig.layout);
-
-var map_fig = {{ map|safe }};
-Plotly.newPlot("map", map_fig.data, map_fig.layout);
-
-// Heatmap blink animation
-setInterval(function(){
-    Plotly.restyle("map",{'marker.size': [[18]]});
-    setTimeout(function(){Plotly.restyle("map",{'marker.size': [[12]]});},700);
-},1500);
-
-// Column sorting
-function sortTable(n) {
-    var table=document.querySelector("table");
-    var rows=Array.from(table.rows).slice(1);
-    var asc=true;
-    rows.sort(function(a,b){
-        var x=a.cells[n].innerText.toLowerCase();
-        var y=b.cells[n].innerText.toLowerCase();
-        if(asc) return x>y?1:-1;
-        else return x<y?1:-1;
-    });
-    asc=!asc;
-    rows.forEach(r=>table.appendChild(r));
-}
-document.querySelectorAll("th").forEach((th,i)=>{ th.onclick=()=>sortTable(i); });
-</script>
-</body>
-</html>
-"""
 
 # ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
@@ -379,4 +269,4 @@ def pdf_export():
     return send_file(buffer,download_name="redshark-cti-report.pdf",as_attachment=True)
 
 if __name__=="__main__":
-    app.run(host="0.0.0.0",port=int(os.environ.get("PORT
+    app.run(host="0.0.0.0",port=int(os.environ.get("PORT",5000)))
