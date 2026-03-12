@@ -156,7 +156,6 @@ def malaysia_map():
         if s>=85: colors.append("red"); sizes.append(18)
         elif s>=70: colors.append("orange"); sizes.append(12)
         else: colors.append("yellow"); sizes.append(10)
-    # Pulsing animation: sizes alternate
     fig = go.Figure()
     fig.add_trace(go.Scattermapbox(
         lat=lat, lon=lon, mode="markers",
@@ -181,13 +180,11 @@ def timeline_chart():
     fig.add_trace(go.Scatter(
         x=x, y=y, mode="lines+markers",
         line=dict(color="#00eaff", width=4, shape='spline', smoothing=1.3),
-        marker=dict(size=10, color="#00eaff")
+        marker=dict(size=10, color="#00eaff", line=dict(width=2, color="#ffffff"))
     ))
-    fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a",
-                      font_color="#A3B8CC",
-                      xaxis=dict(showgrid=False, showline=True, linecolor="#444"),
-                      yaxis=dict(showgrid=False, zeroline=False),
-                      margin=dict(l=40,r=40,t=60,b=40))
+    fig.update_layout(plot_bgcolor="#0b1b2a", paper_bgcolor="#0b1b2a",
+                      font_color="#A3B8CC", xaxis=dict(showgrid=False),
+                      yaxis=dict(showgrid=False))
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 def sector_chart():
@@ -195,16 +192,15 @@ def sector_chart():
     labels=[r["sector"] for r in rows]; values=[r["c"] for r in rows]
     fig=go.Figure(go.Bar(x=labels, y=values,
                          marker=dict(color="#3a4a5c", line=dict(color="#6f8fbf",width=2))))
-    fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a",
+    fig.update_layout(plot_bgcolor="#0b1b2a", paper_bgcolor="#0b1b2a",
                       font_color="#A3B8CC", title="Sector Targeting")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def indicator_type_chart():
     rows=db().execute("SELECT type, COUNT(*) c FROM threats GROUP BY type").fetchall()
     labels=[r["type"] for r in rows]; values=[r["c"] for r in rows]
-    fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3,
-                                 pull=[0.05]*len(labels))])
-    fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a",
+    fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3, pull=[0.05]*len(labels))])
+    fig.update_layout(plot_bgcolor="#0b1b2a", paper_bgcolor="#0b1b2a",
                       font_color="#A3B8CC", title="Indicator Type Distribution")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
@@ -212,9 +208,9 @@ def mitre_chart():
     rows=db().execute("SELECT mitre, COUNT(*) c FROM threats GROUP BY mitre").fetchall()
     labels=[r["mitre"] for r in rows]; values=[r["c"] for r in rows]
     fig=go.Figure()
-    fig.add_trace(go.Scatter(x=labels, y=values, mode='lines',
+    fig.add_trace(go.Scatter(x=labels, y=values, mode='lines+markers',
                              line=dict(color="#ff9900", width=3)))
-    fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a",
+    fig.update_layout(plot_bgcolor="#0b1b2a", paper_bgcolor="#0b1b2a",
                       font_color="#A3B8CC", title="MITRE Techniques Trend",
                       xaxis=dict(showgrid=False), yaxis=dict(showgrid=False))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
@@ -232,9 +228,9 @@ body{background:#0b1b2a;color:#A3B8CC;font-family:Arial;}
 .card{background:#13263b;padding:20px;margin:15px;border-radius:8px;}
 table{width:100%;border-collapse:collapse;}
 td,th{padding:8px;border-bottom:1px solid #1f3d5c;text-align:center;}
-a.download-link{color:#DC143C;font-weight:bold;text-decoration:none;}
+a.download-link{color:#FFA500;font-weight:bold;text-decoration:none;}
 .center{text-align:center;}
-.blink {animation: blink-animation 1s infinite;}
+.blink {animation: blink-animation 1s infinite;color:#DC143C;font-weight:bold;}
 @keyframes blink-animation {0% {opacity:1;}50% {opacity:0;}100% {opacity:1;}}
 </style>
 </head>
@@ -311,6 +307,7 @@ Plotly.newPlot("timeline",timeline.data,timeline.layout);
 Plotly.newPlot("mitre",mitre.data,mitre.layout);
 Plotly.newPlot("sector",sector.data,sector.layout);
 Plotly.newPlot("indicator_type",indicator_type.data,indicator_type.layout);
+Plotly.newPlot("map",map.data,map.layout);
 
 // Animate pulsing for critical red markers
 var mapData = map.data[0];
