@@ -17,6 +17,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
 DB = "/tmp/threats.db"
+SURICATA_RULE_FILE = "/tmp/suricata.rules"
 
 # ---------------- DATABASE ----------------
 def db():
@@ -36,6 +37,13 @@ def init_db():
         severity INTEGER,
         lat REAL,
         lon REAL,
+        created TEXT
+    )
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS processed_rules(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        indicator TEXT UNIQUE,
         created TEXT
     )
     """)
@@ -69,16 +77,29 @@ mitre_techniques = [
 
 def random_location(): return random.choice(list(states.values()))
 def random_sector(): return random.choice(sectors)
+def random_mitre(): return random.choice(mitre_techniques)
+
+# ---------------- SURICATA RULE ----------------
+def create_suricata_rule(indicator,typ,severity,mitre):
+    if severity < 85: return
+    conn=db()
+    exists=conn.execute("SELECT 1 FROM processed_rules WHERE indicator=?",(indicator,)).fetchone()
+    if exists: return
+    rule=f'alert ip any any -> any any (msg:"RedShark CTI {mitre}"; content:"{indicator}"; sid:{random.randint(1000000,9999999)}; rev:1;)'
+    with open(SURICATA_RULE_FILE,"a") as f: f.write(rule+"\n")
+    conn.execute("INSERT INTO processed_rules(indicator,created) VALUES(?,?)",(indicator,datetime.utcnow()))
+    conn.commit()
 
 # ---------------- INSERT ----------------
 def insert_threat(indicator,typ,mitre,severity):
     lat,lon=random_location()
-    conn = db()
+    conn=db()
     conn.execute(
         "INSERT INTO threats(indicator,type,mitre,sector,severity,lat,lon,created) VALUES(?,?,?,?,?,?,?,?)",
         (indicator,typ,mitre,random_sector(),severity,lat,lon,datetime.utcnow())
     )
     conn.commit()
+    create_suricata_rule(indicator,typ,severity,mitre)
 
 # ---------------- FETCH FEEDS ----------------
 def fetch_threatfox():
@@ -86,7 +107,7 @@ def fetch_threatfox():
         url="https://threatfox.abuse.ch/export/json/recent/"
         r=requests.get(url,timeout=10).json()
         for i in r.get("data", [])[:20]:
-            insert_threat(i.get("ioc","unknown"), i.get("ioc_type","unknown"), random.choice(mitre_techniques), 85)
+            insert_threat(i.get("ioc","unknown"), i.get("ioc_type","unknown"), random_mitre(), 85)
     except: pass
 
 def fetch_urlhaus():
@@ -96,7 +117,7 @@ def fetch_urlhaus():
         reader=csv.reader(data)
         for row in list(reader)[10:30]:
             if len(row)>2:
-                insert_threat(row[2], "malware_url", random.choice(mitre_techniques), 70)
+                insert_threat(row[2], "malware_url", random_mitre(), 70)
     except: pass
 
 def fetch_feodo():
@@ -104,7 +125,7 @@ def fetch_feodo():
         url="https://feodotracker.abuse.ch/downloads/ipblocklist.json"
         data=requests.get(url,timeout=10).json()
         for item in data[:20]:
-            insert_threat(item.get("ip_address","0.0.0.0"), "ip", random.choice(mitre_techniques), 90)
+            insert_threat(item.get("ip_address","0.0.0.0"), "ip", random_mitre(), 90)
     except: pass
 
 def fetch_hashes():
@@ -112,7 +133,7 @@ def fetch_hashes():
         url="https://mb-api.abuse.ch/api/v1/"
         r=requests.post(url,data={"query":"get_recent"},timeout=10).json()
         for item in r.get("data",[])[:20]:
-            insert_threat(item.get("sha256_hash","unknown"), "hash", random.choice(mitre_techniques), 75)
+            insert_threat(item.get("sha256_hash","unknown"), "hash", random_mitre(), 75)
     except: pass
 
 def fetch_feeds():
@@ -123,7 +144,7 @@ def fetch_feeds():
 
 # ---------------- BACKGROUND FETCH ----------------
 def schedule_fetch(interval=600):
-    threading.Timer(interval, schedule_fetch).start()
+    threading.Timer(interval, schedule_fetch, [interval]).start()
     fetch_feeds()
 schedule_fetch()
 
@@ -137,86 +158,63 @@ def securenation():
 # ---------------- CHARTS ----------------
 def timeline_chart():
     rows=db().execute("SELECT substr(created,1,10) d,count(*) c FROM threats GROUP BY d").fetchall()
-    x=[r["d"] for r in rows]
-    y=[r["c"] for r in rows]
-    fig=go.Figure()
-    fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(color='#00FFFF')))
+    x=[r["d"] for r in rows]; y=[r["c"] for r in rows]
+    fig=go.Figure(); fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(color='#00FFFF')))
     fig.update_layout(plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff')
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def mitre_chart():
     rows=db().execute("SELECT mitre,count(*) c FROM threats GROUP BY mitre").fetchall()
-    labels = [r["mitre"] for r in rows]
-    values = [r["c"] for r in rows]
+    labels=[r["mitre"] for r in rows]; values=[r["c"] for r in rows]
     fig=go.Figure(data=[go.Pie(labels=labels,values=values,hole=.4)])
     fig.update_layout(plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff')
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def sector_chart():
     rows=db().execute("SELECT sector,count(*) c FROM threats GROUP BY sector").fetchall()
-    labels=[r["sector"] for r in rows if r["c"]>0]
-    values=[r["c"] for r in rows if r["c"]>0]
-    fig=go.Figure(data=[go.Bar(x=labels,y=values,
-        marker=dict(color='#8B0000',line=dict(color='white',width=1)),
-        text=values,textposition='auto')])
+    labels=[r["sector"] for r in rows if r["c"]>0]; values=[r["c"] for r in rows if r["c"]>0]
+    fig=go.Figure(data=[go.Bar(x=labels,y=values,marker=dict(color='#2E3B55',line=dict(color='white',width=1)),text=values,textposition='auto')])
     fig.update_layout(plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff')
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def malaysia_map_pulsing():
-    rows = db().execute("SELECT lat,lon,severity,indicator,sector FROM threats ORDER BY id DESC LIMIT 50").fetchall()
+    rows=db().execute("SELECT lat,lon,severity,indicator,sector FROM threats ORDER BY id DESC LIMIT 50").fetchall()
     lat, lon, colors, sizes, text_hover = [], [], [], [], []
-
     for r in rows:
-        lat.append(r["lat"])
-        lon.append(r["lon"])
+        lat.append(r["lat"]); lon.append(r["lon"])
         text_hover.append(f"Indicator: {r['indicator']}<br>Sector: {r['sector']}<br>Severity: {r['severity']}")
-        if r["severity"] >= 85:
-            colors.append("red")
-            sizes.append(16)
-        elif r["severity"] >= 70:
-            colors.append("orange")
-            sizes.append(12)
-        else:
-            colors.append("yellow")
-            sizes.append(8)
+        if r["severity"] >= 85: colors.append("red"); sizes.append(16)
+        elif r["severity"] >= 70: colors.append("orange"); sizes.append(12)
+        else: colors.append("yellow"); sizes.append(8)
 
     fig = go.Figure()
-    # Static + pulsing using opacity animation
     fig.add_trace(go.Scattergeo(
         lat=lat, lon=lon, mode="markers",
         marker=dict(size=sizes,color=colors,opacity=0.7,line=dict(width=2,color='white')),
         text=text_hover, hoverinfo="text"
     ))
 
-    # Animation frames for pulsing red markers
     frames=[]
     for op in [0.4,1.0]:
-        frame_colors = colors.copy()
         frame_sizes = sizes.copy()
         for i,c in enumerate(colors):
-            if c=="red":
-                frame_sizes[i]=18
+            if c=="red": frame_sizes[i]=18
         frames.append(go.Frame(data=[go.Scattergeo(
             lat=lat, lon=lon, mode="markers",
-            marker=dict(size=frame_sizes,color=frame_colors,opacity=op,line=dict(width=2,color='white')),
+            marker=dict(size=frame_sizes,color=colors,opacity=op,line=dict(width=2,color='white')),
             text=text_hover, hoverinfo="text"
         )]))
     fig.frames = frames
-
-    fig.update_layout(
-        geo=dict(scope="asia", center=dict(lat=4.5, lon=102), projection_type="natural earth"),
-        margin=dict(l=0,r=0,t=0,b=0),
-        plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff',
-        transition=dict(duration=800),
-        updatemenus=[]
-    )
-
+    fig.update_layout(geo=dict(scope="asia", center=dict(lat=4.5, lon=102), projection_type="natural earth"),
+                      margin=dict(l=0,r=0,t=0,b=0),
+                      plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff',
+                      transition=dict(duration=800), updatemenus=[])
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- DASHBOARD ----------------
+# ---------------- DASHBOARD HTML ----------------
 HTML = """<html>
 <head>
-<title>RedShark CTI Dashboard v2.9.1</title>
+<title>RedShark CTI Dashboard v3.0.3</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0b1b2a;color:#00eaff;font-family:Arial;}
@@ -227,7 +225,7 @@ th{cursor:pointer;}
 </style>
 </head>
 <body>
-<h2>RedShark CTI Dashboard v2.9.1</h2>
+<h2>RedShark CTI Dashboard v3.0.3</h2>
 <div class="card">
 {% set color = "green" %}
 {% if index >= 85 %}{% set color = "red" %}{% elif index >= 70 %}{% set color="orange" %}{% endif %}
@@ -249,7 +247,8 @@ SecureNation Index: <b style="color:{{color}}">{{index}}</b>
 <div class="card">
 <a href="/csv" style="color:orange;">Download CSV</a> |
 <a href="/json" style="color:orange;">Download JSON</a> |
-<a href="/pdf" style="color:orange;">Download PDF</a>
+<a href="/pdf" style="color:orange;">Download PDF</a> |
+<a href="/rules" style="color:orange;">Download IPS Signatures</a>
 </div>
 <script>
 var timeline={{timeline|safe}}
@@ -335,6 +334,12 @@ def pdf_export():
     pdf.build([timestamp, table])
     buffer.seek(0)
     return send_file(buffer,download_name="redshark-cti-report.pdf",as_attachment=True)
+
+@app.route("/rules")
+def download_rules():
+    if not os.path.exists(SURICATA_RULE_FILE):
+        open(SURICATA_RULE_FILE,"w").close()
+    return send_file(SURICATA_RULE_FILE, download_name="redshark-ips-signatures.rules", as_attachment=True)
 
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
