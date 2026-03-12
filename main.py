@@ -4,10 +4,6 @@ from flask import Flask, render_template_string, send_file
 import requests
 import plotly.graph_objs as go
 from plotly.utils import PlotlyJSONEncoder
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
 DB = "/tmp/soc.db"
@@ -54,7 +50,6 @@ SEVERITIES = ["Low","Medium","High","Critical"]
 MITRE_TACTICS = ["Reconnaissance","Initial Access","Execution","Persistence",
                  "Privilege Escalation","Defense Evasion","Credential Access",
                  "Discovery","Lateral Movement","Collection","Exfiltration","Command and Control"]
-
 COLOR_MAP = {"Low":"#00ff00","Medium":"#ffff00","High":"#ff8000","Critical":"#ff0000"}
 
 # ---------------- Insert Threat -----------------
@@ -70,13 +65,11 @@ def insert_threat(indicator, type_, source, city=None, severity=None, mitre=None
 
 # ---------------- Dummy Initial Data -----------------
 def seed_dummy_data():
-    # Only seed if DB is empty
     with sqlite3.connect(DB) as conn:
         count = conn.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
         if count==0:
             for i in range(15):
                 insert_threat(f"malicious{i+1}.com","Domain","Dummy Feed")
-
 seed_dummy_data()
 
 # ---------------- External Feeds -----------------
@@ -156,21 +149,23 @@ def severity_chart():
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-def malaysia_heatmap():
+# ---------------- Malaysia Attack Map -----------------
+def malaysia_attack_map():
     with sqlite3.connect(DB) as conn:
         conn.row_factory = sqlite3.Row
-        rows=conn.execute("SELECT city,severity,COUNT(*) as cnt FROM threats GROUP BY city,severity").fetchall()
-    fig=go.Figure()
+        rows = conn.execute("SELECT indicator,source,city,severity,mitre FROM threats").fetchall()
+    fig = go.Figure()
     for r in rows:
-        lat,lng=MALAYSIA_STATES.get(r["city"],[3.1390,101.6869])
-        color=COLOR_MAP.get(r["severity"],"#00e6ff")
-        size=max(8,r["cnt"]*5)
+        victim_lat, victim_lon = MALAYSIA_STATES.get(r["city"], [3.1390, 101.9758])
+        attacker_lat, attacker_lon = victim_lat + random.uniform(0.5, 2), victim_lon + random.uniform(0.5, 2)
+        color = COLOR_MAP.get(r["severity"], "#00e6ff")
         fig.add_trace(go.Scattermapbox(
-            lat=[lat],
-            lon=[lng],
-            mode="markers",
-            marker=go.scattermapbox.Marker(size=size,color=color,opacity=0.7),
-            text=f"{r['city']} - {r['severity']}: {r['cnt']} threats",
+            lat=[attacker_lat, victim_lat],
+            lon=[attacker_lon, victim_lon],
+            mode="lines+markers",
+            line=dict(color=color, width=3),
+            marker=dict(size=5, color=color),
+            text=f"{r['indicator']} | {r['source']} → {r['city']} | {r['severity']} | {r['mitre']}",
             hoverinfo="text"
         ))
     fig.update_layout(
@@ -180,10 +175,11 @@ def malaysia_heatmap():
         paper_bgcolor="#0b1b2a",
         plot_bgcolor="#0b1b2a",
         font_color="#00e6ff",
-        margin=dict(l=0,r=0,t=0,b=0)
+        margin=dict(l=0, r=0, t=0, b=0)
     )
-    return json.dumps(fig,cls=PlotlyJSONEncoder)
+    return json.dumps(fig, cls=PlotlyJSONEncoder)
 
+# ---------------- Top Indicators & Index -----------------
 def top_indicators(limit=10):
     with sqlite3.connect(DB) as conn:
         conn.row_factory = sqlite3.Row
@@ -222,9 +218,8 @@ def generate_json():
     mem.seek(0)
     return mem
 
-# ---------------- Routes -----------------
-TEMPLATE="""
-<html>
+# ---------------- Dashboard Template -----------------
+TEMPLATE = """<html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
@@ -268,7 +263,7 @@ a.button{background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none;
 </div>
 
 <div class="card">
-<h2>Malaysia Threat Heatmap</h2>
+<h2>Malaysia Attack Map</h2>
 <div id="heatmap" style="height:500px;"></div>
 </div>
 
@@ -299,6 +294,7 @@ Plotly.newPlot('heatmap', {{heatmap|safe}}.data, {{heatmap|safe}}.layout,{respon
 </html>
 """
 
+# ---------------- Routes -----------------
 @app.route("/")
 def dashboard():
     return render_template_string(
@@ -307,7 +303,7 @@ def dashboard():
         trend=trend_chart(),
         types=type_chart(),
         severity=severity_chart(),
-        heatmap=malaysia_heatmap(),
+        heatmap=malaysia_attack_map(),
         top=top_indicators()
     )
 
