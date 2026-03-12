@@ -69,7 +69,7 @@ def classify_risk(score):
     elif score >= 40: return "High"
     else: return "Medium"
 
-def insert_dummy_data(n=30):
+def insert_dummy_data(n=50):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     for _ in range(n):
@@ -114,7 +114,9 @@ def generate_type_chart():
     conn.close()
     labels = [r["type"] for r in rows] if rows else ["No Data"]
     values = [r["cnt"] for r in rows] if rows else [0]
-    fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3, marker=dict(colors=["#00e6ff","#006699","#003366","#00ffff","#3399ff"],line=dict(color='#ffffff',width=2)))])
+    fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3,
+                                 marker=dict(colors=["#00e6ff","#006699","#003366","#00ffff","#3399ff"],
+                                             line=dict(color='#ffffff',width=2)))])
     fig.update_traces(textinfo='label+percent', pull=[0.1 if v>0 else 0 for v in values])
     fig.update_layout(title="Threat Type Distribution",
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
@@ -124,13 +126,13 @@ def generate_type_chart():
 def generate_heatmap():
     with sqlite3.connect(DB) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT city,severity FROM threats WHERE severity='Critical'").fetchall()
-    lines = []
-    for r in rows:
+        rows = conn.execute("SELECT city FROM threats WHERE severity='Critical'").fetchall()
+    lines=[]
+    critical_cities = [r["city"] for r in rows]
+    for dest in critical_cities:
         src = random.choice(list(MALAYSIA_STATES.keys()))
-        dest = r["city"]
         lines.append((src,dest))
-    return lines
+    return lines, critical_cities
 
 # ---------------- SECURE INDEX ----------------
 def calculate_secure_index():
@@ -246,7 +248,8 @@ $(document).ready(function() {
     var heatmapCanvas = document.getElementById('heatmap');
     var ctx = heatmapCanvas.getContext('2d');
     ctx.clearRect(0,0,heatmapCanvas.width,heatmapCanvas.height);
-    var lines = {{ heatmap | safe }};
+    var lines = {{ heatmap_lines | safe }};
+    var critical_cities = {{ critical_cities | safe }};
     var positions = {{ positions | safe }};
     ctx.strokeStyle="#ff0000"; ctx.lineWidth=2;
     lines.forEach(function(l){
@@ -256,6 +259,16 @@ $(document).ready(function() {
             ctx.moveTo(src[0],src[1]);
             ctx.lineTo(dst[0],dst[1]);
             ctx.stroke();
+        }
+    });
+    // Fallback glowing dot for critical cities
+    ctx.fillStyle="#ff3300";
+    critical_cities.forEach(function(c){
+        var p = positions[c];
+        if(p){
+            ctx.beginPath();
+            ctx.arc(p[0],p[1],5,0,2*Math.PI);
+            ctx.fill();
         }
     });
 });
@@ -269,13 +282,13 @@ $(document).ready(function() {
 def dashboard():
     trend = generate_trend_chart()
     type_chart = generate_type_chart()
-    heatmap = generate_heatmap()
+    heatmap_lines, critical_cities = generate_heatmap()
     gauge = calculate_secure_index()
 
-    # map city name to canvas positions (simple scaling)
+    # map city name to canvas positions
     positions = {}
     width,height=600,400
-    for i,(city,coords) in enumerate(MALAYSIA_STATES.items()):
+    for city,coords in MALAYSIA_STATES.items():
         positions[city]=[coords[1]/116*width, height - (coords[0]/7*height)]
 
     conn = sqlite3.connect(DB)
@@ -286,7 +299,8 @@ def dashboard():
     return render_template_string(TEMPLATE,
                                   trend=trend,
                                   type_chart=type_chart,
-                                  heatmap=heatmap,
+                                  heatmap_lines=heatmap_lines,
+                                  critical_cities=critical_cities,
                                   positions=positions,
                                   gauge=gauge,
                                   table_data=table_data)
