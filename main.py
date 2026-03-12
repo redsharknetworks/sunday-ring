@@ -67,10 +67,10 @@ mitre_techniques = [
     "Exfiltration","Impact"
 ]
 
-# ---------------- HELPERS ----------------
 def random_location(): return random.choice(list(states.values()))
 def random_sector(): return random.choice(sectors)
 
+# ---------------- INSERT ----------------
 def insert_threat(indicator,typ,mitre,severity):
     lat,lon=random_location()
     conn = db()
@@ -130,12 +130,9 @@ schedule_fetch()
 # ---------------- METRICS ----------------
 def securenation():
     rows=db().execute("SELECT severity FROM threats ORDER BY id DESC LIMIT 100").fetchall()
-    if not rows: return "<b>0</b>"
+    if not rows: return 0
     score=sum([r["severity"] for r in rows])/len(rows)
-    color='green'
-    if score>=85: color='red'
-    elif score>=70: color='orange'
-    return f"<span style='color:{color};font-weight:bold'>{round(score,1)}</span>"
+    return round(score,1)
 
 # ---------------- CHARTS ----------------
 def timeline_chart():
@@ -144,13 +141,15 @@ def timeline_chart():
     y=[r["c"] for r in rows]
     fig=go.Figure()
     fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(color='#00FFFF')))
+    fig.update_layout(plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff')
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def mitre_chart():
     rows=db().execute("SELECT mitre,count(*) c FROM threats GROUP BY mitre").fetchall()
-    labels=[t for t in mitre_techniques]
+    labels=mitre_techniques
     values=[next((r["c"] for r in rows if r["mitre"]==t),0) for t in mitre_techniques]
     fig=go.Figure(data=[go.Pie(labels=labels,values=values,hole=.4)])
+    fig.update_layout(plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff')
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def sector_chart():
@@ -160,11 +159,11 @@ def sector_chart():
     fig=go.Figure(data=[go.Bar(x=labels,y=values,
         marker=dict(color='#0f3460',line=dict(color='white',width=1)),
         text=values,textposition='auto')])
-    fig.update_layout(plot_bgcolor='#0b1b2a', paper_bgcolor='#0b1b2a', font_color='#00eaff')
+    fig.update_layout(plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff')
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def malaysia_map():
-    rows = db().execute("SELECT lat,lon,severity,indicator,sector FROM threats ORDER BY id DESC LIMIT 50").fetchall()
+    rows=db().execute("SELECT lat,lon,severity,indicator,sector FROM threats ORDER BY id DESC LIMIT 50").fetchall()
     lat, lon, colors, sizes, text_hover = [], [], [], [], []
     for r in rows:
         lat.append(r["lat"])
@@ -173,42 +172,32 @@ def malaysia_map():
         if r["severity"] >= 85: colors.append("red"); sizes.append(14)
         elif r["severity"] >= 70: colors.append("orange"); sizes.append(10)
         else: colors.append("yellow"); sizes.append(8)
+
+    # Lines from random external attacker to threat location
     lats_lines, lons_lines = [], []
-    for i in range(len(lat)-1):
-        lats_lines += [lat[i], lat[i+1], None]
-        lons_lines += [lon[i], lon[i+1], None]
-    frames = []
-    for pulse in [14,18,14]:
-        frame = go.Frame(data=[go.Scattergeo(
-            lat=lat, lon=lon,
-            mode="markers+text",
-            marker=dict(size=[pulse if c=="red" else s for c,s in zip(colors,sizes)],
-                        color=colors, opacity=0.9, line=dict(width=2,color='white')),
-            text=text_hover,
-            hoverinfo="text"
-        )])
-        frames.append(frame)
-    fig = go.Figure(
+    for r in rows:
+        attacker_lat, attacker_lon = random.uniform(0,10), random.uniform(90,120)
+        lats_lines += [attacker_lat, r["lat"], None]
+        lons_lines += [attacker_lon, r["lon"], None]
+
+    fig=go.Figure(
         data=[go.Scattergeo(lat=lat, lon=lon, mode="markers",
                              marker=dict(size=sizes,color=colors,opacity=0.9,line=dict(width=2,color='white')),
                              text=text_hover, hoverinfo="text", name="Threats"),
               go.Scattergeo(lat=lats_lines, lon=lons_lines, mode='lines',
-                             line=dict(width=2,color='red'), opacity=0.5, name="Attack Path")],
-        frames=frames
+                             line=dict(width=2,color='red'), opacity=0.5, name="Attack Path")]
     )
     fig.update_layout(
         geo=dict(scope="asia",center=dict(lat=4.5,lon=102),projection_type="natural earth"),
         margin=dict(l=0,r=0,t=0,b=0),
-        updatemenus=[dict(type="buttons", showactive=False,
-                          buttons=[dict(label="Play", method="animate",
-                                        args=[None,{"frame":{"duration":700,"redraw":True},"fromcurrent":True}])])]
+        plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff'
     )
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 # ---------------- HTML ----------------
 HTML = """<html>
 <head>
-<title>RedShark CTI Dashboard v2.8</title>
+<title>RedShark Threat Intelligence Dashboard </title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0b1b2a;color:#00eaff;font-family:Arial;}
@@ -219,8 +208,12 @@ th{cursor:pointer;}
 </style>
 </head>
 <body>
-<h2>RedShark CTI Dashboard v2.8</h2>
-<div class="card">SecureNation Index: {{index}}</div>
+<h2>RedShark CTI Dashboard v2.8.1</h2>
+<div class="card">
+{% set color = "green" %}
+{% if index >= 85 %}{% set color = "red" %}{% elif index >= 70 %}{% set color="orange" %}{% endif %}
+SecureNation Index: <b style="color:{{color}}">{{index}}</b>
+</div>
 <div class="card"><h3>Malaysia Cyber Attack Map</h3><div id="map"></div></div>
 <div class="card"><h3>Threat Timeline</h3><div id="timeline"></div></div>
 <div class="card"><h3>MITRE ATT&CK Distribution</h3><div id="mitre"></div></div>
@@ -246,7 +239,7 @@ var map={{map|safe}}
 Plotly.newPlot("timeline",timeline.data,timeline.layout)
 Plotly.newPlot("mitre",mitre.data,mitre.layout)
 Plotly.newPlot("sector",sector.data,sector.layout)
-Plotly.newPlot("map",map.data,map.layout,map.frames)
+Plotly.newPlot("map",map.data,map.layout)
 </script>
 <p style="opacity:0.6;text-align:center">Developed and analyzed by darkgrid@redshark.my using public CTI sources</p>
 </body></html>
