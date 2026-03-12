@@ -44,7 +44,7 @@ def init_db():
 with app.app_context():
     init_db()
 
-# ---------------- MALAYSIA STATES ----------------
+# ---------------- STATES & SECTORS ----------------
 states = {
     "Johor":[1.4927,103.7414],"Kedah":[6.1184,100.3685],"Kelantan":[6.1254,102.2381],
     "Melaka":[2.1896,102.2501],"Negeri Sembilan":[2.7258,101.9424],"Pahang":[3.8126,103.3256],
@@ -54,14 +54,12 @@ states = {
     "Putrajaya":[2.9264,101.6964],"Labuan":[5.2831,115.2308]
 }
 
-# ---------------- SECTORS ----------------
 sectors = [
     "Government","Banking","Telecommunications","Energy","Healthcare",
     "Education","Manufacturing","Transportation","Retail","Media","Hospitality",
     "Agriculture","Technology","Logistics","Utilities"
 ]
 
-# ---------------- MITRE TECHNIQUES ----------------
 mitre_techniques = [
     "Reconnaissance","Resource Development","Initial Access","Execution",
     "Persistence","Privilege Escalation","Defense Evasion","Credential Access",
@@ -73,7 +71,6 @@ mitre_techniques = [
 def random_location(): return random.choice(list(states.values()))
 def random_sector(): return random.choice(sectors)
 
-# ---------------- INSERT THREAT ----------------
 def insert_threat(indicator,typ,mitre,severity):
     lat,lon=random_location()
     conn = db()
@@ -83,7 +80,7 @@ def insert_threat(indicator,typ,mitre,severity):
     )
     conn.commit()
 
-# ---------------- FEEDS ----------------
+# ---------------- FETCH FEEDS ----------------
 def fetch_threatfox():
     try:
         url="https://threatfox.abuse.ch/export/json/recent/"
@@ -124,11 +121,10 @@ def fetch_feeds():
     fetch_feodo()
     fetch_hashes()
 
-# ---------------- BACKGROUND PERIODIC FETCH ----------------
+# ---------------- BACKGROUND FETCH ----------------
 def schedule_fetch(interval=600):
     threading.Timer(interval, schedule_fetch).start()
     fetch_feeds()
-
 schedule_fetch()
 
 # ---------------- METRICS ----------------
@@ -161,11 +157,12 @@ def sector_chart():
     rows=db().execute("SELECT sector,count(*) c FROM threats GROUP BY sector").fetchall()
     labels=[r["sector"] for r in rows]
     values=[r["c"] for r in rows]
-    fig=go.Figure(data=[go.Bar(x=labels,y=values,marker=dict(color='darkred'),text=values,textposition='auto')])
+    fig=go.Figure(data=[go.Bar(x=labels,y=values,
+        marker=dict(color='#0f3460',line=dict(color='white',width=1)),
+        text=values,textposition='auto')])
     fig.update_layout(plot_bgcolor='#0b1b2a', paper_bgcolor='#0b1b2a', font_color='#00eaff')
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- MALAYSIA MAP ----------------
 def malaysia_map():
     rows = db().execute("SELECT lat,lon,severity,indicator,sector FROM threats ORDER BY id DESC LIMIT 50").fetchall()
     lat, lon, colors, sizes, text_hover = [], [], [], [], []
@@ -176,34 +173,30 @@ def malaysia_map():
         if r["severity"] >= 85: colors.append("red"); sizes.append(14)
         elif r["severity"] >= 70: colors.append("orange"); sizes.append(10)
         else: colors.append("yellow"); sizes.append(8)
+    # Attack lines
     lats_lines, lons_lines = [], []
     for i in range(len(lat)-1):
         lats_lines += [lat[i], lat[i+1], None]
         lons_lines += [lon[i], lon[i+1], None]
-
     frames = []
-    for flash_size in [14,18]:
+    for pulse in [14,18,14]:
         frame = go.Frame(data=[go.Scattergeo(
             lat=lat, lon=lon,
             mode="markers+text",
-            marker=dict(size=[flash_size if c=="red" else s for c,s in zip(colors,sizes)],
+            marker=dict(size=[pulse if c=="red" else s for c,s in zip(colors,sizes)],
                         color=colors, opacity=0.9, line=dict(width=2,color='white')),
             text=text_hover,
             hoverinfo="text"
         )])
         frames.append(frame)
-
     fig = go.Figure(
-        data=[go.Scattergeo(
-            lat=lat, lon=lon, mode="markers", marker=dict(size=sizes,color=colors,opacity=0.9,line=dict(width=2,color='white')),
-            text=text_hover, hoverinfo="text", name="Threats"
-        ),
-        go.Scattergeo(
-            lat=lats_lines, lon=lons_lines, mode='lines', line=dict(width=2,color='red'), opacity=0.5, name="Attack Path"
-        )],
+        data=[go.Scattergeo(lat=lat, lon=lon, mode="markers",
+                             marker=dict(size=sizes,color=colors,opacity=0.9,line=dict(width=2,color='white')),
+                             text=text_hover, hoverinfo="text", name="Threats"),
+              go.Scattergeo(lat=lats_lines, lon=lons_lines, mode='lines',
+                             line=dict(width=2,color='red'), opacity=0.5, name="Attack Path")],
         frames=frames
     )
-
     fig.update_layout(
         geo=dict(scope="asia",center=dict(lat=4.5,lon=102),projection_type="natural earth"),
         margin=dict(l=0,r=0,t=0,b=0),
@@ -213,8 +206,8 @@ def malaysia_map():
     )
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- DASHBOARD ----------------
-HTML = """ ... """  # Use the previous v2.7.x HTML with tablesorter, chart divs, download buttons
+# ---------------- HTML ----------------
+HTML = """PASTE THE FULL HTML TEMPLATE FROM v2.8 PREVIOUS STEP HERE"""
 
 @app.route("/")
 def dashboard():
@@ -238,14 +231,14 @@ def csv_export():
     writer.writerow(rows[0].keys())
     for r in rows: writer.writerow(list(r))
     mem=io.BytesIO(); mem.write(out.getvalue().encode()); mem.seek(0)
-    return send_file(mem,download_name="threats.csv",as_attachment=True)
+    return send_file(mem,download_name="redshark-cti-reports.csv",as_attachment=True)
 
 @app.route("/json")
 def json_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
     data=[dict(r) for r in rows]
     mem=io.BytesIO(); mem.write(json.dumps(data,indent=2).encode()); mem.seek(0)
-    return send_file(mem,download_name="threats.json",as_attachment=True)
+    return send_file(mem,download_name="redshark-cti-reports.json",as_attachment=True)
 
 @app.route("/pdf")
 def pdf_export():
