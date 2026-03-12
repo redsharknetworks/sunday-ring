@@ -5,6 +5,7 @@ import json
 import csv
 import io
 import random
+import threading
 from datetime import datetime
 from flask import Flask, render_template_string, send_file
 import plotly.graph_objs as go
@@ -15,7 +16,6 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
-
 DB="/tmp/threats.db"
 
 # ---------------- DATABASE ----------------
@@ -120,15 +120,22 @@ def fetch_feeds():
     fetch_feodo()
     fetch_hashes()
 
+# ---------------- BACKGROUND PERIODIC FETCH ----------------
+def schedule_fetch(interval=600):  # every 10 minutes
+    threading.Timer(interval, schedule_fetch).start()
+    fetch_feeds()
+
+schedule_fetch()  # start periodic feed fetch
+
 # ---------------- METRICS ----------------
 def securenation():
     rows=db().execute("SELECT severity FROM threats ORDER BY id DESC LIMIT 100").fetchall()
     if not rows: return 0
     score=sum([r["severity"] for r in rows])/len(rows)
-    # Severity color: green <50, orange <70, red >=70
-    if score>=70: return f"<span style='color:red;font-weight:bold'>{round(score,1)}</span>"
-    elif score>=50: return f"<span style='color:orange;font-weight:bold'>{round(score,1)}</span>"
-    else: return f"<span style='color:green;font-weight:bold'>{round(score,1)}</span>"
+    if score>=85: color='red'
+    elif score>=70: color='orange'
+    else: color='green'
+    return f"<span style='color:{color};font-weight:bold'>{round(score,1)}</span>"
 
 # ---------------- CHARTS ----------------
 def timeline_chart():
@@ -156,23 +163,36 @@ def sector_chart():
     fig.update_layout(plot_bgcolor='#0b1b2a', paper_bgcolor='#0b1b2a', font_color='#00eaff')
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
+# ---------------- MALAYSIA MAP WITH GLOWING CRITICAL ----------------
 def malaysia_map():
     rows=db().execute("SELECT lat,lon,severity FROM threats ORDER BY id DESC LIMIT 50").fetchall()
-    lat, lon, colors = [], [], []
+    lat, lon, colors, sizes = [], [], [], []
     for r in rows:
         lat.append(r["lat"])
         lon.append(r["lon"])
         if r["severity"]>=85:
             colors.append("red")
+            sizes.append(14)
         elif r["severity"]>=70:
             colors.append("orange")
+            sizes.append(10)
         else:
             colors.append("yellow")
-    fig=go.Figure(go.Scattergeo(
-        lat=lat,
-        lon=lon,
-        mode="markers",
-        marker=dict(size=8,color=colors,opacity=0.9,line=dict(width=1,color='white'))
+            sizes.append(8)
+    # Optional: draw lines between sequential threats (attack path)
+    lats_lines, lons_lines = [], []
+    for i in range(len(lat)-1):
+        lats_lines += [lat[i], lat[i+1], None]
+        lons_lines += [lon[i], lon[i+1], None]
+    fig=go.Figure()
+    fig.add_trace(go.Scattergeo(
+        lat=lat, lon=lon, mode="markers",
+        marker=dict(size=sizes,color=colors,opacity=0.9,line=dict(width=2,color='white')),
+        name="Threats"
+    ))
+    fig.add_trace(go.Scattergeo(
+        lat=lats_lines, lon=lons_lines, mode='lines',
+        line=dict(width=2,color='red'), opacity=0.5, name="Attack Path"
     ))
     fig.update_layout(
         geo=dict(scope="asia",center=dict(lat=4.5,lon=102),projection_type="natural earth"),
@@ -180,7 +200,7 @@ def malaysia_map():
     )
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- DASHBOARD HTML ----------------
+# ---------------- DASHBOARD ----------------
 HTML="""
 <html>
 <head>
@@ -253,7 +273,6 @@ SecureNation Index: {{index|safe}}
 
 <script>
 $(document).ready(function() { $("#threat-table").tablesorter(); });
-
 var timeline={{timeline|safe}}
 var mitre={{mitre|safe}}
 var sector={{sector|safe}}
