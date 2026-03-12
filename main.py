@@ -7,7 +7,6 @@ import time
 import random
 from datetime import datetime, timedelta
 from flask import Flask, render_template_string, send_file, jsonify
-import requests
 import folium
 from folium.plugins import MarkerCluster
 import plotly
@@ -16,8 +15,7 @@ import json
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.styles import getSampleStyleSheet
 
 # ---------------- CONFIG ----------------
 app = Flask(__name__)
@@ -25,7 +23,13 @@ DB_PATH = os.getenv("DB_PATH", "/tmp/threats.db")
 
 # ---------------- DATABASE ----------------
 def get_db_connection():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception as e:
+        print("DB connection failed:", e)
+        return None
 
 def ensure_database():
     conn = get_db_connection()
@@ -72,7 +76,7 @@ def classify_risk(score):
     elif score >= 40: return "High"
     else: return "Medium"
 
-def insert_dummy_data(n=20):
+def insert_dummy_data(n=5):
     conn = get_db_connection()
     c = conn.cursor()
     for _ in range(n):
@@ -80,7 +84,6 @@ def insert_dummy_data(n=20):
         score = random.randint(10,95)
         classification = classify_risk(score)
         mitre = random.choice(MITRE_ATTACKS)
-        state = random.choice(list(MALAYSIA_STATES.keys()))
         c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, created_at)
                      VALUES (?, ?, ?, ?, ?, ?, ?)""",
                   (f"Pulse-{random.randint(1,50)}",
@@ -96,14 +99,13 @@ def insert_dummy_data(n=20):
 # ---------------- SCHEDULER ----------------
 def scheduler():
     while True:
-        insert_dummy_data(5)
+        insert_dummy_data(3)
         cleanup_old_records()
-        time.sleep(1800)  # every 30 min
+        time.sleep(1800)  # every 30 minutes
 
 # ---------------- DASHBOARD DATA ----------------
 def fetch_dashboard_data(limit=50):
     conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
     c = conn.cursor()
     rows = c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     conn.close()
@@ -132,7 +134,7 @@ def generate_plotly_charts():
     timeline_chart = go.Figure()
     timeline_chart.add_trace(go.Scatter(x=dates, y=counts, mode='lines+markers', line=dict(color='#00FFFF')))
     timeline_chart.update_layout(title="Threat Timeline", plot_bgcolor='#0b1b2a', paper_bgcolor='#0b1b2a', font_color='#00FFFF')
-    
+
     # MITRE pie
     mitre_counts = {}
     for r in rows:
@@ -151,7 +153,7 @@ def generate_heatmap():
     rows = fetch_dashboard_data(50)
     m = folium.Map(location=[4.2105,101.9758], zoom_start=6, tiles='CartoDB dark_matter')
     for r in rows:
-        if r["risk_score"]>=70:  # only critical
+        if r["risk_score"]>=70:
             state = random.choice(list(MALAYSIA_STATES.keys()))
             coords = MALAYSIA_STATES[state]
             folium.CircleMarker(location=coords,
@@ -168,9 +170,7 @@ def generate_pdf(rows):
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4))
     elements = []
     styles = getSampleStyleSheet()
-    styleH = styles['Heading1']
-    styleN = styles['Normal']
-    elements.append(Paragraph("RedShark Threat Intelligence Dashboard", styleH))
+    elements.append(Paragraph("RedShark Threat Intelligence Dashboard", styles['Heading1']))
     elements.append(Spacer(1,12))
     table_data = [["ID","Pulse","Indicator","Type","Class","MITRE","Risk","Created"]]
     for r in rows:
@@ -189,8 +189,7 @@ def generate_pdf(rows):
     return buffer
 
 # ---------------- DASHBOARD TEMPLATE ----------------
-TEMPLATE = """
-<html>
+TEMPLATE = """<html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
 <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css"/>
@@ -310,6 +309,6 @@ def download_pdf():
 # ---------------- START ----------------
 if __name__=="__main__":
     ensure_database()
-    insert_dummy_data(20)
+    insert_dummy_data(5)  # small initial data to avoid blocking
     threading.Thread(target=scheduler, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)), debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
