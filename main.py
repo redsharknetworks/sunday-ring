@@ -162,32 +162,48 @@ def sector_chart():
     fig.update_layout(plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff')
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
-def malaysia_map():
+def malaysia_map_blink():
     rows=db().execute("SELECT lat,lon,severity,indicator,sector FROM threats ORDER BY id DESC LIMIT 50").fetchall()
-    lat, lon, colors, sizes, text_hover = [], [], [], [], []
-    for r in rows:
+    lat, lon, colors, sizes, text_hover, critical_idx = [], [], [], [], [], []
+    for i,r in enumerate(rows):
         lat.append(r["lat"])
         lon.append(r["lon"])
         text_hover.append(f"Indicator: {r['indicator']}<br>Sector: {r['sector']}<br>Severity: {r['severity']}")
-        if r["severity"] >= 85: colors.append("red"); sizes.append(16)
-        elif r["severity"] >= 70: colors.append("orange"); sizes.append(12)
-        else: colors.append("yellow"); sizes.append(8)
-    fig=go.Figure(
-        data=[go.Scattergeo(lat=lat, lon=lon, mode="markers",
-                             marker=dict(size=sizes,color=colors,opacity=0.8,line=dict(width=2,color='white')),
-                             text=text_hover, hoverinfo="text", name="Threats")]
-    )
+        if r["severity"] >= 85:
+            colors.append("red"); sizes.append(16); critical_idx.append(i)
+        elif r["severity"] >= 70:
+            colors.append("orange"); sizes.append(12)
+        else:
+            colors.append("yellow"); sizes.append(8)
+    fig=go.Figure()
+    fig.add_trace(go.Scattergeo(
+        lat=lat, lon=lon, mode="markers",
+        marker=dict(size=sizes,color=colors,opacity=0.8,line=dict(width=2,color='white')),
+        text=text_hover, hoverinfo="text", name="Threats"
+    ))
+    frames = []
+    for op in [0.3,1.0]:
+        frame_colors = colors.copy()
+        for idx in critical_idx:
+            frame_colors[idx] = 'red' if op==1.0 else 'rgba(255,0,0,0.3)'
+        frames.append(go.Frame(data=[go.Scattergeo(lat=lat, lon=lon,
+            mode="markers",
+            marker=dict(size=sizes,color=frame_colors,opacity=1.0,line=dict(width=2,color='white')),
+            text=text_hover, hoverinfo="text")]))
+    fig.frames = frames
+    fig.update_layout(updatemenus=[dict(type="buttons", showactive=False, buttons=[dict(label="Play",
+        method="animate", args=[None, {"frame": {"duration": 500, "redraw": True}, "fromcurrent": True, "transition": {"duration": 0}}])])])
     fig.update_layout(
-        geo=dict(scope="asia",center=dict(lat=4.5,lon=102),projection_type="natural earth"),
+        geo=dict(scope="asia", center=dict(lat=4.5,lon=102), projection_type="natural earth"),
         margin=dict(l=0,r=0,t=0,b=0),
         plot_bgcolor='#1f2a38', paper_bgcolor='#1f2a38', font_color='#00eaff'
     )
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- DASHBOARD HTML ----------------
+# ---------------- DASHBOARD ----------------
 HTML = """<html>
 <head>
-<title>RedShark CTI Dashboard v2.8.3</title>
+<title>RedShark CTI Dashboard v2.9</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0b1b2a;color:#00eaff;font-family:Arial;}
@@ -198,7 +214,7 @@ th{cursor:pointer;}
 </style>
 </head>
 <body>
-<h2>RedShark CTI Dashboard v2.8.3</h2>
+<h2>RedShark CTI Dashboard v2.9</h2>
 <div class="card">
 {% set color = "green" %}
 {% if index >= 85 %}{% set color = "red" %}{% elif index >= 70 %}{% set color="orange" %}{% endif %}
@@ -230,9 +246,7 @@ var map={{map|safe}}
 Plotly.newPlot("timeline",timeline.data,timeline.layout)
 Plotly.newPlot("mitre",mitre.data,mitre.layout)
 Plotly.newPlot("sector",sector.data,sector.layout)
-Plotly.newPlot("map",map.data,map.layout)
-
-// ---------------- SORT TABLE ----------------
+Plotly.newPlot("map",map.data,map.layout,{},{},{})
 function sortTable(n){
   var table=document.getElementById("threats"),rows,i,x,y,shouldSwitch,dir,switchcount=0;
   shouldSwitch=true;dir="asc";
@@ -266,7 +280,7 @@ def dashboard():
         timeline=timeline_chart(),
         mitre=mitre_chart(),
         sector=sector_chart(),
-        map=malaysia_map()
+        map=malaysia_map_blink()
     )
 
 # ---------------- EXPORT ----------------
