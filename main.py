@@ -51,14 +51,21 @@ states = {
     "Putrajaya":[2.9264,101.6964],"Labuan":[5.2831,115.2308]
 }
 
-sectors = ["Government","Banking","Telecommunications","Energy","Healthcare"]
+# ---------------- SECTORS ----------------
+sectors = [
+    "Government","Banking & Finance","Telecommunications","Energy","Healthcare",
+    "Education","Manufacturing","Transportation","Retail","Media","Hospitality",
+    "Agriculture","Technology","Logistics","Utilities"
+]
 
+# ---------------- ATTACK SOURCES ----------------
 attack_sources = [
     [35.6895,139.6917],[55.7558,37.6173],[37.7749,-122.4194],
     [39.9042,116.4074],[28.6139,77.2090],[51.5074,-0.1278],
     [48.8566,2.3522],[52.52,13.4050]
 ]
 
+# ---------------- MITRE ATT&CK TECHNIQUES ----------------
 mitre_techniques = [
 "T1003 Credential Dumping","T1059 Command and Scripting Interpreter",
 "T1047 Windows Management Instrumentation","T1027 Obfuscated Files or Information",
@@ -71,14 +78,11 @@ mitre_techniques = [
 "T1110 Brute Force","T1098 Account Manipulation"
 ]
 
-def random_location():
-    return random.choice(list(states.values()))
-def random_sector():
-    return random.choice(sectors)
-def random_mitre():
-    return random.choice(mitre_techniques)
+# ---------------- HELPER FUNCTIONS ----------------
+def random_location(): return random.choice(list(states.values()))
+def random_sector(): return random.choice(sectors)
+def random_mitre(): return random.choice(mitre_techniques)
 
-# ---------------- INSERT THREAT ----------------
 def insert_threat(indicator,typ,severity):
     lat,lon = random_location()
     conn = db()
@@ -88,15 +92,14 @@ def insert_threat(indicator,typ,severity):
     )
     conn.commit()
 
-# ---------------- FEEDS ----------------
+# ---------------- FETCH EXTERNAL FEEDS ----------------
 def fetch_threatfox():
     try:
         url="https://threatfox.abuse.ch/export/json/recent/"
         r=requests.get(url,timeout=10).json()
         for i in r["data"][:20]:
             insert_threat(i["ioc"],i["ioc_type"],85)
-    except:
-        pass
+    except: pass
 
 def fetch_urlhaus():
     try:
@@ -104,34 +107,25 @@ def fetch_urlhaus():
         data=requests.get(url,timeout=10).text.splitlines()
         reader=csv.reader(data)
         for row in list(reader)[10:30]:
-            if len(row)>2:
-                insert_threat(row[2],"malware_url",70)
-    except:
-        pass
+            if len(row)>2: insert_threat(row[2],"malware_url",70)
+    except: pass
 
 def fetch_feodo():
     try:
         url="https://feodotracker.abuse.ch/downloads/ipblocklist.json"
         data=requests.get(url,timeout=10).json()
-        for item in data[:20]:
-            insert_threat(item["ip_address"],"ip",90)
-    except:
-        pass
+        for item in data[:20]: insert_threat(item["ip_address"],"ip",90)
+    except: pass
 
 def fetch_hashes():
     try:
         url="https://mb-api.abuse.ch/api/v1/"
         r=requests.post(url,data={"query":"get_recent"},timeout=10).json()
-        for item in r["data"][:20]:
-            insert_threat(item["sha256_hash"],"hash",75)
-    except:
-        pass
+        for item in r["data"][:20]: insert_threat(item["sha256_hash"],"hash",75)
+    except: pass
 
 def fetch_feeds():
-    fetch_threatfox()
-    fetch_urlhaus()
-    fetch_feodo()
-    fetch_hashes()
+    fetch_threatfox(); fetch_urlhaus(); fetch_feodo(); fetch_hashes()
 
 fetch_feeds()
 
@@ -151,8 +145,7 @@ def state_threat_score():
 # ---------------- CHARTS ----------------
 def timeline_chart():
     rows=db().execute("SELECT substr(created,1,10) d,count(*) c FROM threats GROUP BY d").fetchall()
-    x=[r["d"] for r in rows]
-    y=[r["c"] for r in rows]
+    x=[r["d"] for r in rows]; y=[r["c"] for r in rows]
     fig=go.Figure()
     fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(color='#00FFFF')))
     fig.update_layout(plot_bgcolor='#0b1b2a',paper_bgcolor='#0b1b2a',font=dict(color='#00FFFF'),title="Threat Timeline")
@@ -160,30 +153,26 @@ def timeline_chart():
 
 def mitre_chart():
     rows=db().execute("SELECT mitre,count(*) c FROM threats GROUP BY mitre").fetchall()
-    labels=[r["mitre"] for r in rows]
-    values=[r["c"] for r in rows]
+    labels=[r["mitre"] for r in rows]; values=[r["c"] for r in rows]
     fig=go.Figure(data=[go.Pie(labels=labels,values=values,hole=.4)])
+    fig.update_layout(plot_bgcolor='#0b1b2a',paper_bgcolor='#0b1b2a',font=dict(color='#00FFFF'))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def sector_chart():
     rows=db().execute("SELECT sector,count(*) c FROM threats GROUP BY sector").fetchall()
-    labels=[r["sector"] for r in rows]
-    values=[r["c"] for r in rows]
-    fig=go.Figure(data=[go.Bar(x=labels,y=values,marker=dict(color='#00FFFF'))])
+    labels=[r["sector"] for r in rows]; values=[r["c"] for r in rows]
+    fig=go.Figure(data=[go.Bar(x=labels,y=values,marker=dict(color='navy'))])
+    fig.update_layout(plot_bgcolor='#0b1b2a',paper_bgcolor='#0b1b2a',font=dict(color='#00FFFF'),title="Sector Targeting")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def malaysia_map():
     rows=db().execute("SELECT lat,lon,severity FROM threats ORDER BY id DESC LIMIT 50").fetchall()
     victim_lat, victim_lon, colors, sizes = [], [], [], []
     for r in rows:
-        victim_lat.append(r["lat"])
-        victim_lon.append(r["lon"])
-        if r["severity"]>=85:
-            colors.append("red"); sizes.append(16)
-        elif r["severity"]>=70:
-            colors.append("orange"); sizes.append(12)
-        else:
-            colors.append("yellow"); sizes.append(8)
+        victim_lat.append(r["lat"]); victim_lon.append(r["lon"])
+        if r["severity"]>=85: colors.append("red"); sizes.append(16)
+        elif r["severity"]>=70: colors.append("orange"); sizes.append(12)
+        else: colors.append("yellow"); sizes.append(8)
     fig=go.Figure()
     fig.add_trace(go.Scattergeo(lat=victim_lat,lon=victim_lon,mode="markers",
         marker=dict(size=sizes,color=colors,opacity=0.9,line=dict(width=2,color="rgba(255,0,0,0.7)"))))
@@ -195,7 +184,7 @@ def malaysia_map():
                       margin=dict(l=0,r=0,t=0,b=0))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- DASHBOARD ----------------
+# ---------------- DASHBOARD HTML ----------------
 HTML="""
 <html>
 <head>
@@ -206,15 +195,22 @@ body{background:#0b1b2a;color:#00eaff;font-family:Arial;}
 .card{background:#13263b;padding:20px;margin:15px;border-radius:8px;}
 table{width:100%;border-collapse:collapse;}
 td,th{padding:8px;border-bottom:1px solid #1f3d5c;}
+a:hover{opacity:0.8;}
 </style>
 </head>
 <body>
-<h2>RedShark Threat Intelligence Dashboard</h2>
-<div class="card">SecureNation Index: <b>{{index}}</b> | State Threat Level: <b>{{state_score}}</b></div>
+<h2 style="color:#333333; font-weight:bold;">RedShark Threat Intelligence Dashboard</h2>
+
+<div class="card">
+    SecureNation Index: <b style="color:#333333;">{{index}}</b> | 
+    State Threat Level: <b style="color:#333333;">{{state_score}}</b>
+</div>
+
 <div class="card"><h3>Malaysia Cyber Attack Map</h3><div id="map"></div></div>
 <div class="card"><h3>Threat Timeline</h3><div id="timeline"></div></div>
 <div class="card"><h3>MITRE ATT&CK Distribution</h3><div id="mitre"></div></div>
 <div class="card"><h3>Sector Targeting</h3><div id="sector"></div></div>
+
 <div class="card"><h3>Latest Threat Indicators</h3>
 <table>
 <tr><th>ID</th><th>Indicator</th><th>Type</th><th>Sector</th><th>Severity</th></tr>
@@ -223,7 +219,18 @@ td,th{padding:8px;border-bottom:1px solid #1f3d5c;}
 {% endfor %}
 </table>
 </div>
-<div class="card"><a href="/csv">Download CSV</a> | <a href="/json">Download JSON</a> | <a href="/pdf">Download PDF</a></div>
+
+<div class="card">
+<h3 style="color:#333333; font-weight:bold;">Download CTI Reports</h3>
+<a href="/csv" style="background:#FFA500; color:#333; padding:8px 16px; margin-right:10px; border-radius:5px; text-decoration:none;">CSV</a>
+<a href="/json" style="background:#FFA500; color:#333; padding:8px 16px; margin-right:10px; border-radius:5px; text-decoration:none;">JSON</a>
+<a href="/pdf" style="background:#FFA500; color:#333; padding:8px 16px; border-radius:5px; text-decoration:none;">PDF</a>
+</div>
+
+<p style="opacity:0.6; color:grey;">
+    Developed and analyzed by darkgrid@redshark.my using publicly available threat intelligence sources
+</p>
+
 <script>
 Plotly.newPlot("timeline",{{timeline|safe}}.data,{{timeline|safe}}.layout);
 Plotly.newPlot("mitre",{{mitre|safe}}.data,{{mitre|safe}}.layout);
@@ -235,7 +242,6 @@ setInterval(function(){
     setTimeout(function(){Plotly.restyle("map",{'marker.size': [[12]]});},700);
 },1500);
 </script>
-<p style="opacity:0.6">Developed and analyzed by darkgrid@redshark.my using publicly available threat intelligence sources</p>
 </body>
 </html>
 """
@@ -260,10 +266,8 @@ def csv_export():
     out=io.StringIO()
     writer=csv.writer(out)
     writer.writerow(rows[0].keys())
-    for r in rows:
-        writer.writerow(list(r))
-    mem=io.BytesIO()
-    mem.write(out.getvalue().encode()); mem.seek(0)
+    for r in rows: writer.writerow(list(r))
+    mem=io.BytesIO(); mem.write(out.getvalue().encode()); mem.seek(0)
     return send_file(mem,download_name="threats.csv",as_attachment=True)
 
 @app.route("/json")
@@ -278,8 +282,7 @@ def pdf_export():
     rows=db().execute("SELECT indicator,type,sector,severity FROM threats LIMIT 50").fetchall()
     buffer=io.BytesIO()
     data=[["Indicator","Type","Sector","Severity"]]
-    for r in rows:
-        data.append([r["indicator"],r["type"],r["sector"],r["severity"]])
+    for r in rows: data.append([r["indicator"],r["type"],r["sector"],r["severity"]])
     pdf=SimpleDocTemplate(buffer,pagesize=landscape(A4))
     table=Table(data)
     pdf.build([table])
