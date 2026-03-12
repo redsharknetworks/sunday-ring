@@ -169,7 +169,7 @@ def sector_chart():
     fig=go.Figure(go.Bar(
         x=labels,
         y=values,
-        marker=dict(color='navy', line=dict(color='cyan', width=1.5)),
+        marker=dict(color='#003366', line=dict(color='cyan', width=1.5)),  # Dark blue bars
         hovertemplate='%{x}: %{y}<extra></extra>'
     ))
     fig.update_layout(
@@ -239,7 +239,7 @@ a:hover{background:#ffb84d;color:#000;box-shadow:0 0 8px rgba(255,165,0,0.7);}
 </div>
 
 <div class="card">
-<h3 style="color:#00FFFF; font-weight:bold;">Download CTI Reports</h3>
+<h3 style="color:#00FFFF; font-weight:bold;">Download RedShark CTI Reports</h3>
 <a href="/csv">CSV</a>
 <a href="/json">JSON</a>
 <a href="/pdf">PDF</a>
