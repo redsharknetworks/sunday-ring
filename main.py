@@ -7,9 +7,15 @@ import io
 import random
 import threading
 from datetime import datetime
+
 from flask import Flask, render_template_string, send_file
+
 import plotly.graph_objs as go
 import plotly
+
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table
+from reportlab.lib.pagesizes import landscape, A4
+from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
 
@@ -26,6 +32,7 @@ def db():
 
 
 def init_db():
+
     conn=db()
 
     conn.execute("""
@@ -42,18 +49,13 @@ def init_db():
     )
     """)
 
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS rules(
-        indicator TEXT UNIQUE
-    )
-    """)
-
     conn.commit()
 
 
 init_db()
 
-# ---------------- MALAYSIA STATES ----------------
+
+# ---------------- STATES ----------------
 
 states={
 "Johor":[1.49,103.74],
@@ -73,20 +75,23 @@ states={
 }
 
 sectors=[
-"Government","Banking","Telecommunications","Energy",
-"Healthcare","Education","Manufacturing",
-"Transportation","Retail","Technology"
+"Government","Banking","Telecommunications",
+"Energy","Healthcare","Education",
+"Manufacturing","Transportation",
+"Retail","Technology"
 ]
 
 mitre=[
-"Reconnaissance","Initial Access","Execution","Persistence",
-"Privilege Escalation","Defense Evasion","Credential Access",
-"Discovery","Lateral Movement","Collection",
-"Command and Control","Exfiltration","Impact"
+"Reconnaissance","Initial Access","Execution",
+"Persistence","Privilege Escalation",
+"Defense Evasion","Credential Access",
+"Discovery","Lateral Movement",
+"Collection","Command and Control",
+"Exfiltration","Impact"
 ]
 
 
-# ---------------- RANDOM HELPERS ----------------
+# ---------------- HELPERS ----------------
 
 def rand_loc():
     return random.choice(list(states.values()))
@@ -122,36 +127,8 @@ def insert_threat(indicator,typ,severity):
 
     conn.commit()
 
-    create_rule(indicator,severity)
 
-
-
-# ---------------- SURICATA RULE ----------------
-
-def create_rule(indicator,severity):
-
-    if severity<85:
-        return
-
-    conn=db()
-
-    r=conn.execute("SELECT indicator FROM rules WHERE indicator=?",(indicator,)).fetchone()
-
-    if r:
-        return
-
-    sid=random.randint(1000000,9999999)
-
-    rule=f'alert ip any any -> any any (msg:"RedShark CTI"; content:"{indicator}"; sid:{sid}; rev:1;)'
-
-    with open(RULE_FILE,"a") as f:
-        f.write(rule+"\n")
-
-    conn.execute("INSERT INTO rules VALUES(?)",(indicator,))
-    conn.commit()
-
-
-# ---------------- FETCH FEEDS ----------------
+# ---------------- FEEDS ----------------
 
 def fetch_threatfox():
 
@@ -160,7 +137,7 @@ def fetch_threatfox():
         url="https://threatfox.abuse.ch/export/json/recent/"
         r=requests.get(url,timeout=10).json()
 
-        for i in r.get("data",[])[:15]:
+        for i in r.get("data",[])[:20]:
 
             insert_threat(
                 i.get("ioc","unknown"),
@@ -179,7 +156,7 @@ def fetch_feodo():
         url="https://feodotracker.abuse.ch/downloads/ipblocklist.json"
         data=requests.get(url,timeout=10).json()
 
-        for i in data[:15]:
+        for i in data[:20]:
 
             insert_threat(
                 i.get("ip_address","0.0.0.0"),
@@ -197,12 +174,10 @@ def fetch_feeds():
     fetch_feodo()
 
 
-
 def scheduler():
 
     fetch_feeds()
-
-    threading.Timer(600,scheduler).start()
+    threading.Timer(900,scheduler).start()
 
 
 scheduler()
@@ -213,7 +188,8 @@ scheduler()
 def securenation():
 
     rows=db().execute("""
-    SELECT severity FROM threats ORDER BY id DESC LIMIT 100
+    SELECT severity FROM threats
+    ORDER BY id DESC LIMIT 100
     """).fetchall()
 
     if not rows:
@@ -224,7 +200,7 @@ def securenation():
     return round(score,1)
 
 
-# ---------------- MALAYSIA HEATMAP ----------------
+# ---------------- HEATMAP ----------------
 
 def malaysia_map():
 
@@ -247,53 +223,140 @@ def malaysia_map():
         mapbox_style="carto-darkmatter",
         mapbox_center={"lat":4.5,"lon":102},
         mapbox_zoom=4,
-        margin=dict(l=0,r=0,t=0,b=0),
         paper_bgcolor="#0b1b2a"
     )
 
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 
+# ---------------- TIMELINE ----------------
 
-# ---------------- TREND CHART ----------------
-
-def trend_chart():
+def timeline_chart():
 
     rows=db().execute("""
-    SELECT substr(created,1,10) d,
-    SUM(CASE WHEN severity>=85 THEN 1 ELSE 0 END) c,
-    SUM(CASE WHEN severity>=70 AND severity<85 THEN 1 ELSE 0 END) m,
-    SUM(CASE WHEN severity<70 THEN 1 ELSE 0 END) l
-    FROM threats GROUP BY d
+    SELECT substr(created,1,10) d, COUNT(*) c
+    FROM threats
+    GROUP BY d
+    ORDER BY d
     """).fetchall()
 
-    d=[r["d"] for r in rows]
-    c=[r["c"] for r in rows]
-    m=[r["m"] for r in rows]
-    l=[r["l"] for r in rows]
+    x=[r["d"] for r in rows]
+    y=[r["c"] for r in rows]
 
     fig=go.Figure()
 
-    fig.add_trace(go.Scatter(x=d,y=c,name="Critical",line=dict(color="red",width=3)))
-    fig.add_trace(go.Scatter(x=d,y=m,name="Medium",line=dict(color="orange")))
-    fig.add_trace(go.Scatter(x=d,y=l,name="Low",line=dict(color="cyan")))
+    fig.add_trace(go.Scatter(
+        x=x,
+        y=y,
+        mode="lines+markers",
+        line=dict(color="#00eaff",width=3)
+    ))
 
     fig.update_layout(
-        plot_bgcolor="#0b1b2a",
+        plot_bgcolor="#1a1a1a",
         paper_bgcolor="#0b1b2a",
-        font_color="#00eaff"
+        font_color="white",
+        title="Threat Activity Timeline"
     )
 
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 
-# ---------------- DASHBOARD HTML ----------------
+# ---------------- SECTOR CHART ----------------
+
+def sector_chart():
+
+    rows=db().execute("""
+    SELECT sector,COUNT(*) c
+    FROM threats
+    GROUP BY sector
+    ORDER BY c DESC
+    LIMIT 10
+    """).fetchall()
+
+    sectors=[r["sector"] for r in rows]
+    counts=[r["c"] for r in rows]
+
+    fig=go.Figure(go.Bar(
+        x=counts,
+        y=sectors,
+        orientation="h",
+        marker=dict(
+            color="#2f3e55",
+            line=dict(color="#6f8fbf",width=2)
+        )
+    ))
+
+    fig.update_layout(
+        plot_bgcolor="#1a1a1a",
+        paper_bgcolor="#0b1b2a",
+        font_color="white",
+        title="Sector Targeting"
+    )
+
+    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+
+
+# ---------------- PDF REPORT ----------------
+
+def generate_pdf():
+
+    rows=db().execute("""
+    SELECT indicator,type,sector,severity,created
+    FROM threats
+    ORDER BY id DESC
+    LIMIT 50
+    """).fetchall()
+
+    buffer=io.BytesIO()
+
+    doc=SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4)
+    )
+
+    styles=getSampleStyleSheet()
+
+    elements=[]
+
+    elements.append(Paragraph("RedShark CTI Intelligence Report",styles["Title"]))
+    elements.append(Spacer(1,10))
+
+    ts=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+    elements.append(Paragraph(f"Report Generated: {ts}",styles["Normal"]))
+    elements.append(Spacer(1,20))
+
+    data=[["Indicator","Type","Sector","Severity","Timestamp"]]
+
+    for r in rows:
+
+        data.append([
+            r["indicator"],
+            r["type"],
+            r["sector"],
+            r["severity"],
+            r["created"]
+        ])
+
+    table=Table(data)
+
+    elements.append(table)
+
+    doc.build(elements)
+
+    buffer.seek(0)
+
+    return buffer
+
+
+# ---------------- DASHBOARD ----------------
 
 HTML="""
 <html>
-
 <head>
-<title>RedShark CTI Dashboard v3.1</title>
+
+<title>RedShark CTI Dashboard</title>
 
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 
@@ -320,9 +383,8 @@ border-collapse:collapse;
 td,th{
 padding:8px;
 border-bottom:1px solid #1f3d5c;
+cursor:pointer;
 }
-
-th{cursor:pointer;}
 
 </style>
 
@@ -330,7 +392,7 @@ th{cursor:pointer;}
 
 <body>
 
-<h2>SUNDAY-RING Executive Intelligence Bulletin</h2>
+<h2>Sunday-Ring Threat Intelligence Dashboard</h2>
 
 <div class="card">
 
@@ -345,9 +407,16 @@ SecureNation Index:
 <div id="map"></div>
 </div>
 
+
 <div class="card">
-<h3>Threat Trend</h3>
-<div id="trend"></div>
+<h3>Threat Timeline</h3>
+<div id="timeline"></div>
+</div>
+
+
+<div class="card">
+<h3>Sector Targeting</h3>
+<div id="sector"></div>
 </div>
 
 
@@ -358,11 +427,11 @@ SecureNation Index:
 <table id="tbl">
 
 <tr>
-<th onclick="sortTable(0)">ID</th>
-<th onclick="sortTable(1)">Indicator</th>
-<th onclick="sortTable(2)">Type</th>
-<th onclick="sortTable(3)">Sector</th>
-<th onclick="sortTable(4)">Severity</th>
+<th>ID</th>
+<th>Indicator</th>
+<th>Type</th>
+<th>Sector</th>
+<th>Severity</th>
 </tr>
 
 {% for r in rows %}
@@ -386,6 +455,7 @@ SecureNation Index:
 
 <a href="/csv">CSV</a> |
 <a href="/json">JSON</a> |
+<a href="/pdf">PDF Report</a> |
 <a href="/rules">Download IPS Signatures</a>
 
 </div>
@@ -394,37 +464,12 @@ SecureNation Index:
 <script>
 
 var map={{map|safe}}
-var trend={{trend|safe}}
+var timeline={{timeline|safe}}
+var sector={{sector|safe}}
 
 Plotly.newPlot("map",map.data,map.layout)
-Plotly.newPlot("trend",trend.data,trend.layout)
-
-function sortTable(n){
-
-var table=document.getElementById("tbl")
-var switching=true
-
-while(switching){
-
-switching=false
-var rows=table.rows
-
-for(var i=1;i<rows.length-1;i++){
-
-var a=rows[i].getElementsByTagName("TD")[n].innerText
-var b=rows[i+1].getElementsByTagName("TD")[n].innerText
-
-if(a>b){
-
-rows[i].parentNode.insertBefore(rows[i+1],rows[i])
-switching=true
-}
-
-}
-
-}
-
-}
+Plotly.newPlot("timeline",timeline.data,timeline.layout)
+Plotly.newPlot("sector",sector.data,sector.layout)
 
 </script>
 
@@ -436,16 +481,33 @@ switching=true
 # ---------------- ROUTES ----------------
 
 @app.route("/")
-def home():
+def dashboard():
 
-    rows=db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall()
+    rows=db().execute("""
+    SELECT * FROM threats
+    ORDER BY id DESC
+    LIMIT 50
+    """).fetchall()
 
     return render_template_string(
         HTML,
         rows=rows,
         index=securenation(),
         map=malaysia_map(),
-        trend=trend_chart()
+        timeline=timeline_chart(),
+        sector=sector_chart()
+    )
+
+
+@app.route("/pdf")
+def pdf():
+
+    pdf=generate_pdf()
+
+    return send_file(
+        pdf,
+        download_name="redshark-cti-report.pdf",
+        as_attachment=True
     )
 
 
@@ -455,19 +517,20 @@ def csv_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
 
     out=io.StringIO()
-    w=csv.writer(out)
 
-    w.writerow(rows[0].keys())
+    writer=csv.writer(out)
+
+    writer.writerow(rows[0].keys())
 
     for r in rows:
-        w.writerow(list(r))
+        writer.writerow(list(r))
 
     mem=io.BytesIO()
+
     mem.write(out.getvalue().encode())
     mem.seek(0)
 
     return send_file(mem,download_name="redshark-cti.csv",as_attachment=True)
-
 
 
 @app.route("/json")
@@ -478,11 +541,11 @@ def json_export():
     data=[dict(r) for r in rows]
 
     mem=io.BytesIO()
+
     mem.write(json.dumps(data,indent=2).encode())
     mem.seek(0)
 
     return send_file(mem,download_name="redshark-cti.json",as_attachment=True)
-
 
 
 @app.route("/rules")
@@ -492,7 +555,6 @@ def rules():
         open(RULE_FILE,"w").close()
 
     return send_file(RULE_FILE,download_name="redshark-ips-signatures.rules",as_attachment=True)
-
 
 
 # ---------------- RUN ----------------
