@@ -169,7 +169,10 @@ def sector_chart():
     fig=go.Figure(go.Bar(
         x=labels,
         y=values,
-        marker=dict(color='darkblue', line=dict(color='cyan', width=2)),
+        marker=dict(
+            color='rgb(25,50,102)',           # Dark blue-grey
+            line=dict(color='rgba(0,255,255,0.6)', width=3)  # Glow
+        ),
         hovertemplate='%{x}: %{y}<extra></extra>'
     ))
     fig.update_layout(
