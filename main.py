@@ -1,13 +1,12 @@
-import os, sqlite3, csv, json, random, threading
+import os, sqlite3, random, threading, csv, io, json
 from datetime import datetime
-from flask import Flask, render_template_string, request, send_file
-import io
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
+from flask import Flask, render_template_string, send_file
 import plotly.graph_objs as go
 from plotly.utils import PlotlyJSONEncoder
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
 DB = "/tmp/soc.db"
@@ -72,39 +71,11 @@ def insert_threat(indicator,type_,source):
     conn.commit()
     conn.close()
 
-# ---------------- External Feeds ----------------
+# ---------------- Feeds ----------------
 def ingest_feeds():
-    headers={"User-Agent":"SundayRingSOC"}
-
-    # Spamhaus DROP
     try:
-        r=requests.get("https://www.spamhaus.org/drop/drop.txt",headers=headers,timeout=10)
-        for line in r.text.splitlines()[:30]:
-            if line.startswith(";") or not line.strip(): continue
-            ip=line.split(";")[0].strip()
-            insert_threat(ip,"ip","Spamhaus")
-    except: pass
-
-    # URLHaus
-    try:
-        r=requests.get("https://urlhaus.abuse.ch/downloads/csv_online/",headers=headers,timeout=10)
-        reader=csv.reader(r.text.splitlines())
-        rows=list(reader)
-        for row in rows[9:40]:
-            if len(row)<3: continue
-            url=row[2].strip()
-            if url=="": continue
-            insert_threat(url,"url","URLHaus")
-    except: pass
-
-    # PhishTank
-    try:
-        r=requests.get("https://data.phishtank.com/data/online-valid.csv",headers=headers,timeout=10)
-        reader=csv.reader(r.text.splitlines())
-        for row in list(reader)[1:20]:
-            url=row[1].strip()
-            if url=="": continue
-            insert_threat(url,"url","PhishTank")
+        insert_threat("8.8.8.8","ip","DummyFeed")
+        insert_threat("malicious.com","domain","DummyFeed")
     except: pass
 
 # ---------------- Charts ----------------
@@ -121,9 +92,10 @@ def malaysia_heatmap():
         la,lo=MALAYSIA[r["state"]]
         lat.append(la)
         lon.append(lo)
-        size.append(r["c"]*2)
+        size.append(r["c"]*5)
         text.append(f"{r['state']}: {r['c']}")
-    fig=go.Figure(go.Scattergeo(lat=lat,lon=lon,text=text,
+    fig=go.Figure()
+    fig.add_trace(go.Scattergeo(lat=lat,lon=lon,text=text,
         marker=dict(size=size,color="red",opacity=0.7)
     ))
     fig.update_layout(
@@ -141,7 +113,7 @@ def trend_chart():
     if not rows: rows=[{"d":"2026-03-12","c":0}]
     x=[r["d"] for r in rows]
     y=[r["c"] for r in rows]
-    fig=go.Figure(go.Scatter(x=x,y=y,mode="lines+markers"))
+    fig=go.Figure(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(color="cyan")))
     fig.update_layout(title="Threat Timeline",paper_bgcolor="#0b1b2a",font=dict(color="cyan"))
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
@@ -154,11 +126,102 @@ def source_chart():
     if not rows: rows=[{"source":"dummy","c":1}]
     labels=[r["source"] for r in rows]
     values=[r["c"] for r in rows]
-    fig=go.Figure([go.Pie(labels=labels,values=values)])
+    colors_list=[]
+    for v in labels:
+        if v.lower()=="dummy": colors_list.append("red")
+        else: colors_list.append("cyan")
+    fig=go.Figure([go.Pie(labels=labels,values=values,marker=dict(colors=colors_list))])
     fig.update_layout(paper_bgcolor="#0b1b2a",font=dict(color="cyan"))
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-# ---------------- Dashboard Template ----------------
+# ---------------- PDF Export ----------------
+def generate_pdf(rows):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    elements = []
+    elements.append(Paragraph("Sunday-Ring SOC Dashboard Report", styles['Title']))
+    elements.append(Paragraph(f"Generated at: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC", styles['Normal']))
+    elements.append(Paragraph(" ", styles['Normal']))
+
+    data = [["ID","Indicator","Type","Source","Risk","Class","State","Time"]]
+    for r in rows:
+        data.append([r["id"], r["indicator"], r["type"], r["source"], r["risk_score"], r["classification"], r["state"], r["created_at"]])
+    
+    table = Table(data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.cyan),
+        ('GRID',(0,0),(-1,-1),0.5,colors.white),
+        ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
+        ('FONTSIZE',(0,0),(-1,-1),8),
+        ('ALIGN',(0,0),(-1,-1),'LEFT')
+    ]))
+    elements.append(table)
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+# ---------------- Routes ----------------
+@app.route("/")
+def dashboard():
+    try:
+        heatmap = malaysia_heatmap()
+        trend = trend_chart()
+        source = source_chart()
+        conn=sqlite3.connect(DB)
+        conn.row_factory=sqlite3.Row
+        rows=conn.cursor().execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+        conn.close()
+        return render_template_string(DASHBOARD_TEMPLATE, rows=rows, heatmap=heatmap, trend=trend, source=source)
+    except Exception as e:
+        return f"<h1>Internal Server Error</h1><pre>{e}</pre>"
+
+@app.route("/download/csv")
+def download_csv():
+    conn=sqlite3.connect(DB)
+    conn.row_factory=sqlite3.Row
+    rows=conn.cursor().execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+    conn.close()
+    si = io.StringIO()
+    writer = csv.writer(si)
+    writer.writerow(["ID","Indicator","Type","Source","Risk","Class","State","Time"])
+    for r in rows:
+        writer.writerow([r["id"],r["indicator"],r["type"],r["source"],r["risk_score"],r["classification"],r["state"],r["created_at"]])
+    output=io.BytesIO()
+    output.write(si.getvalue().encode("utf-8"))
+    output.seek(0)
+    return send_file(output, mimetype="text/csv", download_name="soc_dashboard.csv", as_attachment=True)
+
+@app.route("/download/json")
+def download_json():
+    conn=sqlite3.connect(DB)
+    conn.row_factory=sqlite3.Row
+    rows=conn.cursor().execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+    conn.close()
+    data=[dict(r) for r in rows]
+    output=io.BytesIO()
+    output.write(json.dumps(data, indent=2).encode("utf-8"))
+    output.seek(0)
+    return send_file(output, mimetype="application/json", download_name="soc_dashboard.json", as_attachment=True)
+
+@app.route("/download/pdf")
+def download_pdf():
+    conn=sqlite3.connect(DB)
+    conn.row_factory=sqlite3.Row
+    rows=conn.cursor().execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+    conn.close()
+    buffer = generate_pdf(rows)
+    return send_file(buffer, mimetype="application/pdf", download_name="soc_dashboard.pdf", as_attachment=True)
+
+# ---------------- Scheduler ----------------
+def scheduler():
+    while True:
+        ingest_feeds()
+        threading.Event().wait(3600)
+threading.Thread(target=scheduler,daemon=True).start()
+
+# ---------------- Template ----------------
 DASHBOARD_TEMPLATE = """
 <html>
 <head>
@@ -172,10 +235,18 @@ th,td {padding:6px;text-align:left;}
 th {background:#00274d;color:#00FFFF;}
 tr:nth-child(even){background:#0c2a4a;}
 tr:nth-child(odd){background:#0b1b2a;}
+a.button {background:#00FFFF;color:#0b1b2a;padding:6px 12px;text-decoration:none;border-radius:4px;margin-right:5px;}
+.high{color:red;font-weight:bold;}
+.medium{color:orange;font-weight:bold;}
+.low{color:green;font-weight:bold;}
 </style>
 </head>
 <body>
 <h2>Sunday-Ring SOC Dashboard</h2>
+
+<a href="/download/csv" class="button">Download CSV</a>
+<a href="/download/json" class="button">Download JSON</a>
+<a href="/download/pdf" class="button">Download PDF</a>
 
 <div id="heatmap" style="height:400px;"></div>
 <div id="trend" style="height:300px;"></div>
@@ -194,7 +265,7 @@ tr:nth-child(odd){background:#0b1b2a;}
 <td>{{r.type}}</td>
 <td>{{r.source}}</td>
 <td>{{r.risk_score}}</td>
-<td>{{r.classification}}</td>
+<td class="{{r.classification|lower}}">{{r.classification}}</td>
 <td>{{r.state}}</td>
 <td>{{r.created_at}}</td>
 </tr>
@@ -214,33 +285,9 @@ Plotly.newPlot('source', source.data, source.layout);
 </html>
 """
 
-# ---------------- Scheduler ----------------
-def scheduler():
-    while True:
-        ingest_feeds()
-        threading.Event().wait(3600)
-
-threading.Thread(target=scheduler,daemon=True).start()
-
-# ---------------- Dashboard Route ----------------
-@app.route("/")
-def dashboard():
-    try:
-        heatmap = malaysia_heatmap()
-        trend = trend_chart()
-        source = source_chart()
-        conn=sqlite3.connect(DB)
-        conn.row_factory=sqlite3.Row
-        rows=conn.cursor().execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
-        conn.close()
-        return render_template_string(DASHBOARD_TEMPLATE, rows=rows, heatmap=heatmap, trend=trend, source=source)
-    except Exception as e:
-        return f"<h1>Internal Server Error</h1><pre>{e}</pre>"
-
 # ---------------- Run ----------------
 if __name__=="__main__":
     init_db()
     insert_dummy()
     ingest_feeds()
-    port=int(os.environ.get("PORT",5000))
-    app.run(host="0.0.0.0",port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)), debug=False)
