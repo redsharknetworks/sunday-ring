@@ -4,10 +4,9 @@ import csv
 import sqlite3
 import threading
 import time
-import requests
 import random
 from datetime import datetime, timedelta
-from flask import Flask, render_template_string, send_file, jsonify
+from flask import Flask, render_template_string, send_file
 import plotly
 import plotly.graph_objs as go
 import json
@@ -18,9 +17,9 @@ from reportlab.lib.styles import getSampleStyleSheet
 from plotly.utils import PlotlyJSONEncoder
 
 app = Flask(__name__)
-DB = os.getenv("DB_PATH", "/tmp/threats.db")
+DB = "/tmp/threats.db"
 
-# ---------------- MALAYSIA STATES ----------------
+# Malaysia states coordinates
 MALAYSIA_STATES = {
     "Johor":[1.4927,103.7414],"Kedah":[6.1164,100.3678],"Kelantan":[6.1254,102.2381],
     "Melaka":[2.1896,102.2501],"Negeri Sembilan":[2.7290,101.9383],"Pahang":[3.8167,103.3333],
@@ -63,12 +62,6 @@ def cleanup_old_records():
     conn.commit()
     conn.close()
 
-# ---------------- CLASSIFICATION ----------------
-def classify_risk(score):
-    if score >= 70: return "Critical"
-    elif score >= 40: return "High"
-    else: return "Medium"
-
 # ---------------- INSERT THREAT ----------------
 def insert_threat(pulse, indicator, typ, severity, score, source, city):
     conn = sqlite3.connect(DB)
@@ -79,43 +72,11 @@ def insert_threat(pulse, indicator, typ, severity, score, source, city):
     conn.commit()
     conn.close()
 
-# ---------------- FETCH PUBLIC CTI FEEDS ----------------
-def fetch_urlhaus():
-    url = "https://urlhaus.abuse.ch/downloads/csv/"
-    try:
-        r = requests.get(url, timeout=15)
-        lines = r.text.splitlines()
-        for line in lines[1:21]:
-            parts = line.split(',')
-            if len(parts) > 0:
-                indicator = parts[0].strip()
-                score = random.randint(40,95)
-                severity = classify_risk(score)
-                city = random.choice(list(MALAYSIA_STATES.keys()))
-                insert_threat("URLhaus", indicator, "domain", severity, score, "URLhaus", city)
-    except:
-        pass
-
-def fetch_maldom():
-    url = "http://www.malwaredomainlist.com/hostslist/hosts.txt"
-    try:
-        r = requests.get(url, timeout=15)
-        lines = r.text.splitlines()
-        for line in random.sample(lines, min(20,len(lines))):
-            if line.startswith('#') or not line.strip(): continue
-            indicator = line.strip()
-            score = random.randint(30,90)
-            severity = classify_risk(score)
-            city = random.choice(list(MALAYSIA_STATES.keys()))
-            insert_threat("MalwareDomainList", indicator, "domain", severity, score, "MalwareDomainList", city)
-    except:
-        pass
-
 # ---------------- DUMMY DATA ----------------
 def insert_dummy_data(n=20):
     for _ in range(n):
         score = random.randint(10,95)
-        severity = classify_risk(score)
+        severity = "Critical" if score >= 70 else "High" if score>=40 else "Medium"
         city = random.choice(list(MALAYSIA_STATES.keys()))
         insert_threat(f"Pulse {random.randint(1,20)}", f"malicious{random.randint(1,50)}.com",
                       random.choice(EVENT_TYPES), severity, score, "dummy", city)
@@ -124,12 +85,10 @@ def insert_dummy_data(n=20):
 def scheduler():
     while True:
         insert_dummy_data()
-        fetch_urlhaus()
-        fetch_maldom()
         cleanup_old_records()
         time.sleep(3600)
 
-# ---------------- PLOTLY CHARTS ----------------
+# ---------------- CHARTS ----------------
 def generate_trend_chart():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -138,7 +97,7 @@ def generate_trend_chart():
     x = [r["d"] for r in rows] if rows else [datetime.utcnow().strftime("%Y-%m-%d")]
     y = [r["cnt"] for r in rows] if rows else [0]
     fig = go.Figure(data=[go.Scatter(x=x,y=y,mode="lines+markers",line=dict(color="#00e6ff"))])
-    fig.update_layout(title="Threat Timeline (Last 30 Days)",
+    fig.update_layout(title="Threat Timeline",
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
@@ -149,110 +108,40 @@ def generate_type_chart():
     conn.close()
     labels = [r["type"] for r in rows] if rows else ["No Data"]
     values = [r["cnt"] for r in rows] if rows else [0]
-    fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3,
-                                 marker=dict(colors=["#00e6ff","#006699","#003366","#00ffff","#3399ff"],
-                                             line=dict(color='#ffffff',width=2)))])
-    fig.update_traces(textinfo='label+percent', pull=[0.1 if v>0 else 0 for v in values])
+    fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3)])
     fig.update_layout(title="Threat Type Distribution",
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-# ---------------- HEATMAP ----------------
-def generate_heatmap():
-    with sqlite3.connect(DB) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT city FROM threats WHERE severity='Critical'").fetchall()
-    return [r["city"] for r in rows]
-
-# ---------------- SECURE INDEX ----------------
-def calculate_secure_index():
+def generate_heatmap_cities():
     conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("SELECT risk_score FROM threats")
-    rows = c.fetchall()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT city FROM threats WHERE severity='Critical'").fetchall()
     conn.close()
-    if not rows: return 0
-    total_weighted = sum([(s*1.0 if s>=70 else s*0.5 if s>=40 else s*0.2) for (s,) in rows])
-    return round(total_weighted/(len(rows)*100)*100,1)
-
-# ---------------- PDF ----------------
-def generate_pdf():
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer,pagesize=A4)
-    elements=[]
-    styles = getSampleStyleSheet()
-    elements.append(Paragraph("RedShark Threat Intelligence Report", styles['Title']))
-    elements.append(Spacer(1,12))
-    with sqlite3.connect(DB) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 100").fetchall()
-    if not rows:
-        elements.append(Paragraph("No data available.", styles['Normal']))
-    else:
-        data=[["ID","Indicator","Type","Source","City","Severity","MITRE","Created"]]
-        for r in rows:
-            data.append([r["id"],r["indicator"],r["type"],r["source"],r["city"],r["severity"],r["mitre"],r["created_at"]])
-        t = Table(data, repeatRows=1)
-        t.setStyle(TableStyle([
-            ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#004d66")),
-            ('TEXTCOLOR',(0,0),(-1,0),colors.white),
-            ('GRID',(0,0),(-1,-1),0.5,colors.HexColor("#00e6ff")),
-            ('BACKGROUND',(0,1),(-1,-1),colors.HexColor("#002f4d")),
-        ]))
-        elements.append(t)
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
-
-# ---------------- DASHBOARD TEMPLATE ----------------
-TEMPLATE = """[FULL HTML template from previous message]"""  # Replace with the Leaflet + Plotly template I gave you
+    return [r["city"] for r in rows]
 
 # ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
-    trend = generate_trend_chart()
-    type_chart = generate_type_chart()
-    critical_cities = generate_heatmap()
-    gauge = calculate_secure_index()
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    table_data = conn.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+    table_data = [dict(r) for r in conn.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()]
     conn.close()
-    return render_template_string(TEMPLATE,
+    trend = generate_trend_chart()
+    type_chart = generate_type_chart()
+    critical_cities = generate_heatmap_cities()
+    gauge = 50  # placeholder
+    return render_template_string(open("template.html").read(),
+                                  table_data=table_data,
                                   trend=trend,
                                   type_chart=type_chart,
                                   critical_cities=critical_cities,
                                   positions=MALAYSIA_STATES,
-                                  gauge=gauge,
-                                  table_data=table_data)
-
-# ---------------- DOWNLOAD ROUTES ----------------
-@app.route("/download/csv")
-def download_csv():
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=["id","pulse","indicator","type","classification","risk_score","source","city","severity","created_at"])
-    writer.writeheader()
-    rows = sqlite3.connect(DB).execute("SELECT * FROM threats").fetchall()
-    for r in rows: writer.writerow(dict(zip(r.keys(), r)))
-    outb = io.BytesIO(); outb.write(output.getvalue().encode()); outb.seek(0)
-    return send_file(outb, mimetype="text/csv", download_name="soc_report.csv", as_attachment=True)
-
-@app.route("/download/json")
-def download_json():
-    rows = sqlite3.connect(DB).execute("SELECT * FROM threats").fetchall()
-    data = [dict(zip(r.keys(), r)) for r in rows]
-    outb = io.BytesIO(); outb.write(json.dumps(data,indent=2).encode()); outb.seek(0)
-    return send_file(outb, mimetype="application/json", download_name="soc_report.json", as_attachment=True)
-
-@app.route("/download/pdf")
-def download_pdf_route():
-    return send_file(generate_pdf(), mimetype="application/pdf", download_name="soc_report.pdf", as_attachment=True)
+                                  gauge=gauge)
 
 # ---------------- START ----------------
 ensure_database()
 insert_dummy_data()
-fetch_urlhaus()
-fetch_maldom()
 threading.Thread(target=scheduler,daemon=True).start()
 
 if __name__=="__main__":
