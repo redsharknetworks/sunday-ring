@@ -112,7 +112,6 @@ def scheduler():
     while True:
         run_feeds()
         threading.Event().wait(3600)
-
 threading.Thread(target=scheduler,daemon=True).start()
 
 # ---------------- Charts -----------------
@@ -149,35 +148,23 @@ def severity_chart():
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-# ---------------- Malaysia Attack Map -----------------
-def malaysia_attack_map():
+# ---------------- Malaysia Leaflet Map -----------------
+def malaysia_leaflet_map():
     with sqlite3.connect(DB) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT indicator,source,city,severity,mitre FROM threats").fetchall()
-    fig = go.Figure()
+    attacks=[]
     for r in rows:
         victim_lat, victim_lon = MALAYSIA_STATES.get(r["city"], [3.1390, 101.9758])
-        attacker_lat, attacker_lon = victim_lat + random.uniform(0.5, 2), victim_lon + random.uniform(0.5, 2)
+        attacker_lat, attacker_lon = victim_lat + random.uniform(0.5,2), victim_lon + random.uniform(0.5,2)
         color = COLOR_MAP.get(r["severity"], "#00e6ff")
-        fig.add_trace(go.Scattermapbox(
-            lat=[attacker_lat, victim_lat],
-            lon=[attacker_lon, victim_lon],
-            mode="lines+markers",
-            line=dict(color=color, width=3),
-            marker=dict(size=5, color=color),
-            text=f"{r['indicator']} | {r['source']} → {r['city']} | {r['severity']} | {r['mitre']}",
-            hoverinfo="text"
-        ))
-    fig.update_layout(
-        mapbox_style="open-street-map",
-        mapbox_zoom=5,
-        mapbox_center={"lat":4.2,"lon":101.9758},
-        paper_bgcolor="#0b1b2a",
-        plot_bgcolor="#0b1b2a",
-        font_color="#00e6ff",
-        margin=dict(l=0, r=0, t=0, b=0)
-    )
-    return json.dumps(fig, cls=PlotlyJSONEncoder)
+        attacks.append({
+            "attacker":[attacker_lat, attacker_lon],
+            "victim":[victim_lat, victim_lon],
+            "color": color,
+            "info": f"{r['indicator']} | {r['source']} → {r['city']} | {r['severity']} | {r['mitre']}"
+        })
+    return attacks
 
 # ---------------- Top Indicators & Index -----------------
 def top_indicators(limit=10):
@@ -223,6 +210,8 @@ TEMPLATE = """<html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <style>
 body{background:#0b1b2a;color:#00e6ff;font-family:sans-serif;margin:0;padding:0;}
 .container{width:95%;margin:auto;}
@@ -233,6 +222,7 @@ th,td{padding:8px;text-align:left;border:1px solid #00e6ff;}
 th{background:#004d66;}
 tr:nth-child(even){background:#00384d;}
 a.button{background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none;border-radius:4px;margin-right:5px;}
+#mapid{height:500px;border-radius:8px;}
 </style>
 </head>
 <body>
@@ -247,24 +237,13 @@ a.button{background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none;
 </div>
 </div>
 
-<div class="card">
-<h2>Threat Timeline</h2>
-<div id="trend"></div>
-</div>
-
-<div class="card">
-<h2>Threat Types</h2>
-<div id="types"></div>
-</div>
-
-<div class="card">
-<h2>Severity Distribution</h2>
-<div id="severity"></div>
-</div>
+<div class="card"><h2>Threat Timeline</h2><div id="trend"></div></div>
+<div class="card"><h2>Threat Types</h2><div id="types"></div></div>
+<div class="card"><h2>Severity Distribution</h2><div id="severity"></div></div>
 
 <div class="card">
 <h2>Malaysia Attack Map</h2>
-<div id="heatmap" style="height:500px;"></div>
+<div id="mapid"></div>
 </div>
 
 <div class="card">
@@ -288,7 +267,15 @@ a.button{background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none;
 Plotly.newPlot('trend', {{trend|safe}}.data, {{trend|safe}}.layout,{responsive:true});
 Plotly.newPlot('types', {{types|safe}}.data, {{types|safe}}.layout,{responsive:true});
 Plotly.newPlot('severity', {{severity|safe}}.data, {{severity|safe}}.layout,{responsive:true});
-Plotly.newPlot('heatmap', {{heatmap|safe}}.data, {{heatmap|safe}}.layout,{responsive:true});
+
+// Leaflet Map
+var attacks = {{heatmap|safe}};
+var map = L.map('mapid').setView([4.2105,101.9758],6);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18}).addTo(map);
+attacks.forEach(function(a){
+    var line = L.polyline([a.attacker,a.victim],{color:a.color,weight:3}).addTo(map);
+    L.circleMarker(a.victim,{radius:5,color:a.color,fill:true,fillOpacity:0.7}).addTo(map).bindPopup(a.info);
+});
 </script>
 </body>
 </html>
@@ -303,7 +290,7 @@ def dashboard():
         trend=trend_chart(),
         types=type_chart(),
         severity=severity_chart(),
-        heatmap=malaysia_attack_map(),
+        heatmap=malaysia_leaflet_map(),
         top=top_indicators()
     )
 
