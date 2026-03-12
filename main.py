@@ -230,8 +230,6 @@ table{width:100%;border-collapse:collapse;}
 td,th{padding:8px;border-bottom:1px solid #1f3d5c;text-align:center;}
 a.download-link{color:#FFA500;font-weight:bold;text-decoration:none;}
 .center{text-align:center;}
-.blink {animation: blink-animation 5s infinite;color:#DC143C;font-weight:bold;}
-@keyframes blink-animation {0% {opacity:1;}50% {opacity:0;}100% {opacity:1;}}
 .progress-container {width: 100%; background-color: #1f3d5c; border-radius: 8px; height: 25px; margin-top: 5px;}
 .progress-bar {height: 25px; border-radius: 8px; text-align: center; color: #fff; font-weight: bold; line-height: 25px;}
 </style>
@@ -281,7 +279,7 @@ a.download-link{color:#FFA500;font-weight:bold;text-decoration:none;}
 </thead>
 <tbody>
 {% for r in rows %}
-<tr class="{{'blink' if r.severity>=85 else ''}}">
+<tr style="color:{{'#DC143C' if r.severity>=85 else '#FFA500' if r.severity>=70 else '#FFFF00'}}">
 <td>{{r.id}}</td>
 <td>{{r.indicator}}</td>
 <td>{{r.type}}</td>
@@ -316,7 +314,7 @@ Plotly.newPlot("sector",sector.data,sector.layout);
 Plotly.newPlot("indicator_type",indicator_type.data,indicator_type.layout);
 Plotly.newPlot("map",map.data,map.layout);
 
-// Animate pulsing for critical red markers
+// Animate pulsing for critical red markers on map
 var mapData = map.data[0];
 var sizes = mapData.marker.size;
 var growing = true;
