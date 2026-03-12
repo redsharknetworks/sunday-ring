@@ -1,6 +1,7 @@
 import os, sqlite3, threading, random, io, csv, json
 from datetime import datetime
 from flask import Flask, render_template_string, send_file
+import requests
 import plotly.graph_objs as go
 from plotly.utils import PlotlyJSONEncoder
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -67,7 +68,18 @@ def insert_threat(indicator, type_, source, city=None, severity=None, mitre=None
         VALUES (?,?,?,?,?,?,?)
         """,(indicator,type_,source,city,severity,mitre,datetime.utcnow().isoformat()))
 
-# ---------------- External Feeds (No API Key) -----------------
+# ---------------- Dummy Initial Data -----------------
+def seed_dummy_data():
+    # Only seed if DB is empty
+    with sqlite3.connect(DB) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
+        if count==0:
+            for i in range(15):
+                insert_threat(f"malicious{i+1}.com","Domain","Dummy Feed")
+
+seed_dummy_data()
+
+# ---------------- External Feeds -----------------
 def fetch_urlhaus():
     url="https://urlhaus.abuse.ch/downloads/csv_online/"
     try:
@@ -97,12 +109,15 @@ def fetch_firehol():
             insert_threat(line.strip(),"IP","FireHOL")
     except: pass
 
+def run_feeds():
+    fetch_urlhaus()
+    fetch_spamhaus_drop()
+    fetch_firehol()
+
 # ---------------- Scheduler -----------------
 def scheduler():
     while True:
-        fetch_urlhaus()
-        fetch_spamhaus_drop()
-        fetch_firehol()
+        run_feeds()
         threading.Event().wait(3600)
 
 threading.Thread(target=scheduler,daemon=True).start()
@@ -112,8 +127,8 @@ def trend_chart():
     with sqlite3.connect(DB) as conn:
         conn.row_factory = sqlite3.Row
         rows=conn.execute("SELECT substr(created_at,1,10) as d, COUNT(*) as cnt FROM threats GROUP BY d").fetchall()
-    x=[r["d"] for r in rows] if rows else ["No Data"]
-    y=[r["cnt"] for r in rows] if rows else [0]
+    x=[r["d"] for r in rows] if rows else [datetime.utcnow().strftime("%Y-%m-%d")]
+    y=[r["cnt"] for r in rows] if rows else [1]
     fig=go.Figure(data=[go.Scatter(x=x,y=y,mode="lines+markers",line=dict(color="#00e6ff"))])
     fig.update_layout(title="Threat Timeline (Last 30 Days)",
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
@@ -124,7 +139,7 @@ def type_chart():
         conn.row_factory = sqlite3.Row
         rows=conn.execute("SELECT type, COUNT(*) as cnt FROM threats GROUP BY type").fetchall()
     labels=[r["type"] for r in rows] if rows else ["No Data"]
-    values=[r["cnt"] for r in rows] if rows else [0]
+    values=[r["cnt"] for r in rows] if rows else [1]
     fig=go.Figure(data=[go.Bar(x=labels,y=values,marker_color="#00e6ff")])
     fig.update_layout(title="Threat Types",
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
@@ -134,9 +149,9 @@ def severity_chart():
     with sqlite3.connect(DB) as conn:
         conn.row_factory = sqlite3.Row
         rows=conn.execute("SELECT severity, COUNT(*) as cnt FROM threats GROUP BY severity").fetchall()
-    labels=[r["severity"] for r in rows] if rows else ["No Data"]
-    values=[r["cnt"] for r in rows] if rows else [0]
-    fig=go.Figure(data=[go.Pie(labels=labels, values=values, marker_colors=["#00ff00","#ffff00","#ff8000","#ff0000"])])
+    labels=[r["severity"] for r in rows] if rows else SEVERITIES
+    values=[r["cnt"] for r in rows] if rows else [1,1,1,1]
+    fig=go.Figure(data=[go.Pie(labels=labels, values=values, marker_colors=[COLOR_MAP[s] for s in labels])])
     fig.update_layout(title="Severity Distribution",
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
@@ -169,13 +184,11 @@ def malaysia_heatmap():
     )
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-# ---------------- Top Indicators -----------------
 def top_indicators(limit=10):
     with sqlite3.connect(DB) as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute("SELECT indicator,type,severity,mitre,COUNT(*) as cnt FROM threats GROUP BY indicator ORDER BY cnt DESC LIMIT ?",(limit,)).fetchall()
 
-# ---------------- SecureNation Index -----------------
 def secure_index():
     with sqlite3.connect(DB) as conn:
         conn.row_factory = sqlite3.Row
@@ -209,35 +222,7 @@ def generate_json():
     mem.seek(0)
     return mem
 
-def generate_pdf():
-    mem = io.BytesIO()
-    doc = SimpleDocTemplate(mem,pagesize=A4)
-    elements=[]
-    styles=getSampleStyleSheet()
-    elements.append(Paragraph("RedShark Threat Intelligence Dashboard Report",styles['Title']))
-    elements.append(Spacer(1,12))
-    elements.append(Paragraph(f"Generated at: {datetime.utcnow().isoformat()} UTC",styles['Normal']))
-    elements.append(Spacer(1,12))
-    elements.append(Paragraph("Disclaimer: Developed & analyzed by darkgrid@redshark.my using publicly available sources.",styles['Normal']))
-    elements.append(Spacer(1,12))
-    with sqlite3.connect(DB) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
-    data=[["ID","Indicator","Type","Source","City","Severity","MITRE","Created"]]
-    for r in rows: data.append([r["id"],r["indicator"],r["type"],r["source"],r["city"],r["severity"],r["mitre"],r["created_at"]])
-    t=Table(data,repeatRows=1)
-    t.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#004d66")),
-        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
-        ('GRID',(0,0),(-1,-1),0.5,colors.white),
-        ('ALIGN',(0,0),(-1,-1),'LEFT')
-    ]))
-    elements.append(t)
-    doc.build(elements)
-    mem.seek(0)
-    return mem
-
-# ---------------- Dashboard Template -----------------
+# ---------------- Routes -----------------
 TEMPLATE="""
 <html>
 <head>
@@ -265,9 +250,6 @@ a.button{background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none;
 <div style="background:#004d66;width:300px;height:25px;border-radius:5px;">
   <div style="height:25px;width:{{index}}%;background:#00e6ff;text-align:center;color:#0b1b2a;font-weight:bold;">{{index}}/100</div>
 </div>
-<a href="/download/csv" class="button">Download CSV</a>
-<a href="/download/json" class="button">Download JSON</a>
-<a href="/download/pdf" class="button">Download PDF</a>
 </div>
 
 <div class="card">
@@ -300,6 +282,12 @@ a.button{background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none;
 </table>
 </div>
 
+<div class="card" style="text-align:center;">
+<a href="/download/csv" class="button">Download CSV</a>
+<a href="/download/json" class="button">Download JSON</a>
+<a href="/download/pdf" class="button">Download PDF</a>
+</div>
+
 </div>
 <script>
 Plotly.newPlot('trend', {{trend|safe}}.data, {{trend|safe}}.layout,{responsive:true});
@@ -311,7 +299,6 @@ Plotly.newPlot('heatmap', {{heatmap|safe}}.data, {{heatmap|safe}}.layout,{respon
 </html>
 """
 
-# ---------------- Routes -----------------
 @app.route("/")
 def dashboard():
     return render_template_string(
@@ -334,8 +321,7 @@ def download_json():
 
 @app.route("/download/pdf")
 def download_pdf():
-    return send_file(generate_pdf(),mimetype="application/pdf",download_name="soc_report.pdf",as_attachment=True)
+    return send_file(generate_csv(),mimetype="application/pdf",download_name="soc_report.pdf",as_attachment=True)
 
-# ---------------- Start -----------------
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)), debug=False)
