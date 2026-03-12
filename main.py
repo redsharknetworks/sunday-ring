@@ -72,13 +72,14 @@ def insert_threat(indicator,typ,severity):
     lat, lon = rand_loc()
     m = rand_mitre()
     s = rand_sector()
+    created = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     conn.execute("""
     INSERT INTO threats(indicator,type,mitre,sector,severity,lat,lon,created)
     VALUES(?,?,?,?,?,?,?,?)
-    """, (indicator, typ, m, s, severity, lat, lon, datetime.utcnow()))
+    """, (indicator, typ, m, s, severity, lat, lon, created))
     conn.commit()
-    # Append IPS rule
-    rule_line = f'alert ip any any -> any any (msg:"RedShark {typ} {indicator}"; sid:{1000000+random.randint(1,9999)}; rev:1;)\n'
+    # Append IPS rule with MITRE technique
+    rule_line = f'alert ip any any -> any any (msg:"RedShark {typ} {indicator} | MITRE: {m}"; sid:{1000000+random.randint(1,9999)}; rev:1;)\n'
     with open(RULE_FILE,"a") as f:
         f.write(rule_line)
 
@@ -161,7 +162,8 @@ def timeline_chart():
         marker=dict(size=10, color="#00eaff", line=dict(width=2, color="#66ffff")),
         hovertemplate="Date: %{x}<br>Attacks: %{y}<extra></extra>"
     ))
-    fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a", font_color="white",
+    fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a",
+                      font_color="#A3B8CC",
                       xaxis=dict(showgrid=False, showline=True, linecolor="#444"),
                       yaxis=dict(showgrid=True, gridcolor="#333", zeroline=False),
                       hovermode="x unified", margin=dict(l=40,r=40,t=60,b=40))
@@ -171,18 +173,19 @@ def sector_chart():
     rows=db().execute("SELECT sector, COUNT(*) c FROM threats GROUP BY sector ORDER BY c DESC").fetchall()
     labels=[r["sector"] for r in rows]; values=[r["c"] for r in rows]
     fig=go.Figure(go.Bar(x=values, y=labels, orientation="h",
-                         marker=dict(color="#2f3e4d", line=dict(color="#6f8fbf",width=2))))
+                         marker=dict(color="#3a4a5c", line=dict(color="#6f8fbf",width=2))))
     fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a",
-                      font_color="white", title="Sector Targeting")
+                      font_color="#A3B8CC", title="Sector Targeting")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def mitre_chart():
     rows=db().execute("SELECT mitre, COUNT(*) c FROM threats GROUP BY mitre").fetchall()
     labels=[r["mitre"] for r in rows]; values=[r["c"] for r in rows]
     colors = ["#00ffff","#ff00ff","#ff9900","#00ff99","#ff0066","#66ffcc","#ffcc00","#cc00ff","#ff3300","#33ffcc","#ccff00","#6600ff","#00ccff"]
-    fig=go.Figure(go.Pie(labels=labels,values=values,hole=0.4,marker=dict(colors=[colors[i%len(colors)] for i in range(len(labels))])))
+    fig=go.Figure(go.Pie(labels=labels,values=values,hole=0.4,
+                          marker=dict(colors=[colors[i%len(colors)] for i in range(len(labels))])))
     fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a",
-                      font_color="white", title="MITRE ATT&CK Techniques")
+                      font_color="#A3B8CC", title="MITRE ATT&CK Techniques")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 # ---------------- PDF ----------------
@@ -213,12 +216,13 @@ HTML = """
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.31.3/js/jquery.tablesorter.min.js"></script>
 <style>
-body{background:#0b1b2a;color:#00eaff;font-family:Arial;margin:0;padding:0;}
+body{background:#0b1b2a;color:#A3B8CC;font-family:Arial;margin:0;padding:0;}
 .card{background:#13263b;padding:20px;margin:15px;border-radius:8px;}
 table{width:100%;border-collapse:collapse;}
-th,td{padding:8px;border-bottom:1px solid #1f3d5c;color:white;}
+th,td{padding:8px;border-bottom:1px solid #1f3d5c;color:#A3B8CC;}
 th{cursor:pointer;}
 a.download{color:crimson;font-weight:bold;text-decoration:none;}
+.center{text-align:center;}
 </style>
 </head>
 <body>
@@ -252,6 +256,8 @@ a.download{color:crimson;font-weight:bold;text-decoration:none;}
 <a class="download" href="/rules">Download IPS Signatures</a>
 </div>
 
+<p class="center" style="opacity:0.6">Developed and analyzed by darkgrid@redshark.my using public threat intelligence sources</p>
+
 <script>
 $(function(){$("#indicator").tablesorter();});
 Plotly.newPlot("map",{{map|safe}}.data,{{map|safe}}.layout);
@@ -260,7 +266,6 @@ Plotly.newPlot("sector",{{sector|safe}}.data,{{sector|safe}}.layout);
 Plotly.newPlot("mitre",{{mitre|safe}}.data,{{mitre|safe}}.layout);
 </script>
 
-<p style="opacity:0.6">Developed and analyzed by darkgrid@redshark.my using public threat intelligence sources</p>
 </body></html>
 """
 
@@ -285,16 +290,14 @@ def csv_export():
     writer=csv.writer(out)
     if rows: writer.writerow(rows[0].keys())
     for r in rows: writer.writerow(list(r))
-    mem=io.BytesIO()
-    mem.write(out.getvalue().encode()); mem.seek(0)
+    mem=io.BytesIO(); mem.write(out.getvalue().encode()); mem.seek(0)
     return send_file(mem, download_name="redshark-cti.csv", as_attachment=True)
 
 @app.route("/json")
 def json_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
     data=[dict(r) for r in rows]
-    mem=io.BytesIO()
-    mem.write(json.dumps(data, indent=2).encode()); mem.seek(0)
+    mem=io.BytesIO(); mem.write(json.dumps(data, indent=2).encode()); mem.seek(0)
     return send_file(mem, download_name="redshark-cti.json", as_attachment=True)
 
 @app.route("/rules")
