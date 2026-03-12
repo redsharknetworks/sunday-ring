@@ -155,13 +155,14 @@ def malaysia_leaflet_map():
         rows = conn.execute("SELECT indicator,source,city,severity,mitre FROM threats").fetchall()
     attacks=[]
     for r in rows:
+        if r["severity"] != "Critical":
+            continue  # Only show Critical attacks
         victim_lat, victim_lon = MALAYSIA_STATES.get(r["city"], [3.1390, 101.9758])
         attacker_lat, attacker_lon = victim_lat + random.uniform(0.5,2), victim_lon + random.uniform(0.5,2)
-        color = COLOR_MAP.get(r["severity"], "#00e6ff")
         attacks.append({
             "attacker":[attacker_lat, attacker_lon],
             "victim":[victim_lat, victim_lon],
-            "color": color,
+            "color": COLOR_MAP["Critical"],
             "info": f"{r['indicator']} | {r['source']} → {r['city']} | {r['severity']} | {r['mitre']}"
         })
     return attacks
@@ -242,7 +243,7 @@ a.button{background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none;
 <div class="card"><h2>Severity Distribution</h2><div id="severity"></div></div>
 
 <div class="card">
-<h2>Malaysia Attack Map</h2>
+<h2>Malaysia Critical Attacks Map</h2>
 <div id="mapid"></div>
 </div>
 
@@ -273,8 +274,8 @@ var attacks = {{heatmap|safe}};
 var map = L.map('mapid').setView([4.2105,101.9758],6);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18}).addTo(map);
 attacks.forEach(function(a){
-    var line = L.polyline([a.attacker,a.victim],{color:a.color,weight:3}).addTo(map);
-    L.circleMarker(a.victim,{radius:5,color:a.color,fill:true,fillOpacity:0.7}).addTo(map).bindPopup(a.info);
+    L.polyline([a.attacker,a.victim],{color:a.color,weight:3}).addTo(map)
+     .bindPopup(a.info);
 });
 </script>
 </body>
