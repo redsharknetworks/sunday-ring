@@ -1,12 +1,12 @@
 import os, sqlite3, threading, random
 from datetime import datetime
-from flask import Flask, render_template_string, request
+from flask import Flask, render_template_string
+import requests, csv, json
 import plotly.graph_objs as go
 from plotly.utils import PlotlyJSONEncoder
-import requests, csv, json
 
 app = Flask(__name__)
-DB="/tmp/soc.db"
+DB = "/tmp/soc.db"
 
 # ---------------- Database -----------------
 def init_db():
@@ -19,23 +19,49 @@ def init_db():
             source TEXT,
             city TEXT,
             severity TEXT,
+            mitre TEXT,
             created_at TEXT
         )
         """)
+
 init_db()
 
-# ---------------- Insert Threat -----------------
-CITIES=["Kuala Lumpur","Penang","Johor Bahru","Kota Kinabalu","Kuching"]
-SEVERITIES=["Low","Medium","High","Critical"]
+# ---------------- Cities / States & Severity -----------------
+MALAYSIA_STATES = {
+    "Johor": [1.4927,103.7414],
+    "Kedah": [6.1164,100.3678],
+    "Kelantan": [6.1254,102.2381],
+    "Melaka": [2.1896,102.2501],
+    "Negeri Sembilan": [2.7290,101.9383],
+    "Pahang": [3.8167,103.3333],
+    "Perak": [4.5929,101.0900],
+    "Perlis": [6.4400,100.2000],
+    "Penang": [5.4164,100.3327],
+    "Sabah": [5.9804,116.0735],
+    "Sarawak": [1.5533,110.3592],
+    "Selangor": [3.1390,101.6869],
+    "Terengganu": [5.3300,103.1400],
+    "Kuala Lumpur": [3.1390,101.6869],
+    "Putrajaya": [2.9264,101.6981],
+    "Labuan": [5.2833,115.2333]
+}
 
-def insert_threat(indicator,type_,source,city=None,severity=None):
-    city=city or random.choice(CITIES)
-    severity=severity or random.choice(SEVERITIES)
+SEVERITIES = ["Low","Medium","High","Critical"]
+
+MITRE_TACTICS = ["Reconnaissance","Initial Access","Execution","Persistence","Privilege Escalation",
+                 "Defense Evasion","Credential Access","Discovery","Lateral Movement",
+                 "Collection","Exfiltration","Command and Control"]
+
+# ---------------- Insert Threat -----------------
+def insert_threat(indicator, type_, source, city=None, severity=None, mitre=None):
+    city = city or random.choice(list(MALAYSIA_STATES.keys()))
+    severity = severity or random.choice(SEVERITIES)
+    mitre = mitre or random.choice(MITRE_TACTICS)
     with sqlite3.connect(DB) as conn:
         conn.execute("""
-        INSERT INTO threats (indicator,type,source,city,severity,created_at)
-        VALUES (?,?,?,?,?,?)
-        """,(indicator,type_,source,city,severity,datetime.utcnow().isoformat()))
+        INSERT INTO threats (indicator,type,source,city,severity,mitre,created_at)
+        VALUES (?,?,?,?,?,?,?)
+        """,(indicator,type_,source,city,severity,mitre,datetime.utcnow().isoformat()))
 
 # ---------------- External Feeds -----------------
 def fetch_urlhaus():
@@ -74,19 +100,14 @@ def scheduler():
         fetch_spamhaus_drop()
         fetch_firehol()
         threading.Event().wait(3600)
+
 threading.Thread(target=scheduler,daemon=True).start()
 
 # ---------------- Charts -----------------
-def trend_chart(filter_sev=None, filter_type=None, filter_city=None):
-    query="SELECT substr(created_at,1,10) as d, COUNT(*) as cnt FROM threats WHERE 1=1"
-    params=[]
-    if filter_sev: query+=" AND severity=?"; params.append(filter_sev)
-    if filter_type: query+=" AND type=?"; params.append(filter_type)
-    if filter_city: query+=" AND city=?"; params.append(filter_city)
-    query+=" GROUP BY d"
+def trend_chart():
     with sqlite3.connect(DB) as conn:
-        conn.row_factory=sqlite3.Row
-        rows=conn.execute(query, params).fetchall()
+        conn.row_factory = sqlite3.Row
+        rows=conn.execute("SELECT substr(created_at,1,10) as d, COUNT(*) as cnt FROM threats GROUP BY d").fetchall()
     x=[r["d"] for r in rows] if rows else ["No Data"]
     y=[r["cnt"] for r in rows] if rows else [0]
     fig=go.Figure(data=[go.Scatter(x=x,y=y,mode="lines+markers",line=dict(color="#00e6ff"))])
@@ -94,15 +115,10 @@ def trend_chart(filter_sev=None, filter_type=None, filter_city=None):
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-def type_chart(filter_sev=None, filter_city=None):
-    query="SELECT type, COUNT(*) as cnt FROM threats WHERE 1=1"
-    params=[]
-    if filter_sev: query+=" AND severity=?"; params.append(filter_sev)
-    if filter_city: query+=" AND city=?"; params.append(filter_city)
-    query+=" GROUP BY type"
+def type_chart():
     with sqlite3.connect(DB) as conn:
-        conn.row_factory=sqlite3.Row
-        rows=conn.execute(query, params).fetchall()
+        conn.row_factory = sqlite3.Row
+        rows=conn.execute("SELECT type, COUNT(*) as cnt FROM threats GROUP BY type").fetchall()
     labels=[r["type"] for r in rows] if rows else ["No Data"]
     values=[r["cnt"] for r in rows] if rows else [0]
     fig=go.Figure(data=[go.Bar(x=labels,y=values,marker_color="#00e6ff")])
@@ -110,74 +126,61 @@ def type_chart(filter_sev=None, filter_city=None):
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-# ---------------- Malaysia Bubble Map -----------------
-CITY_COORDS={
-    "Kuala Lumpur":[3.1390,101.6869],
-    "Penang":[5.4164,100.3327],
-    "Johor Bahru":[1.4927,103.7414],
-    "Kota Kinabalu":[5.9804,116.0735],
-    "Kuching":[1.5533,110.3592]
-}
-
-def heatmap_chart(filter_sev=None, filter_type=None):
-    query="SELECT city, severity, COUNT(*) as cnt FROM threats WHERE 1=1"
-    params=[]
-    if filter_sev: query+=" AND severity=?"; params.append(filter_sev)
-    if filter_type: query+=" AND type=?"; params.append(filter_type)
-    query+=" GROUP BY city,severity"
+def severity_chart():
     with sqlite3.connect(DB) as conn:
-        conn.row_factory=sqlite3.Row
-        rows=conn.execute(query, params).fetchall()
+        conn.row_factory = sqlite3.Row
+        rows=conn.execute("SELECT severity, COUNT(*) as cnt FROM threats GROUP BY severity").fetchall()
+    labels=[r["severity"] for r in rows] if rows else ["No Data"]
+    values=[r["cnt"] for r in rows] if rows else [0]
+    fig=go.Figure(data=[go.Pie(labels=labels, values=values, marker_colors=["#00ff00","#ffff00","#ff8000","#ff0000"])])
+    fig.update_layout(title="Severity Distribution",
+                      paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
+    return json.dumps(fig,cls=PlotlyJSONEncoder)
+
+# ---------------- Malaysia Heatmap -----------------
+def malaysia_heatmap():
+    with sqlite3.connect(DB) as conn:
+        conn.row_factory = sqlite3.Row
+        rows=conn.execute("SELECT city,severity,COUNT(*) as cnt FROM threats GROUP BY city,severity").fetchall()
     lats,lons,sizes,colors,texts=[],[],[],[],[]
     color_map={"Low":"#00ff00","Medium":"#ffff00","High":"#ff8000","Critical":"#ff0000"}
     for r in rows:
-        lat,lng=CITY_COORDS.get(r["city"],[3.1390,101.6869])
-        lats.append(lat)
-        lons.append(lng)
-        sizes.append(r["cnt"]*8)
+        lat,lng=MALAYSIA_STATES.get(r["city"],[3.1390,101.6869])
+        lats.append(lat); lons.append(lng)
+        sizes.append(r["cnt"]*10)
         colors.append(color_map.get(r["severity"],"#00e6ff"))
-        texts.append(f"{r['city']}<br>{r['severity']}: {r['cnt']} threats")
+        texts.append(f"{r['city']} - {r['severity']}: {r['cnt']} threats")
     fig=go.Figure()
-    for i,(lat,lon,size,color,text) in enumerate(zip(lats,lons,sizes,colors,texts)):
+    for lat,lon,size,color,text in zip(lats,lons,sizes,colors,texts):
         fig.add_trace(go.Scattermapbox(lat=[lat],lon=[lon],mode="markers",
                                        marker=go.scattermapbox.Marker(size=size,color=color,opacity=0.7),
-                                       text=text, hoverinfo="text"))
-    fig.update_layout(mapbox_style="open-street-map", mapbox_zoom=5, mapbox_center={"lat":4.2,"lon":101.9758})
-    fig.update_layout(paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff",margin=dict(l=0,r=0,t=0,b=0))
+                                       text=text,hoverinfo="text"))
+    fig.update_layout(mapbox_style="open-street-map",
+                      mapbox_zoom=5,mapbox_center={"lat":4.2,"lon":101.9758},
+                      paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff",
+                      margin=dict(l=0,r=0,t=0,b=0))
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-# ---------------- Top indicators & Severity stats -----------------
-def top_indicators(filter_city=None):
-    query="SELECT indicator, COUNT(*) as cnt FROM threats WHERE 1=1"
-    params=[]
-    if filter_city: query+=" AND city=?"; params.append(filter_city)
-    query+=" GROUP BY indicator ORDER BY cnt DESC LIMIT 10"
+# ---------------- Top Indicators -----------------
+def top_indicators(limit=10):
     with sqlite3.connect(DB) as conn:
-        conn.row_factory=sqlite3.Row
-        return conn.execute(query, params).fetchall()
-
-def severity_stats(filter_city=None):
-    query="SELECT severity, COUNT(*) as cnt FROM threats WHERE 1=1"
-    params=[]
-    if filter_city: query+=" AND city=?"; params.append(filter_city)
-    query+=" GROUP BY severity"
-    with sqlite3.connect(DB) as conn:
-        conn.row_factory=sqlite3.Row
-        return conn.execute(query, params).fetchall()
+        conn.row_factory = sqlite3.Row
+        return conn.execute("SELECT indicator,type,severity,mitre,COUNT(*) as cnt FROM threats GROUP BY indicator ORDER BY cnt DESC LIMIT ?",(limit,)).fetchall()
 
 # ---------------- SecureNation Index -----------------
 def secure_index():
     with sqlite3.connect(DB) as conn:
-        conn.row_factory=sqlite3.Row
+        conn.row_factory = sqlite3.Row
         rows=conn.execute("SELECT severity FROM threats").fetchall()
     if not rows: return 0
-    severity_weight={"Low":0.2,"Medium":0.5,"High":0.7,"Critical":1.0}
-    score=sum([severity_weight.get(r["severity"],0.5) for r in rows])
+    weight={"Low":0.2,"Medium":0.5,"High":0.7,"Critical":1.0}
+    score=sum([weight.get(r["severity"],0.5) for r in rows])
     return round(score/len(rows)*100,1)
 
 # ---------------- Dashboard Template -----------------
 TEMPLATE="""
-<html><head>
+<html>
+<head>
 <title>Sunday-Ring Professional SOC Dashboard</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
@@ -190,10 +193,10 @@ th,td{padding:8px;text-align:left;border:1px solid #00e6ff;}
 th{background:#004d66;}
 tr:nth-child(even){background:#00384d;}
 </style>
-</head><body>
+</head>
+<body>
 <div class="container">
-<h1>Sunday-Ring Professional SOC Dashboard</h1>
-
+<h1>RedShark Threat Intelligence Dashboard</h1>
 <div class="card">
 <h2>SecureNation Index: {{index}}/100</h2>
 <div style="background:#004d66;width:300px;height:25px;border-radius:5px;">
@@ -212,55 +215,49 @@ tr:nth-child(even){background:#00384d;}
 </div>
 
 <div class="card">
-<h2>Malaysia Threat Bubble Map</h2>
+<h2>Severity Distribution</h2>
+<div id="severity"></div>
+</div>
+
+<div class="card">
+<h2>Malaysia Threat Heatmap</h2>
 <div id="heatmap" style="height:500px;"></div>
 </div>
 
 <div class="card">
-<h2>Top 10 Indicators</h2>
+<h2>Top Indicators</h2>
 <table>
-<tr><th>Indicator</th><th>Count</th></tr>
+<tr><th>Indicator</th><th>Type</th><th>Severity</th><th>MITRE</th><th>Count</th></tr>
 {% for t in top %}
-<tr><td>{{t['indicator']}}</td><td>{{t['cnt']}}</td></tr>
-{% endfor %}
-</table>
-</div>
-
-<div class="card">
-<h2>Severity Stats</h2>
-<table>
-<tr><th>Severity</th><th>Count</th></tr>
-{% for s in severity %}
-<tr><td>{{s['severity']}}</td><td>{{s['cnt']}}</td></tr>
+<tr><td>{{t['indicator']}}</td><td>{{t['type']}}</td><td>{{t['severity']}}</td><td>{{t['mitre']}}</td><td>{{t['cnt']}}</td></tr>
 {% endfor %}
 </table>
 </div>
 
 </div>
-
 <script>
-Plotly.newPlot('trend', {{trend|safe}}.data, {{trend|safe}}.layout, {responsive:true});
-Plotly.newPlot('types', {{types|safe}}.data, {{types|safe}}.layout, {responsive:true});
-Plotly.newPlot('heatmap', {{heatmap|safe}}.data, {{heatmap|safe}}.layout, {responsive:true});
+Plotly.newPlot('trend', {{trend|safe}}.data, {{trend|safe}}.layout,{responsive:true});
+Plotly.newPlot('types', {{types|safe}}.data, {{types|safe}}.layout,{responsive:true});
+Plotly.newPlot('severity', {{severity|safe}}.data, {{severity|safe}}.layout,{responsive:true});
+Plotly.newPlot('heatmap', {{heatmap|safe}}.data, {{heatmap|safe}}.layout,{responsive:true});
 </script>
-</body></html>
+</body>
+</html>
 """
 
 # ---------------- Route -----------------
 @app.route("/")
 def dashboard():
-    filter_city=request.args.get("city")
-    filter_sev=request.args.get("severity")
-    filter_type=request.args.get("type")
     return render_template_string(
         TEMPLATE,
         index=secure_index(),
-        trend=trend_chart(filter_sev,filter_type,filter_city),
-        types=type_chart(filter_sev,filter_city),
-        heatmap=heatmap_chart(filter_sev,filter_type),
-        top=top_indicators(filter_city),
-        severity=severity_stats(filter_city)
+        trend=trend_chart(),
+        types=type_chart(),
+        severity=severity_chart(),
+        heatmap=malaysia_heatmap(),
+        top=top_indicators()
     )
 
+# ---------------- Start -----------------
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)), debug=False)
