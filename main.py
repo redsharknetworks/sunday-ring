@@ -1,327 +1,328 @@
-import os, sqlite3, threading, random, io, csv, json
-from datetime import datetime
+import os
+import io
+import csv
+import sqlite3
+import threading
+import time
+import random
+from datetime import datetime, timedelta
+
 from flask import Flask, render_template_string, send_file
-import requests
+import plotly
 import plotly.graph_objs as go
+import json
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 from plotly.utils import PlotlyJSONEncoder
 
+# ---------------- CONFIG ----------------
 app = Flask(__name__)
-DB = "/tmp/soc.db"
+DB = os.getenv("DB_PATH", "/tmp/threats.db")
 
-# ---------------- Database -----------------
-def init_db():
-    with sqlite3.connect(DB) as conn:
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS threats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            indicator TEXT,
-            type TEXT,
-            source TEXT,
-            city TEXT,
-            severity TEXT,
-            mitre TEXT,
-            created_at TEXT
-        )
-        """)
+# ---------------- DATABASE ----------------
+def ensure_database():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS threats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pulse TEXT,
+        indicator TEXT,
+        type TEXT,
+        classification TEXT,
+        mitre TEXT,
+        risk_score INTEGER,
+        source TEXT,
+        city TEXT,
+        severity TEXT,
+        created_at TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
 
-init_db()
+def cleanup_old_records():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    cutoff = (datetime.utcnow() - timedelta(days=60)).isoformat()
+    c.execute("DELETE FROM threats WHERE created_at < ?", (cutoff,))
+    conn.commit()
+    conn.close()
 
-# ---------------- Malaysia States & Severity -----------------
+# ---------------- DUMMY DATA ----------------
 MALAYSIA_STATES = {
-    "Johor": [1.4927,103.7414],
-    "Kedah": [6.1164,100.3678],
-    "Kelantan": [6.1254,102.2381],
-    "Melaka": [2.1896,102.2501],
-    "Negeri Sembilan": [2.7290,101.9383],
-    "Pahang": [3.8167,103.3333],
-    "Perak": [4.5929,101.0900],
-    "Perlis": [6.4400,100.2000],
-    "Penang": [5.4164,100.3327],
-    "Sabah": [5.9804,116.0735],
-    "Sarawak": [1.5533,110.3592],
-    "Selangor": [3.1390,101.6869],
-    "Terengganu": [5.3300,103.1400],
-    "Kuala Lumpur": [3.1390,101.6869],
-    "Putrajaya": [2.9264,101.6981],
-    "Labuan": [5.2833,115.2333]
+    "Johor":[1.4927,103.7414],"Kedah":[6.1164,100.3678],"Kelantan":[6.1254,102.2381],
+    "Melaka":[2.1896,102.2501],"Negeri Sembilan":[2.7290,101.9383],"Pahang":[3.8167,103.3333],
+    "Perak":[4.5929,101.0900],"Perlis":[6.4400,100.2000],"Penang":[5.4164,100.3327],
+    "Sabah":[5.9804,116.0735],"Sarawak":[1.5533,110.3592],"Selangor":[3.1390,101.6869],
+    "Terengganu":[5.3300,103.1400],"Kuala Lumpur":[3.1390,101.6869],
+    "Putrajaya":[2.9264,101.6981],"Labuan":[5.2833,115.2333]
 }
 
-SEVERITIES = ["Low","Medium","High","Critical"]
-MITRE_TACTICS = ["Reconnaissance","Initial Access","Execution","Persistence",
-                 "Privilege Escalation","Defense Evasion","Credential Access",
-                 "Discovery","Lateral Movement","Collection","Exfiltration","Command and Control"]
-COLOR_MAP = {"Low":"#00ff00","Medium":"#ffff00","High":"#ff8000","Critical":"#ff0000"}
+ASSETS = ["Server-1","Server-2","Firewall-1","DB-Prod","Laptop-1"]
+EVENT_TYPES = ["Malware","Phishing","Port Scan","Data Exfiltration","Suspicious Login"]
 
-# ---------------- Insert Threat -----------------
-def insert_threat(indicator, type_, source, city=None, severity=None, mitre=None):
-    city = city or random.choice(list(MALAYSIA_STATES.keys()))
-    severity = severity or random.choice(SEVERITIES)
-    mitre = mitre or random.choice(MITRE_TACTICS)
-    with sqlite3.connect(DB) as conn:
-        conn.execute("""
-        INSERT INTO threats (indicator,type,source,city,severity,mitre,created_at)
-        VALUES (?,?,?,?,?,?,?)
-        """,(indicator,type_,source,city,severity,mitre,datetime.utcnow().isoformat()))
+def classify_risk(score):
+    if score >= 70: return "Critical"
+    elif score >= 40: return "High"
+    else: return "Medium"
 
-# ---------------- Dummy Initial Data -----------------
-def seed_dummy_data():
-    with sqlite3.connect(DB) as conn:
-        count = conn.execute("SELECT COUNT(*) FROM threats").fetchone()[0]
-        if count==0:
-            for i in range(15):
-                insert_threat(f"malicious{i+1}.com","Domain","Dummy Feed")
-seed_dummy_data()
+def insert_dummy_data(n=30):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    for _ in range(n):
+        created = datetime.utcnow().isoformat()
+        score = random.randint(10,95)
+        severity = classify_risk(score)
+        city = random.choice(list(MALAYSIA_STATES.keys()))
+        c.execute("""INSERT INTO threats (pulse, indicator, type, classification, mitre, risk_score, source, city, severity, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (f"Pulse {random.randint(1,20)}",
+                   f"malicious{random.randint(1,50)}.com",
+                   random.choice(EVENT_TYPES),
+                   severity, "MITRE-T", score,
+                   random.choice(["dummy","otx","talos"]), city, severity, created))
+    conn.commit()
+    conn.close()
 
-# ---------------- External Feeds -----------------
-def fetch_urlhaus():
-    url="https://urlhaus.abuse.ch/downloads/csv_online/"
-    try:
-        resp=requests.get(url,timeout=10)
-        reader=csv.reader(resp.text.splitlines())
-        entries=list(reader)[9:50]
-        for row in entries:
-            if len(row)<3: continue
-            insert_threat(row[2].strip(),"URL","URLhaus")
-    except: pass
-
-def fetch_spamhaus_drop():
-    url="https://www.spamhaus.org/drop/drop.txt"
-    try:
-        resp=requests.get(url,timeout=10)
-        for line in resp.text.splitlines():
-            if line.startswith(";") or not line.strip(): continue
-            insert_threat(line.split(";")[0].strip(),"IP","Spamhaus")
-    except: pass
-
-def fetch_firehol():
-    url="https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset"
-    try:
-        resp=requests.get(url,timeout=10)
-        for line in resp.text.splitlines():
-            if line.startswith("#") or not line.strip(): continue
-            insert_threat(line.strip(),"IP","FireHOL")
-    except: pass
-
-def run_feeds():
-    fetch_urlhaus()
-    fetch_spamhaus_drop()
-    fetch_firehol()
-
-# ---------------- Scheduler -----------------
+# ---------------- SCHEDULER ----------------
 def scheduler():
     while True:
-        run_feeds()
-        threading.Event().wait(3600)
-threading.Thread(target=scheduler,daemon=True).start()
+        insert_dummy_data()
+        cleanup_old_records()
+        time.sleep(3600)
 
-# ---------------- Charts -----------------
-def trend_chart():
-    with sqlite3.connect(DB) as conn:
-        conn.row_factory = sqlite3.Row
-        rows=conn.execute("SELECT substr(created_at,1,10) as d, COUNT(*) as cnt FROM threats GROUP BY d").fetchall()
-    x=[r["d"] for r in rows] if rows else [datetime.utcnow().strftime("%Y-%m-%d")]
-    y=[r["cnt"] for r in rows] if rows else [1]
-    fig=go.Figure(data=[go.Scatter(x=x,y=y,mode="lines+markers",line=dict(color="#00e6ff"))])
+# ---------------- PLOTLY CHARTS ----------------
+def generate_trend_chart():
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT substr(created_at,1,10) as d, COUNT(*) as cnt FROM threats GROUP BY d").fetchall()
+    conn.close()
+    x = [r["d"] for r in rows] if rows else [datetime.utcnow().strftime("%Y-%m-%d")]
+    y = [r["cnt"] for r in rows] if rows else [0]
+    fig = go.Figure(data=[go.Scatter(x=x,y=y,mode="lines+markers",line=dict(color="#00e6ff"))])
     fig.update_layout(title="Threat Timeline (Last 30 Days)",
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-def type_chart():
-    with sqlite3.connect(DB) as conn:
-        conn.row_factory = sqlite3.Row
-        rows=conn.execute("SELECT type, COUNT(*) as cnt FROM threats GROUP BY type").fetchall()
-    labels=[r["type"] for r in rows] if rows else ["No Data"]
-    values=[r["cnt"] for r in rows] if rows else [1]
-    fig=go.Figure(data=[go.Bar(x=labels,y=values,marker_color="#00e6ff")])
-    fig.update_layout(title="Threat Types",
+def generate_type_chart():
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT type, COUNT(*) as cnt FROM threats GROUP BY type").fetchall()
+    conn.close()
+    labels = [r["type"] for r in rows] if rows else ["No Data"]
+    values = [r["cnt"] for r in rows] if rows else [0]
+    fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3, marker=dict(colors=["#00e6ff","#006699","#003366","#00ffff","#3399ff"],line=dict(color='#ffffff',width=2)))])
+    fig.update_traces(textinfo='label+percent', pull=[0.1 if v>0 else 0 for v in values])
+    fig.update_layout(title="Threat Type Distribution",
                       paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-def severity_chart():
+# ---------------- HEATMAP ----------------
+def generate_heatmap():
     with sqlite3.connect(DB) as conn:
         conn.row_factory = sqlite3.Row
-        rows=conn.execute("SELECT severity, COUNT(*) as cnt FROM threats GROUP BY severity").fetchall()
-    labels=[r["severity"] for r in rows] if rows else SEVERITIES
-    values=[r["cnt"] for r in rows] if rows else [1,1,1,1]
-    fig=go.Figure(data=[go.Pie(
-        labels=labels,
-        values=values,
-        marker=dict(colors=[COLOR_MAP[s] for s in labels],
-                    line=dict(color="#00FFFF", width=3)),
-        hoverinfo='label+percent',
-        textinfo='label+value',
-        textfont=dict(color="#00FFFF",size=14)
-    )])
-    fig.update_layout(title="Severity Distribution (Glowing Sectors)",
-                      paper_bgcolor="#0b1b2a",plot_bgcolor="#0b1b2a",font_color="#00e6ff")
-    return json.dumps(fig,cls=PlotlyJSONEncoder)
-
-# ---------------- Malaysia Leaflet Map (Packed Lines) -----------------
-def malaysia_leaflet_map():
-    with sqlite3.connect(DB) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT indicator,source,city,severity,mitre FROM threats").fetchall()
-    city_pairs = {}
+        rows = conn.execute("SELECT city,severity FROM threats WHERE severity='Critical'").fetchall()
+    lines = []
     for r in rows:
-        if r["severity"] != "Critical":
-            continue
-        victim = r["city"]
-        attacker = f"Feed-{r['source']}"
-        key = (attacker,victim)
-        city_pairs[key] = city_pairs.get(key,0)+1
-    # show top 15 pairs only
-    top_pairs = sorted(city_pairs.items(), key=lambda x:x[1], reverse=True)[:15]
-    attacks=[]
-    for (attacker,victim),count in top_pairs:
-        victim_lat,victim_lon = MALAYSIA_STATES.get(victim,[3.1390,101.9758])
-        attacker_lat,attacker_lon = victim_lat+random.uniform(0.5,2), victim_lon+random.uniform(0.5,2)
-        attacks.append({
-            "attacker":[attacker_lat,attacker_lon],
-            "victim":[victim_lat,victim_lon],
-            "color": COLOR_MAP["Critical"],
-            "info": f"{attacker} → {victim} | {count} attacks"
-        })
-    return attacks
+        src = random.choice(list(MALAYSIA_STATES.keys()))
+        dest = r["city"]
+        lines.append((src,dest))
+    return lines
 
-# ---------------- Top Indicators & Index -----------------
-def top_indicators(limit=10):
-    with sqlite3.connect(DB) as conn:
-        conn.row_factory = sqlite3.Row
-        return conn.execute("SELECT indicator,type,severity,mitre,COUNT(*) as cnt FROM threats GROUP BY indicator ORDER BY cnt DESC LIMIT ?",(limit,)).fetchall()
-
-def secure_index():
-    with sqlite3.connect(DB) as conn:
-        conn.row_factory = sqlite3.Row
-        rows=conn.execute("SELECT severity FROM threats").fetchall()
+# ---------------- SECURE INDEX ----------------
+def calculate_secure_index():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("SELECT risk_score FROM threats")
+    rows = c.fetchall()
+    conn.close()
     if not rows: return 0
-    weight={"Low":0.2,"Medium":0.5,"High":0.7,"Critical":1.0}
-    score=sum([weight.get(r["severity"],0.5) for r in rows])
-    return round(score/len(rows)*100,1)
+    total_weighted = sum([(s*1.0 if s>=70 else s*0.5 if s>=40 else s*0.2) for (s,) in rows])
+    return round(total_weighted/(len(rows)*100)*100,1)
 
-# ---------------- Reports -----------------
-def generate_csv():
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["ID","Indicator","Type","Source","City","Severity","MITRE","Created"])
+# ---------------- PDF ----------------
+def generate_pdf():
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer,pagesize=A4)
+    elements=[]
+    styles = getSampleStyleSheet()
+    elements.append(Paragraph("RedShark Threat Intelligence Report", styles['Title']))
+    elements.append(Spacer(1,12))
     with sqlite3.connect(DB) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
+        rows = conn.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 100").fetchall()
+    if not rows:
+        elements.append(Paragraph("No data available.", styles['Normal']))
+    else:
+        data=[["ID","Indicator","Type","Source","City","Severity","MITRE","Created"]]
         for r in rows:
-            writer.writerow([r["id"],r["indicator"],r["type"],r["source"],r["city"],r["severity"],r["mitre"],r["created_at"]])
-    mem = io.BytesIO()
-    mem.write(output.getvalue().encode("utf-8"))
-    mem.seek(0)
-    return mem
+            data.append([r["id"],r["indicator"],r["type"],r["source"],r["city"],r["severity"],r["mitre"],r["created_at"]])
+        t = Table(data, repeatRows=1)
+        t.setStyle(TableStyle([
+            ('BACKGROUND',(0,0),(-1,0),colors.HexColor("#004d66")),
+            ('TEXTCOLOR',(0,0),(-1,0),colors.white),
+            ('GRID',(0,0),(-1,-1),0.5,colors.HexColor("#00e6ff")),
+            ('BACKGROUND',(0,1),(-1,-1),colors.HexColor("#002f4d")),
+        ]))
+        elements.append(t)
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
 
-def generate_json():
-    with sqlite3.connect(DB) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
-    mem = io.BytesIO()
-    mem.write(json.dumps([dict(r) for r in rows],indent=2).encode("utf-8"))
-    mem.seek(0)
-    return mem
-
-# ---------------- Dashboard Template -----------------
-TEMPLATE = """<html>
+# ---------------- DASHBOARD TEMPLATE ----------------
+TEMPLATE = """
+<html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <style>
-body{background:#0b1b2a;color:#00e6ff;font-family:sans-serif;margin:0;padding:0;}
-.container{width:95%;margin:auto;}
-h1,h2{padding:10px;text-align:center;color:#00e6ff;}
-.card{background:#002f4d;padding:15px;margin:10px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.5);}
-table{width:100%;border-collapse:collapse;margin-top:10px;}
-th,td{padding:8px;text-align:left;border:1px solid #00e6ff;}
-th{background:#004d66;}
-tr:nth-child(even){background:#00384d;}
-a.button{background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none;border-radius:4px;margin-right:5px;}
-#mapid{height:500px;border-radius:8px;}
+body {background:#0b1b2a;color:#00e6ff;font-family:sans-serif;margin:0;padding:0;}
+h2 {text-align:center;padding:10px;}
+.card {background:#00274d;padding:12px;margin:10px;border-radius:6px;}
+table {border-collapse:collapse;width:100%;word-wrap:break-word;}
+th,td{padding:6px;text-align:left;}
+th{background:#004d66;color:#00e6ff;}
+tr:nth-child(even){background:#0c2a4a;}
+tr:nth-child(odd){background:#0b1b2a;}
+a.button {background:#00e6ff;color:#0b1b2a;padding:6px 12px;text-decoration:none;border-radius:4px;margin-right:6px;}
 </style>
 </head>
 <body>
-<div class="container">
-<h1>RedShark Threat Intelligence Dashboard</h1>
-<p style="text-align:center;font-size:12px;color:#aaa;">Disclaimer: Developed & analyzed by darkgrid@redshark.my using publicly available sources.</p>
+<h2>RedShark Threat Intelligence Dashboard</h2>
+<p style="text-align:center;font-size:12px;">Disclaimer: Developed & analyzed by darkgrid@redshark.my using publicly available sources.</p>
 
 <div class="card">
-<h2>SecureNation Index: {{index}}/100</h2>
-<div style="background:#004d66;width:300px;height:25px;border-radius:5px;">
-  <div style="height:25px;width:{{index}}%;background:#00e6ff;text-align:center;color:#0b1b2a;font-weight:bold;">{{index}}/100</div>
+<h3>SecureNation Index: {{ gauge }}/100</h3>
+<div style="background:#00274d;width:300px;height:25px;border-radius:5px;">
+<div style="height:25px;width:{{ gauge }}%;background:#00e6ff;text-align:center;color:#0b1b2a;font-weight:bold;">{{ gauge }}/100</div>
 </div>
 </div>
 
-<div class="card"><h2>Threat Timeline</h2><div id="trend"></div></div>
-<div class="card"><h2>Threat Types</h2><div id="types"></div></div>
-<div class="card"><h2>Severity Distribution</h2><div id="severity"></div></div>
-
 <div class="card">
-<h2>Malaysia Critical Attacks Map</h2>
-<div id="mapid"></div>
+<h3>Malaysia Critical Threat Heatmap</h3>
+<canvas id="heatmap" width="600" height="400"></canvas>
 </div>
 
 <div class="card">
-<h2>Top Indicators</h2>
-<table>
-<tr><th>Indicator</th><th>Type</th><th>Severity</th><th>MITRE</th><th>Count</th></tr>
-{% for t in top %}
-<tr><td>{{t['indicator']}}</td><td>{{t['type']}}</td><td>{{t['severity']}}</td><td>{{t['mitre']}}</td><td>{{t['cnt']}}</td></tr>
+<h3>Threat Timeline</h3>
+<div id="trend_chart"></div>
+</div>
+
+<div class="card">
+<h3>Threat Type Distribution</h3>
+<div id="type_chart"></div>
+</div>
+
+<div class="card">
+<h3>Latest Indicators</h3>
+<table id="indicators">
+<thead><tr><th>ID</th><th>Pulse</th><th>Indicator</th><th>Type</th><th>Class</th><th>Risk</th><th>Source</th><th>City</th><th>Severity</th><th>Created</th></tr></thead>
+<tbody>
+{% for row in table_data %}
+<tr><td>{{ row['id'] }}</td><td>{{ row['pulse'] }}</td><td>{{ row['indicator'] }}</td><td>{{ row['type'] }}</td><td>{{ row['classification'] }}</td><td>{{ row['risk_score'] }}</td><td>{{ row['source'] }}</td><td>{{ row['city'] }}</td><td>{{ row['severity'] }}</td><td>{{ row['created_at'] }}</td></tr>
 {% endfor %}
+</tbody>
 </table>
 </div>
 
-<div class="card" style="text-align:center;">
+<div style="text-align:center;margin:20px;">
 <a href="/download/csv" class="button">Download CSV</a>
 <a href="/download/json" class="button">Download JSON</a>
 <a href="/download/pdf" class="button">Download PDF</a>
 </div>
 
-</div>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script>
-Plotly.newPlot('trend', {{trend|safe}}.data, {{trend|safe}}.layout,{responsive:true});
-Plotly.newPlot('types', {{types|safe}}.data, {{types|safe}}.layout,{responsive:true});
-Plotly.newPlot('severity', {{severity|safe}}.data, {{severity|safe}}.layout,{responsive:true});
+$(document).ready(function() {
+    var trend_chart = {{ trend | safe }};
+    var type_chart = {{ type_chart | safe }};
+    Plotly.newPlot('trend_chart', trend_chart.data, trend_chart.layout);
+    Plotly.newPlot('type_chart', type_chart.data, type_chart.layout);
 
-// Leaflet Map
-var attacks = {{heatmap|safe}};
-var map = L.map('mapid').setView([4.2105,101.9758],6);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18}).addTo(map);
-attacks.forEach(function(a){
-    L.polyline([a.attacker,a.victim],{color:a.color,weight:3}).addTo(map)
-     .bindPopup(a.info);
+    // Heatmap canvas
+    var heatmapCanvas = document.getElementById('heatmap');
+    var ctx = heatmapCanvas.getContext('2d');
+    ctx.clearRect(0,0,heatmapCanvas.width,heatmapCanvas.height);
+    var lines = {{ heatmap | safe }};
+    var positions = {{ positions | safe }};
+    ctx.strokeStyle="#ff0000"; ctx.lineWidth=2;
+    lines.forEach(function(l){
+        var src = positions[l[0]]; var dst = positions[l[1]];
+        if(src && dst){
+            ctx.beginPath();
+            ctx.moveTo(src[0],src[1]);
+            ctx.lineTo(dst[0],dst[1]);
+            ctx.stroke();
+        }
+    });
 });
 </script>
 </body>
 </html>
 """
 
-# ---------------- Routes -----------------
+# ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
-    return render_template_string(
-        TEMPLATE,
-        index=secure_index(),
-        trend=trend_chart(),
-        types=type_chart(),
-        severity=severity_chart(),
-        heatmap=malaysia_leaflet_map(),
-        top=top_indicators()
-    )
+    trend = generate_trend_chart()
+    type_chart = generate_type_chart()
+    heatmap = generate_heatmap()
+    gauge = calculate_secure_index()
 
+    # map city name to canvas positions (simple scaling)
+    positions = {}
+    width,height=600,400
+    for i,(city,coords) in enumerate(MALAYSIA_STATES.items()):
+        positions[city]=[coords[1]/116*width, height - (coords[0]/7*height)]
+
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    table_data = conn.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+    conn.close()
+
+    return render_template_string(TEMPLATE,
+                                  trend=trend,
+                                  type_chart=type_chart,
+                                  heatmap=heatmap,
+                                  positions=positions,
+                                  gauge=gauge,
+                                  table_data=table_data)
+
+# ---------------- DOWNLOAD ROUTES ----------------
 @app.route("/download/csv")
 def download_csv():
-    return send_file(generate_csv(),mimetype="text/csv",download_name="soc_report.csv",as_attachment=True)
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["id","pulse","indicator","type","classification","risk_score","source","city","severity","created_at"])
+    writer.writeheader()
+    with sqlite3.connect(DB) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM threats").fetchall()
+    for r in rows: writer.writerow(r)
+    outb = io.BytesIO()
+    outb.write(output.getvalue().encode()); outb.seek(0)
+    return send_file(outb, mimetype="text/csv", download_name="soc_report.csv", as_attachment=True)
 
 @app.route("/download/json")
 def download_json():
-    return send_file(generate_json(),mimetype="application/json",download_name="soc_report.json",as_attachment=True)
+    with sqlite3.connect(DB) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM threats").fetchall()
+        data = [dict(r) for r in rows]
+    outb = io.BytesIO()
+    outb.write(json.dumps(data,indent=2).encode()); outb.seek(0)
+    return send_file(outb, mimetype="application/json", download_name="soc_report.json", as_attachment=True)
 
 @app.route("/download/pdf")
 def download_pdf():
-    return send_file(generate_csv(),mimetype="application/pdf",download_name="soc_report.pdf",as_attachment=True)
+    return send_file(generate_pdf(), mimetype="application/pdf", download_name="soc_report.pdf", as_attachment=True)
+
+# ---------------- START ----------------
+ensure_database()
+insert_dummy_data()
+threading.Thread(target=scheduler,daemon=True).start()
 
 if __name__=="__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)), debug=False)
+    app.run(host="0.0.0.0",port=int(os.getenv("PORT",5000)))
