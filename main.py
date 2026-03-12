@@ -1,10 +1,4 @@
-import os
-import sqlite3
-import requests
-import csv
-import json
-import random
-import threading
+import os, sqlite3, csv, json, random, threading
 from datetime import datetime
 from flask import Flask, render_template_string, request, send_file
 import io
@@ -14,18 +8,19 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 import plotly.graph_objs as go
 from plotly.utils import PlotlyJSONEncoder
+import requests
 
 app = Flask(__name__)
 DB = "/tmp/soc.db"
 
 # ---------------- Malaysia States ----------------
 MALAYSIA = {
-"Johor": (1.48,103.76),"Kedah": (6.12,100.36),"Kelantan": (6.12,102.23),
-"Melaka": (2.18,102.25),"Negeri Sembilan": (2.72,101.94),"Pahang": (3.81,103.32),
-"Perak": (4.59,101.09),"Perlis": (6.44,100.20),"Penang": (5.41,100.33),
-"Sabah": (5.98,116.07),"Sarawak": (1.55,110.35),"Selangor": (3.07,101.52),
-"Terengganu": (5.31,103.13),"Kuala Lumpur": (3.13,101.69),"Putrajaya": (2.92,101.69),
-"Labuan": (5.27,115.24)
+    "Johor": (1.48,103.76),"Kedah": (6.12,100.36),"Kelantan": (6.12,102.23),
+    "Melaka": (2.18,102.25),"Negeri Sembilan": (2.72,101.94),"Pahang": (3.81,103.32),
+    "Perak": (4.59,101.09),"Perlis": (6.44,100.20),"Penang": (5.41,100.33),
+    "Sabah": (5.98,116.07),"Sarawak": (1.55,110.35),"Selangor": (3.07,101.52),
+    "Terengganu": (5.31,103.13),"Kuala Lumpur": (3.13,101.69),"Putrajaya": (2.92,101.69),
+    "Labuan": (5.27,115.24)
 }
 
 # ---------------- Database ----------------
@@ -46,31 +41,39 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-init_db()
 
-# ---------------- Utilities ----------------
+def insert_dummy():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM threats")
+    if c.fetchone()[0] == 0:
+        for i in range(5):
+            state = random.choice(list(MALAYSIA.keys()))
+            score = random.randint(40,90)
+            classification = "High" if score>=70 else "Medium" if score>=40 else "Low"
+            c.execute("""
+            INSERT INTO threats(indicator,type,source,risk_score,classification,state,created_at)
+            VALUES(?,?,?,?,?,?,?)
+            """, (f"dummy{i}.malicious.com","domain","dummy",score,classification,state,datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
 def classify(score):
-    if score < 40: return "Low"
-    elif score < 70: return "Medium"
-    else: return "High"
+    return "High" if score>=70 else "Medium" if score>=40 else "Low"
 
-def insert_threat(indicator, type_, source):
-    try:
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        score = random.randint(60,95)
-        c.execute("""
-        INSERT INTO threats(indicator,type,source,risk_score,classification,state,created_at)
-        VALUES(?,?,?,?,?,?,?)
-        """,(
-            indicator,type_,source,score,classify(score),random.choice(list(MALAYSIA.keys())),datetime.utcnow().isoformat()
-        ))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print("Insert error:",e)
+def insert_threat(indicator,type_,source):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    score = random.randint(60,95)
+    state = random.choice(list(MALAYSIA.keys()))
+    c.execute("""
+    INSERT INTO threats(indicator,type,source,risk_score,classification,state,created_at)
+    VALUES(?,?,?,?,?,?,?)
+    """,(indicator,type_,source,score,classify(score),state,datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
 
-# ---------------- Feeds ----------------
+# ---------------- External Feeds ----------------
 def ingest_feeds():
     headers={"User-Agent":"SundayRingSOC"}
 
@@ -95,7 +98,7 @@ def ingest_feeds():
             insert_threat(url,"url","URLHaus")
     except: pass
 
-    # PhishTank CSV (optional)
+    # PhishTank
     try:
         r=requests.get("https://data.phishtank.com/data/online-valid.csv",headers=headers,timeout=10)
         reader=csv.reader(r.text.splitlines())
@@ -112,7 +115,7 @@ def malaysia_heatmap():
     c=conn.cursor()
     rows=c.execute("SELECT state,COUNT(*) c FROM threats GROUP BY state").fetchall()
     conn.close()
-
+    if not rows: rows=[{"state":"Kuala Lumpur","c":1}]
     lat,lon,size,text=[],[],[],[]
     for r in rows:
         if r["state"] not in MALAYSIA: continue
@@ -136,6 +139,7 @@ def trend_chart():
     c=conn.cursor()
     rows=c.execute("SELECT substr(created_at,1,10) d, COUNT(*) c FROM threats GROUP BY d").fetchall()
     conn.close()
+    if not rows: rows=[{"d":"2026-03-12","c":0}]
     x=[r["d"] for r in rows]
     y=[r["c"] for r in rows]
     fig=go.Figure(go.Scatter(x=x,y=y,mode="lines+markers"))
@@ -148,6 +152,7 @@ def source_chart():
     c=conn.cursor()
     rows=c.execute("SELECT source,COUNT(*) c FROM threats GROUP BY source").fetchall()
     conn.close()
+    if not rows: rows=[{"source":"dummy","c":1}]
     labels=[r["source"] for r in rows]
     values=[r["c"] for r in rows]
     fig=go.Figure([go.Pie(labels=labels,values=values)])
@@ -164,7 +169,6 @@ def top_indicators():
 
 def secure_index():
     conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
     c=conn.cursor()
     high=c.execute("SELECT COUNT(*) FROM threats WHERE classification='High'").fetchone()[0]
     medium=c.execute("SELECT COUNT(*) FROM threats WHERE classification='Medium'").fetchone()[0]
@@ -183,29 +187,23 @@ threading.Thread(target=scheduler,daemon=True).start()
 # ---------------- Dashboard ----------------
 @app.route("/")
 def dashboard():
-    try: ingest_feeds()
-    except: pass
+    try:
+        heatmap = malaysia_heatmap()
+        trend = trend_chart()
+        source = source_chart()
+        top = top_indicators()
+        index = secure_index()
 
-    conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
-    c=conn.cursor()
-    rows=c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
-    conn.close()
+        conn=sqlite3.connect(DB)
+        conn.row_factory=sqlite3.Row
+        c=conn.cursor()
+        rows=c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+        conn.close()
 
-    heatmap=malaysia_heatmap()
-    trend=trend_chart()
-    source=source_chart()
-    top=top_indicators()
-    index=secure_index()
-
-    template=open("templates/dashboard.html").read()
-    return render_template_string(template,
-                                  rows=rows,
-                                  heatmap=heatmap,
-                                  trend=trend,
-                                  source=source,
-                                  top=top,
-                                  index=index)
+        template=open("templates/dashboard.html").read()
+        return render_template_string(template, rows=rows, heatmap=heatmap, trend=trend, source=source, top=top, index=index)
+    except Exception as e:
+        return f"<h1>Internal Server Error</h1><pre>{e}</pre>"
 
 # ---------------- IOC Search ----------------
 @app.route("/search")
@@ -218,7 +216,7 @@ def ioc_search():
     conn.close()
     return {"results":[dict(r) for r in rows]}
 
-# ---------------- CSV / JSON ----------------
+# ---------------- CSV / JSON / PDF ----------------
 @app.route("/download/csv")
 def download_csv():
     conn=sqlite3.connect(DB)
@@ -247,7 +245,6 @@ def download_json():
     output.seek(0)
     return send_file(output,mimetype="application/json",download_name="threats.json",as_attachment=True)
 
-# ---------------- PDF Report ----------------
 @app.route("/download/pdf")
 def download_pdf():
     conn=sqlite3.connect(DB)
@@ -263,7 +260,8 @@ def download_pdf():
     elements.append(Paragraph("Sunday-Ring SOC Threat Report",styles['Title']))
     elements.append(Spacer(1,12))
     data=[["ID","Indicator","Type","Source","Risk","Class","State","Time"]]
-    for r in rows: data.append([r["id"],r["indicator"],r["type"],r["source"],r["risk_score"],r["classification"],r["state"],r["created_at"]])
+    for r in rows:
+        data.append([r["id"],r["indicator"],r["type"],r["source"],r["risk_score"],r["classification"],r["state"],r["created_at"]])
     table=Table(data,repeatRows=1)
     table.setStyle(TableStyle([
         ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
@@ -278,5 +276,8 @@ def download_pdf():
 
 # ---------------- Run ----------------
 if __name__=="__main__":
+    init_db()
+    insert_dummy()
+    ingest_feeds()
     port=int(os.environ.get("PORT",5000))
     app.run(host="0.0.0.0",port=port)
