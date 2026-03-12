@@ -100,6 +100,16 @@ def fetch_feodo():
             insert_threat(i.get("ip_address","0.0.0.0"), "ip", 90)
     except: pass
 
+def fetch_urlhaus():
+    try:
+        url="https://urlhaus.abuse.ch/downloads/csv_recent/"
+        data = requests.get(url, timeout=10).text.splitlines()
+        reader = csv.reader(data)
+        for row in list(reader)[10:50]:
+            if len(row)>2:
+                insert_threat(row[2],"url",70)
+    except: pass
+
 def fetch_hashes():
     try:
         url="https://mb-api.abuse.ch/api/v1/"
@@ -112,6 +122,7 @@ def fetch_feeds():
     fetch_threatfox()
     fetch_feodo()
     fetch_hashes()
+    fetch_urlhaus()
 
 # ---------------- SCHEDULER ----------------
 def scheduler():
@@ -181,20 +192,23 @@ def sector_chart():
 def indicator_type_chart():
     rows=db().execute("SELECT type, COUNT(*) c FROM threats GROUP BY type").fetchall()
     labels=[r["type"] for r in rows]; values=[r["c"] for r in rows]
-    fig=go.Figure(go.Pie(labels=labels, values=values, hole=0.3,
-                          marker=dict(colors=["#00ffff","#ff00ff","#ff9900","#00ff99"])))
+    fig=go.Figure()
+    fig.add_trace(go.Scatter(x=labels, y=values, mode='lines+markers',
+                             line=dict(color="#00eaff", width=3, shape='spline'),
+                             marker=dict(size=10,color="#00ffff",line=dict(width=2,color="#66ffff"))))
     fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a",
-                      font_color="#A3B8CC", title="Indicator Types")
+                      font_color="#A3B8CC", title="Indicator Type Trend")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def mitre_chart():
     rows=db().execute("SELECT mitre, COUNT(*) c FROM threats GROUP BY mitre").fetchall()
     labels=[r["mitre"] for r in rows]; values=[r["c"] for r in rows]
-    colors = ["#00ffff","#ff00ff","#ff9900","#00ff99","#ff0066","#66ffcc","#ffcc00","#cc00ff","#ff3300","#33ffcc","#ccff00","#6600ff","#00ccff"]
-    fig=go.Figure(go.Pie(labels=labels,values=values,hole=0.4,
-                          marker=dict(colors=[colors[i%len(colors)] for i in range(len(labels))])))
+    fig=go.Figure()
+    fig.add_trace(go.Scatter(x=labels, y=values, mode='lines+markers',
+                             line=dict(color="#ff9900", width=3, shape='spline'),
+                             marker=dict(size=10,color="#ffcc00",line=dict(width=2,color="#ffaa00"))))
     fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a",
-                      font_color="#A3B8CC", title="MITRE ATT&CK Techniques")
+                      font_color="#A3B8CC", title="MITRE Techniques Trend")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 # ---------------- PDF ----------------
@@ -240,9 +254,9 @@ a.download{color:crimson;font-weight:bold;text-decoration:none;}
 
 <div class="card"><h3>Malaysia Cyber Attack Map</h3><div id="map" style="height:400px;"></div></div>
 <div class="card"><h3>Threat Timeline</h3><div id="timeline" style="height:300px;"></div></div>
-<div class="card"><h3>MITRE ATT&CK Distribution</h3><div id="mitre" style="height:300px;"></div></div>
+<div class="card"><h3>MITRE Techniques Trend</h3><div id="mitre" style="height:300px;"></div></div>
 <div class="card"><h3>Sector Targeting</h3><div id="sector" style="height:300px;"></div></div>
-<div class="card"><h3>Indicator Types</h3><div id="indicator_type" style="height:300px;"></div></div>
+<div class="card"><h3>Indicator Type Trend</h3><div id="indicator_type" style="height:300px;"></div></div>
 
 <div class="card"><h3>Latest Threat Indicators</h3>
 <table id="indicator" class="tablesorter">
