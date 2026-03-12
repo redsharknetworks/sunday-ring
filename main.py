@@ -173,7 +173,6 @@ def malaysia_map():
         if r["severity"] >= 85: colors.append("red"); sizes.append(14)
         elif r["severity"] >= 70: colors.append("orange"); sizes.append(10)
         else: colors.append("yellow"); sizes.append(8)
-    # Attack lines
     lats_lines, lons_lines = [], []
     for i in range(len(lat)-1):
         lats_lines += [lat[i], lat[i+1], None]
@@ -207,7 +206,51 @@ def malaysia_map():
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 # ---------------- HTML ----------------
-HTML = """PASTE THE FULL HTML TEMPLATE FROM v2.8 PREVIOUS STEP HERE"""
+HTML = """<html>
+<head>
+<title>RedShark CTI Dashboard v2.8</title>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<style>
+body{background:#0b1b2a;color:#00eaff;font-family:Arial;}
+.card{background:#13263b;padding:20px;margin:15px;border-radius:8px;}
+table{width:100%;border-collapse:collapse;}
+td,th{padding:8px;border-bottom:1px solid #1f3d5c;}
+th{cursor:pointer;}
+</style>
+</head>
+<body>
+<h2>RedShark CTI Dashboard v2.8</h2>
+<div class="card">SecureNation Index: {{index}}</div>
+<div class="card"><h3>Malaysia Cyber Attack Map</h3><div id="map"></div></div>
+<div class="card"><h3>Threat Timeline</h3><div id="timeline"></div></div>
+<div class="card"><h3>MITRE ATT&CK Distribution</h3><div id="mitre"></div></div>
+<div class="card"><h3>Sector Targeting</h3><div id="sector"></div></div>
+<div class="card"><h3>Latest Threat Indicators</h3>
+<table id="threats">
+<tr><th>ID</th><th>Indicator</th><th>Type</th><th>Sector</th><th>Severity</th></tr>
+{% for r in rows %}
+<tr><td>{{r.id}}</td><td>{{r.indicator}}</td><td>{{r.type}}</td><td>{{r.sector}}</td><td>{{r.severity}}</td></tr>
+{% endfor %}
+</table>
+</div>
+<div class="card">
+<a href="/csv" style="color:orange;">Download CSV</a> |
+<a href="/json" style="color:orange;">Download JSON</a> |
+<a href="/pdf" style="color:orange;">Download PDF</a>
+</div>
+<script>
+var timeline={{timeline|safe}}
+var mitre={{mitre|safe}}
+var sector={{sector|safe}}
+var map={{map|safe}}
+Plotly.newPlot("timeline",timeline.data,timeline.layout)
+Plotly.newPlot("mitre",mitre.data,mitre.layout)
+Plotly.newPlot("sector",sector.data,sector.layout)
+Plotly.newPlot("map",map.data,map.layout,map.frames)
+</script>
+<p style="opacity:0.6;text-align:center">Developed and analyzed by darkgrid@redshark.my using public CTI sources</p>
+</body></html>
+"""
 
 @app.route("/")
 def dashboard():
@@ -226,8 +269,7 @@ def dashboard():
 @app.route("/csv")
 def csv_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
-    out=io.StringIO()
-    writer=csv.writer(out)
+    out=io.StringIO(); writer=csv.writer(out)
     writer.writerow(rows[0].keys())
     for r in rows: writer.writerow(list(r))
     mem=io.BytesIO(); mem.write(out.getvalue().encode()); mem.seek(0)
@@ -248,8 +290,7 @@ def pdf_export():
     for r in rows:
         data.append([Paragraph(r["indicator"],getSampleStyleSheet()["BodyText"]),
                      r["type"],r["sector"],r["severity"]])
-    timestamp = Paragraph(f"<b>Report Generated:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}",
-                          getSampleStyleSheet()["Title"])
+    timestamp = Paragraph(f"<b>Report Generated:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}", getSampleStyleSheet()["Title"])
     pdf=SimpleDocTemplate(buffer,pagesize=landscape(A4))
     table=Table(data)
     table.setStyle(TableStyle([
