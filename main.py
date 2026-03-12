@@ -139,8 +139,8 @@ def malaysia_map():
     fig.add_trace(go.Scattermapbox(
         lat=lat, lon=lon, mode="markers",
         marker=dict(size=12,color=colors,opacity=0.8),
-        customdata=pulse,
-        text=[f"Severity: {s}" for s in sev]
+        text=[f"Severity: {s}" for s in sev],
+        hoverinfo="text"
     ))
     fig.update_layout(
         mapbox_style="carto-darkmatter",
@@ -154,12 +154,18 @@ def malaysia_map():
 def timeline_chart():
     rows=db().execute("SELECT substr(created,1,10) d, COUNT(*) c FROM threats GROUP BY d ORDER BY d").fetchall()
     x=[r["d"] for r in rows]; y=[r["c"] for r in rows]
-    fig=go.Figure()
-    fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",
-                             line=dict(color="#00eaff",width=3)))
-    fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a",
-                      font_color="white", title="Threat Timeline")
-    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode="lines+markers",
+        line=dict(color="#00eaff", width=4, shape='spline', smoothing=1.3),
+        marker=dict(size=10, color="#00eaff", line=dict(width=2, color="#66ffff")),
+        hovertemplate="Date: %{x}<br>Attacks: %{y}<extra></extra>"
+    ))
+    fig.update_layout(plot_bgcolor="#1a1a1a", paper_bgcolor="#0b1b2a", font_color="white",
+                      xaxis=dict(showgrid=False, showline=True, linecolor="#444"),
+                      yaxis=dict(showgrid=True, gridcolor="#333", zeroline=False),
+                      hovermode="x unified", margin=dict(l=40,r=40,t=60,b=40))
+    return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 def sector_chart():
     rows=db().execute("SELECT sector, COUNT(*) c FROM threats GROUP BY sector ORDER BY c DESC").fetchall()
@@ -198,7 +204,7 @@ def generate_pdf():
     return buffer
 
 # ---------------- DASHBOARD HTML ----------------
-HTML = """
+HTML = """ 
 <html>
 <head>
 <title>RedShark CTI Dashboard</title>
@@ -206,7 +212,6 @@ HTML = """
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.31.3/css/theme.dark.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.31.3/js/jquery.tablesorter.min.js"></script>
-
 <style>
 body{background:#0b1b2a;color:#00eaff;font-family:Arial;margin:0;padding:0;}
 .card{background:#13263b;padding:20px;margin:15px;border-radius:8px;}
@@ -233,12 +238,7 @@ a.download{color:crimson;font-weight:bold;text-decoration:none;}
 <tbody>
 {% for r in rows %}
 <tr>
-<td>{{r.id}}</td>
-<td>{{r.indicator}}</td>
-<td>{{r.type}}</td>
-<td>{{r.sector}}</td>
-<td>{{r.severity}}</td>
-<td>{{r.created}}</td>
+<td>{{r.id}}</td><td>{{r.indicator}}</td><td>{{r.type}}</td><td>{{r.sector}}</td><td>{{r.severity}}</td><td>{{r.created}}</td>
 </tr>
 {% endfor %}
 </tbody>
@@ -254,16 +254,10 @@ a.download{color:crimson;font-weight:bold;text-decoration:none;}
 
 <script>
 $(function(){$("#indicator").tablesorter();});
-
-var map={{map|safe}};
-var timeline={{timeline|safe}};
-var sector={{sector|safe}};
-var mitre={{mitre|safe}};
-
-Plotly.newPlot("map",map.data,map.layout);
-Plotly.newPlot("timeline",timeline.data,timeline.layout);
-Plotly.newPlot("sector",sector.data,sector.layout);
-Plotly.newPlot("mitre",mitre.data,mitre.layout);
+Plotly.newPlot("map",{{map|safe}}.data,{{map|safe}}.layout);
+Plotly.newPlot("timeline",{{timeline|safe}}.data,{{timeline|safe}}.layout);
+Plotly.newPlot("sector",{{sector|safe}}.data,{{sector|safe}}.layout);
+Plotly.newPlot("mitre",{{mitre|safe}}.data,{{mitre|safe}}.layout);
 </script>
 
 <p style="opacity:0.6">Developed and analyzed by darkgrid@redshark.my using public threat intelligence sources</p>
