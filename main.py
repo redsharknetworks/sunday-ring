@@ -8,7 +8,6 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 import plotly.graph_objs as go
 from plotly.utils import PlotlyJSONEncoder
-import requests
 
 app = Flask(__name__)
 DB = "/tmp/soc.db"
@@ -42,6 +41,9 @@ def init_db():
     conn.commit()
     conn.close()
 
+def classify(score):
+    return "High" if score>=70 else "Medium" if score>=40 else "Low"
+
 def insert_dummy():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -50,16 +52,13 @@ def insert_dummy():
         for i in range(5):
             state = random.choice(list(MALAYSIA.keys()))
             score = random.randint(40,90)
-            classification = "High" if score>=70 else "Medium" if score>=40 else "Low"
+            classification = classify(score)
             c.execute("""
             INSERT INTO threats(indicator,type,source,risk_score,classification,state,created_at)
             VALUES(?,?,?,?,?,?,?)
             """, (f"dummy{i}.malicious.com","domain","dummy",score,classification,state,datetime.utcnow().isoformat()))
     conn.commit()
     conn.close()
-
-def classify(score):
-    return "High" if score>=70 else "Medium" if score>=40 else "Low"
 
 def insert_threat(indicator,type_,source):
     conn = sqlite3.connect(DB)
@@ -159,120 +158,84 @@ def source_chart():
     fig.update_layout(paper_bgcolor="#0b1b2a",font=dict(color="cyan"))
     return json.dumps(fig,cls=PlotlyJSONEncoder)
 
-def top_indicators():
-    conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
-    c=conn.cursor()
-    rows=c.execute("SELECT indicator,COUNT(*) c FROM threats GROUP BY indicator ORDER BY c DESC LIMIT 10").fetchall()
-    conn.close()
-    return rows
+# ---------------- Dashboard Template ----------------
+DASHBOARD_TEMPLATE = """
+<html>
+<head>
+<title>Sunday-Ring SOC Dashboard</title>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<style>
+body {background:#0b1b2a;color:#00FFFF;font-family:sans-serif;margin:0;padding:10px;}
+h2 {color:#00FFFF;}
+table {border-collapse:collapse;width:100%;word-wrap:break-word;margin-top:20px;}
+th,td {padding:6px;text-align:left;}
+th {background:#00274d;color:#00FFFF;}
+tr:nth-child(even){background:#0c2a4a;}
+tr:nth-child(odd){background:#0b1b2a;}
+</style>
+</head>
+<body>
+<h2>Sunday-Ring SOC Dashboard</h2>
 
-def secure_index():
-    conn=sqlite3.connect(DB)
-    c=conn.cursor()
-    high=c.execute("SELECT COUNT(*) FROM threats WHERE classification='High'").fetchone()[0]
-    medium=c.execute("SELECT COUNT(*) FROM threats WHERE classification='Medium'").fetchone()[0]
-    conn.close()
-    score=100-(high*2+medium)
-    return max(score,0)
+<div id="heatmap" style="height:400px;"></div>
+<div id="trend" style="height:300px;"></div>
+<div id="source" style="height:300px;"></div>
+
+<h3>Latest Indicators</h3>
+<table>
+<thead><tr>
+<th>ID</th><th>Indicator</th><th>Type</th><th>Source</th><th>Risk</th><th>Class</th><th>State</th><th>Time</th>
+</tr></thead>
+<tbody>
+{% for r in rows %}
+<tr>
+<td>{{r.id}}</td>
+<td>{{r.indicator}}</td>
+<td>{{r.type}}</td>
+<td>{{r.source}}</td>
+<td>{{r.risk_score}}</td>
+<td>{{r.classification}}</td>
+<td>{{r.state}}</td>
+<td>{{r.created_at}}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+
+<script>
+var heatmap = {{ heatmap | safe }};
+var trend = {{ trend | safe }};
+var source = {{ source | safe }};
+Plotly.newPlot('heatmap', heatmap.data, heatmap.layout);
+Plotly.newPlot('trend', trend.data, trend.layout);
+Plotly.newPlot('source', source.data, source.layout);
+</script>
+</body>
+</html>
+"""
 
 # ---------------- Scheduler ----------------
 def scheduler():
     while True:
         ingest_feeds()
-        threading.Event().wait(3600)  # every hour
+        threading.Event().wait(3600)
 
 threading.Thread(target=scheduler,daemon=True).start()
 
-# ---------------- Dashboard ----------------
+# ---------------- Dashboard Route ----------------
 @app.route("/")
 def dashboard():
     try:
         heatmap = malaysia_heatmap()
         trend = trend_chart()
         source = source_chart()
-        top = top_indicators()
-        index = secure_index()
-
         conn=sqlite3.connect(DB)
         conn.row_factory=sqlite3.Row
-        c=conn.cursor()
-        rows=c.execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
+        rows=conn.cursor().execute("SELECT * FROM threats ORDER BY created_at DESC LIMIT 50").fetchall()
         conn.close()
-
-        template=open("templates/dashboard.html").read()
-        return render_template_string(template, rows=rows, heatmap=heatmap, trend=trend, source=source, top=top, index=index)
+        return render_template_string(DASHBOARD_TEMPLATE, rows=rows, heatmap=heatmap, trend=trend, source=source)
     except Exception as e:
         return f"<h1>Internal Server Error</h1><pre>{e}</pre>"
-
-# ---------------- IOC Search ----------------
-@app.route("/search")
-def ioc_search():
-    query=request.args.get("ioc","")
-    conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
-    c=conn.cursor()
-    rows=c.execute("SELECT * FROM threats WHERE indicator LIKE ? LIMIT 50",("%"+query,)).fetchall()
-    conn.close()
-    return {"results":[dict(r) for r in rows]}
-
-# ---------------- CSV / JSON / PDF ----------------
-@app.route("/download/csv")
-def download_csv():
-    conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
-    c=conn.cursor()
-    rows=c.execute("SELECT * FROM threats").fetchall()
-    conn.close()
-    si=io.StringIO()
-    writer=csv.DictWriter(si,fieldnames=rows[0].keys() if rows else ["id","indicator","type","source","risk_score","classification","state","created_at"])
-    writer.writeheader()
-    for r in rows: writer.writerow(dict(r))
-    output=io.BytesIO()
-    output.write(si.getvalue().encode())
-    output.seek(0)
-    return send_file(output,mimetype="text/csv",download_name="threats.csv",as_attachment=True)
-
-@app.route("/download/json")
-def download_json():
-    conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
-    c=conn.cursor()
-    rows=c.execute("SELECT * FROM threats").fetchall()
-    conn.close()
-    output=io.BytesIO()
-    output.write(json.dumps([dict(r) for r in rows],indent=2).encode())
-    output.seek(0)
-    return send_file(output,mimetype="application/json",download_name="threats.json",as_attachment=True)
-
-@app.route("/download/pdf")
-def download_pdf():
-    conn=sqlite3.connect(DB)
-    conn.row_factory=sqlite3.Row
-    c=conn.cursor()
-    rows=c.execute("SELECT * FROM threats ORDER BY created_at DESC").fetchall()
-    conn.close()
-
-    buffer=io.BytesIO()
-    doc=SimpleDocTemplate(buffer,pagesize=A4)
-    elements=[]
-    styles=getSampleStyleSheet()
-    elements.append(Paragraph("Sunday-Ring SOC Threat Report",styles['Title']))
-    elements.append(Spacer(1,12))
-    data=[["ID","Indicator","Type","Source","Risk","Class","State","Time"]]
-    for r in rows:
-        data.append([r["id"],r["indicator"],r["type"],r["source"],r["risk_score"],r["classification"],r["state"],r["created_at"]])
-    table=Table(data,repeatRows=1)
-    table.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
-        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
-        ('GRID',(0,0),(-1,-1),0.5,colors.cyan),
-        ('ALIGN',(0,0),(-1,-1),'LEFT')
-    ]))
-    elements.append(table)
-    doc.build(elements)
-    buffer.seek(0)
-    return send_file(buffer,mimetype="application/pdf",download_name="threats.pdf",as_attachment=True)
 
 # ---------------- Run ----------------
 if __name__=="__main__":
