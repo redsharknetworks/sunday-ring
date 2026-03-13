@@ -10,15 +10,16 @@ from datetime import datetime
 from flask import Flask, render_template_string, send_file
 import plotly.graph_objs as go
 import plotly
-from reportlab.platypus import SimpleDocTemplate, Table, Paragraph
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
 from reportlab.lib.pagesizes import landscape, A4
-from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
 
-DB = "/tmp/threats.db"
-RULE_FILE = "/tmp/redshark.rules"
+# ---------------- FILE PATHS ----------------
+DB = "threats.db"  # relative path safe for ephemeral filesystem
+RULE_FILE = "redshark.rules"
 
 # ---------------- DATABASE ----------------
 def db():
@@ -66,7 +67,7 @@ def rand_sector(): return random.choice(sectors)
 def rand_mitre(): return random.choice(mitre)
 
 # ---------------- INSERT THREAT ----------------
-def insert_threat(indicator,typ,severity):
+def insert_threat(indicator, typ, severity):
     conn = db()
     if conn.execute("SELECT 1 FROM threats WHERE indicator=?", (indicator,)).fetchone():
         return
@@ -135,21 +136,23 @@ def fetch_feeds():
     fetch_hashes()
     fetch_urlhaus()
 
-# ---------------- SCHEDULER ----------------
-def scheduler():
-    fetch_feeds()
-    threading.Timer(900, scheduler).start()  # every 15 min
-
-fetch_feeds()
-scheduler()
-
 # ---------------- SECURENATION INDEX ----------------
 def securenation():
     rows = db().execute("SELECT severity FROM threats ORDER BY id DESC LIMIT 100").fetchall()
     if not rows: return 0
     return round(sum([r["severity"] for r in rows])/len(rows),1)
 
-# ---------------- CHARTS ----------------
+# ---------------- CHARTS (Nikkei Style) ----------------
+def nikkei_style_layout(title=None):
+    return dict(
+        plot_bgcolor="#0b1b2a",
+        paper_bgcolor="#0b1b2a",
+        font=dict(color="#A3B8CC", family="Arial"),
+        title=dict(text=title, font=dict(color="#FFCC00", size=16)),
+        xaxis=dict(showgrid=False, linecolor="#444444"),
+        yaxis=dict(showgrid=False, linecolor="#444444")
+    )
+
 def malaysia_map():
     rows = db().execute("SELECT lat,lon,severity FROM threats").fetchall()
     lat, lon, sev = [r["lat"] for r in rows], [r["lon"] for r in rows], [r["severity"] for r in rows]
@@ -169,53 +172,45 @@ def malaysia_map():
         mapbox_style="carto-darkmatter",
         mapbox_center={"lat":4.5,"lon":102},
         mapbox_zoom=4,
-        paper_bgcolor="#0b1b2a",
         margin=dict(l=0,r=0,t=0,b=0),
-        mapbox=dict(accesstoken=None)
+        mapbox=dict(accesstoken=None),
+        paper_bgcolor="#0b1b2a"
     )
-    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+    return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 def timeline_chart():
     rows=db().execute("SELECT substr(created,1,10) d, COUNT(*) c FROM threats GROUP BY d ORDER BY d").fetchall()
     x=[r["d"] for r in rows]; y=[r["c"] for r in rows]
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=x, y=y, mode="lines+markers",
-        line=dict(color="#00eaff", width=4, shape='spline', smoothing=1.3),
-        marker=dict(size=10, color="#00eaff", line=dict(width=2, color="#ffffff"))
-    ))
-    fig.update_layout(plot_bgcolor="#0b1b2a", paper_bgcolor="#0b1b2a",
-                      font_color="#A3B8CC", xaxis=dict(showgrid=False),
-                      yaxis=dict(showgrid=False))
+    fig.add_trace(go.Scatter(x=x, y=y, mode="lines+markers",
+                             line=dict(color="#FFCC00", width=3, shape='spline'),
+                             marker=dict(size=8, color="#FFCC00", line=dict(width=1, color="#ffffff"))))
+    fig.update_layout(nikkei_style_layout(title="Threat Timeline"))
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 def sector_chart():
     rows=db().execute("SELECT sector, COUNT(*) c FROM threats GROUP BY sector ORDER BY c DESC").fetchall()
     labels=[r["sector"] for r in rows]; values=[r["c"] for r in rows]
     fig=go.Figure(go.Bar(x=labels, y=values,
-                         marker=dict(color="#3a4a5c", line=dict(color="#6f8fbf",width=2))))
-    fig.update_layout(plot_bgcolor="#0b1b2a", paper_bgcolor="#0b1b2a",
-                      font_color="#A3B8CC", title="Sector Targeting")
-    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+                         marker=dict(color="#222222", line=dict(color="#FFCC00", width=2))))
+    fig.update_layout(nikkei_style_layout(title="Sector Targeting"))
+    return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 def indicator_type_chart():
     rows=db().execute("SELECT type, COUNT(*) c FROM threats GROUP BY type").fetchall()
     labels=[r["type"] for r in rows]; values=[r["c"] for r in rows]
     fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3, pull=[0.05]*len(labels))])
-    fig.update_layout(plot_bgcolor="#0b1b2a", paper_bgcolor="#0b1b2a",
-                      font_color="#A3B8CC", title="Indicator Type Distribution")
-    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+    fig.update_layout(nikkei_style_layout(title="Indicator Type Distribution"))
+    return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 def mitre_chart():
     rows=db().execute("SELECT mitre, COUNT(*) c FROM threats GROUP BY mitre").fetchall()
     labels=[r["mitre"] for r in rows]; values=[r["c"] for r in rows]
     fig=go.Figure()
     fig.add_trace(go.Scatter(x=labels, y=values, mode='lines+markers',
-                             line=dict(color="#ff9900", width=3)))
-    fig.update_layout(plot_bgcolor="#0b1b2a", paper_bgcolor="#0b1b2a",
-                      font_color="#A3B8CC", title="MITRE Techniques Trend",
-                      xaxis=dict(showgrid=False), yaxis=dict(showgrid=False))
-    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+                             line=dict(color="#FF9900", width=3)))
+    fig.update_layout(nikkei_style_layout(title="MITRE Techniques Trend"))
+    return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 # ---------------- DASHBOARD HTML ----------------
 HTML = """<html>
@@ -241,15 +236,6 @@ a.download-link{color:#FFA500;font-weight:bold;text-decoration:none;}
 
 <div class="card">
 SecureNation Index: <b>{{index}}</b>
-</div>
-
-<div class="card">
-<h3>Latest Cyber Bulletin</h3>
-<ul>
-{% for b in bulletin %}
-<li>{{b.indicator}} ({{b.type}}) – Severity: {{b.severity}}</li>
-{% endfor %}
-</ul>
 </div>
 
 <div class="card">
@@ -341,14 +327,13 @@ $(document).ready(function(){ $('#threat_table').DataTable(); });
 </html>
 """
 
+# ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
     rows=db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall()
-    bulletin = rows[:5]  # top 5 latest threats
     return render_template_string(
         HTML,
         rows=rows,
-        bulletin=bulletin,
         index=securenation(),
         timeline=timeline_chart(),
         mitre=mitre_chart(),
@@ -357,17 +342,16 @@ def dashboard():
         map=malaysia_map()
     )
 
-# ---------------- EXPORT ----------------
+# ---------------- EXPORTS ----------------
 @app.route("/csv")
 def csv_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
-    if not rows:
-        return "No data to export", 404
     out=io.StringIO()
     writer=csv.writer(out)
-    writer.writerow(rows[0].keys())
-    for r in rows:
-        writer.writerow(list(r))
+    if rows:
+        writer.writerow(rows[0].keys())
+        for r in rows:
+            writer.writerow(list(r))
     mem=io.BytesIO(); mem.write(out.getvalue().encode()); mem.seek(0)
     return send_file(mem,download_name="threats.csv",as_attachment=True)
 
@@ -385,23 +369,21 @@ def pdf_export():
     data=[["Indicator","Type","Sector","Severity","Timestamp"]]
     styles = getSampleStyleSheet()
     for r in rows:
-        data.append([
-            Paragraph(r["indicator"], styles['Normal']),
-            r["type"], r["sector"], str(r["severity"]), r["created"]
-        ])
-    table = Table(data)
-    table.setStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1f3d5c")),
-        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
+        data.append([Paragraph(str(r["indicator"]), styles["BodyText"]),
+                     r["type"], r["sector"], r["severity"], r["created"]])
+    table = Table(data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0), colors.HexColor("#13263b")),
+        ('TEXTCOLOR',(0,0),(-1,0), colors.HexColor("#FFCC00")),
         ('ALIGN',(0,0),(-1,-1),'CENTER'),
-        ('GRID',(0,0),(-1,-1),0.5,colors.gray),
-        ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
-        ('BOTTOMPADDING',(0,0),(-1,0),8),
-    ])
-    pdf=SimpleDocTemplate(buffer,pagesize=landscape(A4), leftMargin=20, rightMargin=20)
+        ('GRID',(0,0),(-1,-1),0.5,colors.HexColor("#444444")),
+        ('FONTNAME',(0,0),(-1,-1),'Helvetica')
+    ]))
+    pdf = SimpleDocTemplate(buffer, pagesize=landscape(A4),
+                            leftMargin=20,rightMargin=20,topMargin=20,bottomMargin=20)
     pdf.build([table])
     buffer.seek(0)
-    return send_file(buffer,download_name="redshark-cti-report.pdf",as_attachment=True)
+    return send_file(buffer, download_name="redshark-cti-report.pdf", as_attachment=True)
 
 @app.route("/download_ips")
 def download_ips():
@@ -409,4 +391,7 @@ def download_ips():
         open(RULE_FILE,"w").close()
     return send_file(RULE_FILE, download_name="redshark-ips-signatures.rules", as_attachment=True)
 
-if __name__=="
+# ---------------- SAFE START ----------------
+# Scheduler disabled for production by default to prevent threading crash
+if __name__=="__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
