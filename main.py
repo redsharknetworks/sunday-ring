@@ -140,30 +140,33 @@ def progress_color(index):
     if index>=70: return "orange"
     return "green"
 
-# ---------------- CHARTS (Nikkei Style) ----------------
+# ---------------- NIKKEI 225 STYLE CHARTS ----------------
 def timeline_chart():
     rows=db().execute("SELECT substr(created,1,10) d,COUNT(*) c FROM threats GROUP BY d").fetchall()
     x=[str(r["d"]) for r in rows] or ["No Data"]
     y=[int(r["c"]) for r in rows] or [0]
     fig=go.Figure()
-    fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(width=3,color="#FFA500"),marker=dict(size=8)))
+    fig.add_trace(go.Scatter(x=x, y=y, mode="lines+markers",
+                             line=dict(color="#00FFAA", width=3),
+                             marker=dict(size=8, color="#00FFAA")))
     fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",
-                      xaxis=dict(showgrid=False),yaxis=dict(showgrid=False))
+                      xaxis=dict(showgrid=False), yaxis=dict(showgrid=False))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def actor_chart():
     rows=db().execute("SELECT actor,COUNT(*) c FROM threats GROUP BY actor").fetchall()
     x=[r["actor"] for r in rows] or ["No Data"]
     y=[r["c"] for r in rows] or [0]
-    fig=go.Figure(go.Bar(x=x,y=y,marker_color="#00eaff"))
-    fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",xaxis=dict(showgrid=False),yaxis=dict(showgrid=False))
+    fig=go.Figure(go.Bar(x=x, y=y, marker_color="#FFA07A"))
+    fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",
+                      xaxis=dict(showgrid=False), yaxis=dict(showgrid=False))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def indicator_chart():
     rows=db().execute("SELECT type,COUNT(*) c FROM threats GROUP BY type").fetchall()
     labels=[r["type"] for r in rows] or ["No Data"]
     values=[r["c"] for r in rows] or [0]
-    fig=go.Figure(go.Pie(labels=labels,values=values,hole=0.3))
+    fig=go.Figure(go.Pie(labels=labels, values=values, hole=0.3))
     fig.update_traces(marker=dict(line=dict(color="#0b1b2a",width=2)))
     fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
@@ -172,7 +175,7 @@ def mitre_chart():
     rows=db().execute("SELECT mitre,COUNT(*) c FROM threats GROUP BY mitre").fetchall()
     labels=[r["mitre"] for r in rows] or ["No Data"]
     values=[r["c"] for r in rows] or [0]
-    fig=go.Figure(go.Bar(x=labels,y=values,marker_color="#FFA500"))
+    fig=go.Figure(go.Bar(x=labels, y=values, marker_color="#7FFFD4"))
     fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",
                       xaxis_tickangle=-45,xaxis=dict(showgrid=False),yaxis=dict(showgrid=False))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
@@ -181,11 +184,12 @@ def sector_chart():
     rows=db().execute("SELECT sector,COUNT(*) c FROM threats GROUP BY sector").fetchall()
     labels=[r["sector"] for r in rows] or ["No Data"]
     values=[r["c"] for r in rows] or [0]
-    fig=go.Figure(go.Bar(x=labels,y=values,marker_color="#00eaff"))
+    fig=go.Figure(go.Bar(x=labels, y=values, marker_color="#00CED1"))
     fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",
                       xaxis=dict(showgrid=False),yaxis=dict(showgrid=False))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
+# ---------------- 2D GLOWING MAP WITH BLINK ----------------
 def malaysia_map():
     rows=db().execute("SELECT lat,lon,severity FROM threats").fetchall()
     lat,lon,color,size=[],[],[],[]
@@ -202,21 +206,33 @@ def malaysia_map():
             color.append("yellow")
             size.append(6)
     if not lat: lat,lon,size,color=[0],[0],[0],["grey"]
-    fig=go.Figure(go.Scattergeo(
-        lon=lon,lat=lat,
+
+    fig=go.Figure()
+    fig.add_trace(go.Scattergeo(
+        lon=lon,
+        lat=lat,
         mode="markers",
-        marker=dict(size=size,color=color,opacity=0.8,line=dict(width=2,color="white")),
+        marker=dict(size=size, color=color, opacity=0.8, line=dict(width=2,color="white")),
     ))
+    # simple blinking effect using frames
+    frames=[go.Frame(data=[go.Scattergeo(lon=lon,lat=lat,
+                                         marker=dict(size=[s+(i%2)*4 for s in size],
+                                                     color=color,opacity=0.8,line=dict(width=2,color="white")))]) for i in range(10)]
+    fig.frames=frames
     fig.update_layout(
         geo=dict(scope="asia",projection_type="natural earth",showland=True,landcolor="#0b1b2a",
                  showlakes=False,showocean=True,oceancolor="#0b1b2a"),
-        plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
+        updatemenus=[dict(type="buttons",showactive=False,buttons=[dict(label="",
+                     method="animate",args=[None,dict(frame=dict(duration=500, redraw=True),fromcurrent=True,mode="immediate")])])],
+        plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC"
+    )
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 # ---------------- DASHBOARD HTML ----------------
-HTML = """<html>
+HTML = """
+<html>
 <head>
-<title>RedShark CTI Dashboard v7.2.6</title>
+<title>RedShark CTI Dashboard v7.2.7</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0b1b2a;color:#A3B8CC;font-family:Arial,sans-serif;margin:0;padding:0}
@@ -230,7 +246,7 @@ th{cursor:pointer}
 </style>
 </head>
 <body>
-<h2 style="margin-left:15px;">RedShark CTI Dashboard v7.2.6</h2>
+<h2 style="margin-left:15px;">RedShark CTI Dashboard v7.2.7</h2>
 <div class="card">SecureNation Index
 <div class="progress"><div class="progress-bar"></div></div></div>
 
