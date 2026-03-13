@@ -17,8 +17,10 @@ from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import landscape, A4
 
 app = Flask(__name__)
-DB="/tmp/redshark_cti_v7_2_1.db"
-RULE_FILE="/tmp/redshark_ips_v7_2_1.rules"
+
+# ---------------- PATHS ----------------
+DB = "redshark_cti.db"
+RULE_FILE = "redshark_ips.rules"
 
 # ---------------- DATABASE ----------------
 def db():
@@ -49,6 +51,26 @@ def init_db():
 init_db()
 
 # ---------------- SEED DUMMY DATA ----------------
+def insert_threat(indicator,typ,severity):
+    conn=db()
+    if conn.execute("SELECT 1 FROM threats WHERE indicator=?",(indicator,)).fetchone():
+        return
+    lat,lon=random.choice([[1.49,103.74],[6.11,100.36],[6.12,102.23],[2.18,102.25],[2.72,101.94],[3.81,103.32],
+                           [4.59,101.09],[5.41,100.33],[5.98,116.07],[1.55,110.35],[3.07,101.51],[5.33,103.14],[3.13,101.68]])
+    actor=random.choice(["Lazarus","APT29","FIN7","TA505","APT41","Unknown"])
+    campaign=random.choice(["Operation Phantom","DarkBanking","Silent Hydra","Shadow Strike","Ghost C2"])
+    mitre=random.choice(["Reconnaissance","Initial Access","Execution","Persistence","Privilege Escalation","Defense Evasion",
+                         "Credential Access","Discovery","Lateral Movement","Command & Control","Exfiltration","Impact"])
+    sector=random.choice(["Government","Banking","Telecom","Energy","Healthcare","Education"])
+    confidence=random.randint(60,95)
+    created=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute("""
+    INSERT INTO threats(indicator,type,actor,campaign,mitre,sector,severity,confidence,lat,lon,created)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)
+    """,(indicator,typ,actor,campaign,mitre,sector,severity,confidence,lat,lon,created))
+    conn.commit()
+    generate_rule(indicator,typ)
+
 def seed_dummy_data():
     conn = db()
     if conn.execute("SELECT 1 FROM threats LIMIT 1").fetchone():
@@ -61,50 +83,7 @@ def seed_dummy_data():
     for ind, typ, sev in sample_indicators:
         insert_threat(ind, typ, sev)
 
-# ---------------- DATA ----------------
-states={
-"Johor":[1.49,103.74],
-"Kedah":[6.11,100.36],
-"Kelantan":[6.12,102.23],
-"Melaka":[2.18,102.25],
-"Negeri Sembilan":[2.72,101.94],
-"Pahang":[3.81,103.32],
-"Perak":[4.59,101.09],
-"Pulau Pinang":[5.41,100.33],
-"Sabah":[5.98,116.07],
-"Sarawak":[1.55,110.35],
-"Selangor":[3.07,101.51],
-"Terengganu":[5.33,103.14],
-"Kuala Lumpur":[3.13,101.68]
-}
-
-actors=["Lazarus","APT29","FIN7","TA505","APT41","Unknown"]
-campaigns=["Operation Phantom","DarkBanking","Silent Hydra","Shadow Strike","Ghost C2"]
-mitre=["Reconnaissance","Initial Access","Execution","Persistence","Privilege Escalation","Defense Evasion",
-       "Credential Access","Discovery","Lateral Movement","Command & Control","Exfiltration","Impact"]
-sectors=["Government","Banking","Telecom","Energy","Healthcare","Education"]
-
-def random_location():
-    return random.choice(list(states.values()))
-
-# ---------------- INSERT ----------------
-def insert_threat(indicator,typ,severity):
-    conn=db()
-    if conn.execute("SELECT 1 FROM threats WHERE indicator=?",(indicator,)).fetchone():
-        return
-    lat,lon=random_location()
-    actor=random.choice(actors)
-    campaign=random.choice(campaigns)
-    mit=random.choice(mitre)
-    sector=random.choice(sectors)
-    confidence=random.randint(60,95)
-    created=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    conn.execute("""
-    INSERT INTO threats(indicator,type,actor,campaign,mitre,sector,severity,confidence,lat,lon,created)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-    """,(indicator,typ,actor,campaign,mit,sector,severity,confidence,lat,lon,created))
-    conn.commit()
-    generate_rule(indicator,typ)
+seed_dummy_data()
 
 # ---------------- IPS RULE ----------------
 def generate_rule(indicator,typ):
@@ -141,7 +120,8 @@ def fetch_urlhaus():
         data=requests.get(url).text.splitlines()
         reader=csv.reader(data)
         for r in list(reader)[10:30]:
-            insert_threat(r[2],"url",70)
+            if len(r)>2:
+                insert_threat(r[2],"url",70)
     except: pass
 
 def background_feed_loop():
@@ -162,8 +142,8 @@ def securenation():
 # ---------------- CHARTS ----------------
 def timeline_chart():
     rows=db().execute("SELECT substr(created,1,10) d,COUNT(*) c FROM threats GROUP BY d").fetchall()
-    x=[r["d"] for r in rows]
-    y=[r["c"] for r in rows]
+    x=[r["d"] for r in rows] or ["No Data"]
+    y=[r["c"] for r in rows] or [0]
     fig=go.Figure()
     fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(width=3,color="#FFA500")))
     fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",
@@ -172,42 +152,39 @@ def timeline_chart():
 
 def actor_chart():
     rows=db().execute("SELECT actor,COUNT(*) c FROM threats GROUP BY actor").fetchall()
-    x=[r["actor"] for r in rows]
-    y=[r["c"] for r in rows]
+    x=[r["actor"] for r in rows] or ["No Data"]
+    y=[r["c"] for r in rows] or [0]
     fig=go.Figure(go.Bar(x=x,y=y,marker_color="#00eaff"))
     fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def indicator_chart():
     rows=db().execute("SELECT type,COUNT(*) c FROM threats GROUP BY type").fetchall()
-    labels=[r["type"] for r in rows]
-    values=[r["c"] for r in rows]
+    labels=[r["type"] for r in rows] or ["No Data"]
+    values=[r["c"] for r in rows] or [0]
     fig=go.Figure(go.Pie(labels=labels,values=values,hole=0.4))
     fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def mitre_chart():
     rows=db().execute("SELECT mitre,COUNT(*) c FROM threats GROUP BY mitre").fetchall()
-    labels=[r["mitre"] for r in rows]
-    values=[r["c"] for r in rows]
+    labels=[r["mitre"] for r in rows] or ["No Data"]
+    values=[r["c"] for r in rows] or [0]
     fig=go.Figure(go.Bar(x=labels,y=values,marker_color="#FFA500"))
     fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",xaxis_tickangle=-45)
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def sector_chart():
     rows=db().execute("SELECT sector,COUNT(*) c FROM threats GROUP BY sector").fetchall()
-    labels=[r["sector"] for r in rows]
-    values=[r["c"] for r in rows]
+    labels=[r["sector"] for r in rows] or ["No Data"]
+    values=[r["c"] for r in rows] or [0]
     fig=go.Figure(go.Bar(x=labels,y=values,marker_color="#00eaff"))
     fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def malaysia_map():
     rows=db().execute("SELECT lat,lon,severity FROM threats").fetchall()
-    lat=[]
-    lon=[]
-    color=[]
-    size=[]
+    lat,lon,color,size=[],[],[]
     for r in rows:
         lat.append(r["lat"])
         lon.append(r["lon"])
@@ -220,6 +197,7 @@ def malaysia_map():
         else:
             color.append("yellow")
             size.append(6)
+    if not lat: lat,lon,size,color=[0],[0],[0],["grey"]
     fig=go.Figure(go.Scatter3d(x=lon,y=lat,z=[s for s in size],mode="markers",
                                  marker=dict(size=size,color=color,opacity=0.9)))
     fig.update_layout(scene=dict(xaxis=dict(showbackground=False),
@@ -228,14 +206,11 @@ def malaysia_map():
                       paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- SEED DATA ----------------
-seed_dummy_data()
-
 # ---------------- DASHBOARD HTML ----------------
-HTML="""
+HTML = """
 <html>
 <head>
-<title>RedShark CTI v7.2.1</title>
+<title>RedShark CTI v7.2.2</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0b1b2a;color:#A3B8CC;font-family:Arial}
@@ -250,7 +225,7 @@ th{cursor:pointer}
 </head>
 <body>
 
-<h2>RedShark CTI Dashboard v7.2.1</h2>
+<h2>RedShark CTI Dashboard v7.2.2</h2>
 
 <div class="card">
 SecureNation Index
@@ -339,6 +314,7 @@ def dashboard():
 @app.route("/csv")
 def csv_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
+    if not rows: return "No data available",404
     out=io.StringIO()
     writer=csv.writer(out)
     writer.writerow(rows[0].keys())
@@ -352,6 +328,7 @@ def csv_export():
 @app.route("/json")
 def json_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
+    if not rows: return "No data available",404
     data=[dict(r) for r in rows]
     mem=io.BytesIO()
     mem.write(json.dumps(data,indent=2).encode())
@@ -361,6 +338,7 @@ def json_export():
 @app.route("/pdf")
 def pdf_export():
     rows=db().execute("SELECT indicator,type,actor,campaign,severity,confidence FROM threats LIMIT 50").fetchall()
+    if not rows: return "No data available",404
     buffer=io.BytesIO()
     data=[["Indicator","Type","Actor","Campaign","Severity","Confidence"]]
     for r in rows:
@@ -373,6 +351,8 @@ def pdf_export():
 
 @app.route("/ips")
 def ips_export():
+    if not os.path.exists(RULE_FILE):
+        return "No IPS rules available",404
     return send_file(RULE_FILE,download_name="redshark_ips.rules",as_attachment=True)
 
 # ---------------- RUN ----------------
