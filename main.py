@@ -10,9 +10,8 @@ from datetime import datetime
 from flask import Flask, render_template_string, send_file
 import plotly.graph_objs as go
 import plotly
-from reportlab.platypus import SimpleDocTemplate, Table, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import landscape, A4
-from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
 
@@ -146,15 +145,24 @@ def start_scheduler():
 def securenation():
     rows = db().execute("SELECT severity FROM threats ORDER BY id DESC LIMIT 100").fetchall()
     if not rows: return 0
-    return round(sum([r["severity"] for r in rows])/len(rows),1)
+    val = round(sum([r["severity"] for r in rows])/len(rows),1)
+    if val>=85: color="#FF3C3C"
+    elif val>=70: color="#FFA500"
+    else: color="#00FF99"
+    return val, color
 
-# ---------------- EXECUTIVE SUMMARY ----------------
-def executive_summary():
+# ---------------- CTI HIGHLIGHT ----------------
+def cti_highlight():
     rows=db().execute("""
         SELECT indicator, type, sector, mitre, severity, created 
         FROM threats ORDER BY id DESC LIMIT 5
     """).fetchall()
-    return [dict(r) for r in rows]
+    highlights=[]
+    for r in rows:
+        statement = f"A new {r['type']} indicator targeting {r['sector']} sector leveraging {r['mitre']} detected."
+        highlights.append({"statement": statement, "created": r["created"]})
+    latest_time = rows[0]["created"] if rows else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    return latest_time, highlights
 
 # ---------------- NIKKEI STYLE CHART ----------------
 def nikkei_chart(x,y,title):
@@ -226,24 +234,25 @@ table{width:100%;border-collapse:collapse;}
 td,th{padding:8px;border-bottom:1px solid #1f3d5c;text-align:center;}
 .center{text-align:center;margin-top:15px;}
 button.download-btn{
-    background:#FFA500;color:#0b1b2a;font-weight:bold;padding:10px 18px;
+    background:#2A3A4B;color:#A3B8CC;font-weight:bold;padding:10px 18px;
     border:none;border-radius:5px;margin-right:8px;cursor:pointer;
 }
-button.download-btn:hover{background:#FFB84D;}
+button.download-btn:hover{background:#3A4A5C;}
+.secure-index{font-weight:bold;font-size:1.5em;}
 </style>
 </head>
 <body>
 <h2>RedShark Threat Intelligence Dashboard</h2>
 
 <div class="card">
-SecureNation Index: <b>{{index}}</b>
+SecureNation Index: <span class="secure-index" style="color:{{index_color}}">{{index}}</span>
 </div>
 
 <div class="card">
-<h3>Executive Summary</h3>
+<h3>CTI Highlight at {{highlight_time}}</h3>
 <ul>
-{% for b in summary %}
-<li>{{b.indicator}} | {{b.type}} | {{b.sector}} | MITRE: {{b.mitre}} | Severity: {{b.severity}} | {{b.created}}</li>
+{% for b in highlights %}
+<li>{{b.statement}}</li>
 {% endfor %}
 </ul>
 </div>
@@ -323,12 +332,16 @@ $(document).ready(function(){ $('#threat_table').DataTable(); });
 # ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
 def dashboard():
+    index, index_color = securenation()
+    highlight_time, highlights = cti_highlight()
     rows=db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall()
     return render_template_string(
         HTML,
         rows=rows,
-        index=securenation(),
-        summary=executive_summary(),
+        index=index,
+        index_color=index_color,
+        highlight_time=highlight_time,
+        highlights=highlights,
         timeline=timeline_chart(),
         mitre=mitre_chart(),
         sector=sector_chart(),
@@ -340,13 +353,10 @@ def dashboard():
 @app.route("/csv")
 def csv_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
-    if not rows:
-        return "No data", 404
     out=io.StringIO()
     writer=csv.writer(out)
-    writer.writerow(rows[0].keys())
-    for r in rows:
-        writer.writerow(list(r))
+    if rows: writer.writerow(rows[0].keys())
+    for r in rows: writer.writerow(list(r))
     mem=io.BytesIO(); mem.write(out.getvalue().encode()); mem.seek(0)
     return send_file(mem,download_name="threats.csv",as_attachment=True)
 
