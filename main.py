@@ -18,11 +18,9 @@ from reportlab.lib.pagesizes import landscape, A4
 
 app = Flask(__name__)
 
-# ---------------- PATHS ----------------
 DB = "redshark_cti.db"
 RULE_FILE = "redshark_ips.rules"
 
-# ---------------- DATABASE ----------------
 def db():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -47,10 +45,8 @@ def init_db():
     )
     """)
     conn.commit()
-
 init_db()
 
-# ---------------- INSERT DUMMY DATA ----------------
 def insert_threat(indicator,typ,severity):
     conn = db()
     if conn.execute("SELECT 1 FROM threats WHERE indicator=?",(indicator,)).fetchone():
@@ -82,10 +78,8 @@ def seed_dummy_data():
     ]
     for ind, typ, sev in sample_indicators:
         insert_threat(ind, typ, sev)
-
 seed_dummy_data()
 
-# ---------------- IPS RULE ----------------
 def generate_rule(indicator,typ):
     sid=1000000+random.randint(1,9999)
     if typ=="ip":
@@ -97,7 +91,6 @@ def generate_rule(indicator,typ):
     with open(RULE_FILE,"a") as f:
         f.write(rule+"\n")
 
-# ---------------- FEEDS ----------------
 def fetch_threatfox():
     try:
         url="https://threatfox.abuse.ch/export/json/recent/"
@@ -130,10 +123,8 @@ def background_feed_loop():
         fetch_feodo()
         fetch_urlhaus()
         time.sleep(30)
-
 threading.Thread(target=background_feed_loop,daemon=True).start()
 
-# ---------------- SECURENATION INDEX ----------------
 def securenation():
     rows=db().execute("SELECT severity FROM threats ORDER BY id DESC LIMIT 100").fetchall()
     if not rows: return 0
@@ -144,95 +135,158 @@ def progress_color(index):
     if index>=70: return "orange"
     return "green"
 
-# ---------------- CHARTS ----------------
 def timeline_chart():
-    try:
-        rows=db().execute("SELECT substr(created,1,10) d,COUNT(*) c FROM threats GROUP BY d").fetchall()
-        x=[str(r["d"]) for r in rows] or ["No Data"]
-        y=[int(r["c"]) for r in rows] or [0]
-        fig=go.Figure()
-        fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(width=3,color="#FFA500")))
-        fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",
-                          xaxis=dict(showgrid=False),yaxis=dict(showgrid=False))
-        return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
-    except:
-        return json.dumps({"data":[],"layout":{}})
+    rows=db().execute("SELECT substr(created,1,10) d,COUNT(*) c FROM threats GROUP BY d").fetchall()
+    x=[str(r["d"]) for r in rows] or ["No Data"]
+    y=[int(r["c"]) for r in rows] or [0]
+    fig=go.Figure()
+    fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(width=3,color="#FFA500")))
+    fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",
+                      xaxis=dict(showgrid=False),yaxis=dict(showgrid=False))
+    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def actor_chart():
-    try:
-        rows=db().execute("SELECT actor,COUNT(*) c FROM threats GROUP BY actor").fetchall()
-        x=[r["actor"] for r in rows] or ["No Data"]
-        y=[r["c"] for r in rows] or [0]
-        fig=go.Figure(go.Bar(x=x,y=y,marker_color="#00eaff"))
-        fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
-        return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
-    except:
-        return json.dumps({"data":[],"layout":{}})
+    rows=db().execute("SELECT actor,COUNT(*) c FROM threats GROUP BY actor").fetchall()
+    x=[r["actor"] for r in rows] or ["No Data"]
+    y=[r["c"] for r in rows] or [0]
+    fig=go.Figure(go.Bar(x=x,y=y,marker_color="#00eaff"))
+    fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
+    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def indicator_chart():
-    try:
-        rows=db().execute("SELECT type,COUNT(*) c FROM threats GROUP BY type").fetchall()
-        labels=[r["type"] for r in rows] or ["No Data"]
-        values=[r["c"] for r in rows] or [0]
-        fig=go.Figure(go.Pie(labels=labels,values=values,hole=0.4))
-        fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
-        return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
-    except:
-        return json.dumps({"data":[],"layout":{}})
+    rows=db().execute("SELECT type,COUNT(*) c FROM threats GROUP BY type").fetchall()
+    labels=[r["type"] for r in rows] or ["No Data"]
+    values=[r["c"] for r in rows] or [0]
+    fig=go.Figure(go.Pie(labels=labels,values=values,hole=0.4))
+    fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
+    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def mitre_chart():
-    try:
-        rows=db().execute("SELECT mitre,COUNT(*) c FROM threats GROUP BY mitre").fetchall()
-        labels=[r["mitre"] for r in rows] or ["No Data"]
-        values=[r["c"] for r in rows] or [0]
-        fig=go.Figure(go.Bar(x=labels,y=values,marker_color="#FFA500"))
-        fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",xaxis_tickangle=-45)
-        return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
-    except:
-        return json.dumps({"data":[],"layout":{}})
+    rows=db().execute("SELECT mitre,COUNT(*) c FROM threats GROUP BY mitre").fetchall()
+    labels=[r["mitre"] for r in rows] or ["No Data"]
+    values=[r["c"] for r in rows] or [0]
+    fig=go.Figure(go.Bar(x=labels,y=values,marker_color="#FFA500"))
+    fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",xaxis_tickangle=-45)
+    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def sector_chart():
-    try:
-        rows=db().execute("SELECT sector,COUNT(*) c FROM threats GROUP BY sector").fetchall()
-        labels=[r["sector"] for r in rows] or ["No Data"]
-        values=[r["c"] for r in rows] or [0]
-        fig=go.Figure(go.Bar(x=labels,y=values,marker_color="#00eaff"))
-        fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
-        return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
-    except:
-        return json.dumps({"data":[],"layout":{}})
+    rows=db().execute("SELECT sector,COUNT(*) c FROM threats GROUP BY sector").fetchall()
+    labels=[r["sector"] for r in rows] or ["No Data"]
+    values=[r["c"] for r in rows] or [0]
+    fig=go.Figure(go.Bar(x=labels,y=values,marker_color="#00eaff"))
+    fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
+    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def malaysia_map():
-    try:
-        rows=db().execute("SELECT lat,lon,severity FROM threats").fetchall()
-        lat,lon,color,size=[],[],[],[]
-        for r in rows:
-            lat.append(r["lat"])
-            lon.append(r["lon"])
-            if r["severity"]>=85:
-                color.append("crimson")
-                size.append(14)
-            elif r["severity"]>=70:
-                color.append("orange")
-                size.append(10)
-            else:
-                color.append("yellow")
-                size.append(6)
-        if not lat: lat,lon,size,color=[0],[0],[0],["grey"]
-        fig=go.Figure(go.Scatter3d(x=lon,y=lat,z=[s for s in size],mode="markers",
-                                     marker=dict(size=size,color=color,opacity=0.9)))
-        fig.update_layout(scene=dict(xaxis=dict(showbackground=False),
-                                     yaxis=dict(showbackground=False),
-                                     zaxis=dict(showbackground=False)),
-                          paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
-        return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
-    except:
-        return json.dumps({"data":[],"layout":{}})
+    rows=db().execute("SELECT lat,lon,severity FROM threats").fetchall()
+    lat,lon,color,size=[],[],[],[]
+    for r in rows:
+        lat.append(r["lat"])
+        lon.append(r["lon"])
+        if r["severity"]>=85:
+            color.append("crimson")
+            size.append(14)
+        elif r["severity"]>=70:
+            color.append("orange")
+            size.append(10)
+        else:
+            color.append("yellow")
+            size.append(6)
+    if not lat: lat,lon,size,color=[0],[0],[0],["grey"]
+    fig=go.Figure(go.Scatter3d(x=lon,y=lat,z=[s for s in size],mode="markers",
+                                 marker=dict(size=size,color=color,opacity=0.9)))
+    fig.update_layout(scene=dict(xaxis=dict(showbackground=False),
+                                 yaxis=dict(showbackground=False),
+                                 zaxis=dict(showbackground=False)),
+                      paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
+    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
-# ---------------- DASHBOARD HTML ----------------
-HTML = """..."""  # Use full HTML from v7.2.4 with slow blinking markers, progress bar dynamic color, Nikkei-style charts
+HTML = """
+<html>
+<head>
+<title>RedShark CTI Dashboard v7.2.5</title>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<style>
+body{background:#0b1b2a;color:#A3B8CC;font-family:Arial,sans-serif;margin:0;padding:0}
+.card{background:#13263b;padding:20px;margin:15px;border-radius:8px}
+table{width:100%;border-collapse:collapse}
+td,th{padding:10px;border-bottom:1px solid #1f3d5c;text-align:left}
+th{cursor:pointer}
+.btn{background:#1f2f45;padding:10px 20px;margin:5px;color:#A3B8CC;font-weight:bold;border:none;border-radius:6px;cursor:pointer}
+.progress{background:#1f2f45;border-radius:6px;overflow:hidden;height:20px;width:100%}
+.progress-bar{height:20px;background:{{progress_color}};width:{{index}}%}
+</style>
+</head>
+<body>
+<h2 style="margin-left:15px;">RedShark CTI Dashboard v7.2.5</h2>
 
-# ---------------- DASHBOARD ----------------
+<div class="card">
+SecureNation Index
+<div class="progress"><div class="progress-bar"></div></div>
+</div>
+
+<div class="card"><h3>Timeline</h3><div id="timeline" style="height:300px;"></div></div>
+<div class="card"><h3>Actor Activity</h3><div id="actor" style="height:300px;"></div></div>
+<div class="card"><h3>Indicator Type</h3><div id="indicator" style="height:300px;"></div></div>
+<div class="card"><h3>MITRE ATT&CK Heatmap</h3><div id="mitre" style="height:300px;"></div></div>
+<div class="card"><h3>Sector Targeting</h3><div id="sector" style="height:300px;"></div></div>
+<div class="card"><h3>Malaysia Attack 3D Heatmap</h3><div id="map" style="height:400px;"></div></div>
+
+<div class="card">
+<h3>Latest Indicators</h3>
+<table id="indicatorTable">
+<tr>
+<th onclick="sortTable(0)">ID</th>
+<th onclick="sortTable(1)">Indicator</th>
+<th onclick="sortTable(2)">Actor</th>
+<th onclick="sortTable(3)">Campaign</th>
+<th onclick="sortTable(4)">Severity</th>
+<th onclick="sortTable(5)">Confidence</th>
+</tr>
+{% for r in rows %}
+<tr>
+<td>{{r.id}}</td>
+<td>{{r.indicator}}</td>
+<td>{{r.actor}}</td>
+<td>{{r.campaign}}</td>
+<td>{{r.severity}}</td>
+<td>{{r.confidence}}</td>
+</tr>
+{% endfor %}
+</table>
+</div>
+
+<div class="card">
+<button class="btn" onclick="window.location.href='/csv'">Download CSV</button>
+<button class="btn" onclick="window.location.href='/json'">Download JSON</button>
+<button class="btn" onclick="window.location.href='/pdf'">Download PDF</button>
+<button class="btn" onclick="window.location.href='/ips'">Download IPS Rules</button>
+</div>
+
+<script>
+function sortTable(n){
+    var table=document.getElementById("indicatorTable")
+    var rows=Array.from(table.rows).slice(1)
+    rows.sort((a,b)=>a.cells[n].innerText.localeCompare(b.cells[n].innerText))
+    rows.forEach(r=>table.appendChild(r))
+}
+var timeline={{timeline|safe}}
+var actor={{actor|safe}}
+var indicator={{indicator|safe}}
+var mitre={{mitre|safe}}
+var sector={{sector|safe}}
+var map={{map|safe}}
+Plotly.newPlot("timeline",timeline.data,timeline.layout,{responsive:true,displayModeBar:false})
+Plotly.newPlot("actor",actor.data,actor.layout,{responsive:true,displayModeBar:false})
+Plotly.newPlot("indicator",indicator.data,indicator.layout,{responsive:true,displayModeBar:false})
+Plotly.newPlot("mitre",mitre.data,mitre.layout,{responsive:true,displayModeBar:false})
+Plotly.newPlot("sector",sector.data,sector.layout,{responsive:true,displayModeBar:false})
+Plotly.newPlot("map",map.data,map.layout,{responsive:true,displayModeBar:false})
+</script>
+</body>
+</html>
+"""
+
 @app.route("/")
 def dashboard():
     rows = db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall() or []
@@ -248,7 +302,6 @@ def dashboard():
                                   sector=sector_chart(),
                                   map=malaysia_map())
 
-# ---------------- EXPORT ----------------
 @app.route("/csv")
 def csv_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
@@ -293,6 +346,5 @@ def ips_export():
         return "No IPS rules available",404
     return send_file(RULE_FILE,download_name="redshark_ips.rules",as_attachment=True)
 
-# ---------------- RUN ----------------
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=int(os.environ.get("PORT",5000)))
