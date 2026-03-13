@@ -10,8 +10,10 @@ from datetime import datetime
 from flask import Flask, render_template_string, send_file
 import plotly.graph_objs as go
 import plotly
-from reportlab.platypus import SimpleDocTemplate, Table
+from reportlab.platypus import SimpleDocTemplate, Table, Paragraph
 from reportlab.lib.pagesizes import landscape, A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
 
 app = Flask(__name__)
 
@@ -242,6 +244,15 @@ SecureNation Index: <b>{{index}}</b>
 </div>
 
 <div class="card">
+<h3>Latest Cyber Bulletin</h3>
+<ul>
+{% for b in bulletin %}
+<li>{{b.indicator}} ({{b.type}}) – Severity: {{b.severity}}</li>
+{% endfor %}
+</ul>
+</div>
+
+<div class="card">
 <h3>Malaysia Cyber Attack Map</h3>
 <div id="map" style="height:400px;"></div>
 </div>
@@ -333,9 +344,11 @@ $(document).ready(function(){ $('#threat_table').DataTable(); });
 @app.route("/")
 def dashboard():
     rows=db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall()
+    bulletin = rows[:5]  # top 5 latest threats
     return render_template_string(
         HTML,
         rows=rows,
+        bulletin=bulletin,
         index=securenation(),
         timeline=timeline_chart(),
         mitre=mitre_chart(),
@@ -348,6 +361,8 @@ def dashboard():
 @app.route("/csv")
 def csv_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
+    if not rows:
+        return "No data to export", 404
     out=io.StringIO()
     writer=csv.writer(out)
     writer.writerow(rows[0].keys())
@@ -368,10 +383,22 @@ def pdf_export():
     rows=db().execute("SELECT indicator,type,sector,severity,created FROM threats LIMIT 50").fetchall()
     buffer=io.BytesIO()
     data=[["Indicator","Type","Sector","Severity","Timestamp"]]
+    styles = getSampleStyleSheet()
     for r in rows:
-        data.append([r["indicator"],r["type"],r["sector"],r["severity"],r["created"]])
-    pdf=SimpleDocTemplate(buffer,pagesize=landscape(A4))
-    table=Table(data)
+        data.append([
+            Paragraph(r["indicator"], styles['Normal']),
+            r["type"], r["sector"], str(r["severity"]), r["created"]
+        ])
+    table = Table(data)
+    table.setStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1f3d5c")),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
+        ('ALIGN',(0,0),(-1,-1),'CENTER'),
+        ('GRID',(0,0),(-1,-1),0.5,colors.gray),
+        ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
+        ('BOTTOMPADDING',(0,0),(-1,0),8),
+    ])
+    pdf=SimpleDocTemplate(buffer,pagesize=landscape(A4), leftMargin=20, rightMargin=20)
     pdf.build([table])
     buffer.seek(0)
     return send_file(buffer,download_name="redshark-cti-report.pdf",as_attachment=True)
@@ -382,5 +409,4 @@ def download_ips():
         open(RULE_FILE,"w").close()
     return send_file(RULE_FILE, download_name="redshark-ips-signatures.rules", as_attachment=True)
 
-if __name__=="__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
+if __name__=="
