@@ -10,8 +10,9 @@ from datetime import datetime
 from flask import Flask, render_template_string, send_file
 import plotly.graph_objs as go
 import plotly
-from reportlab.platypus import SimpleDocTemplate, Table
+from reportlab.platypus import SimpleDocTemplate, Table, Paragraph, Spacer
 from reportlab.lib.pagesizes import landscape, A4
+from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
 
@@ -77,7 +78,7 @@ def insert_threat(indicator,typ,severity):
     VALUES(?,?,?,?,?,?,?,?)
     """, (indicator, typ, m, s, severity, lat, lon, created))
     conn.commit()
-    # ---------------- IPS RULE GENERATION ----------------
+    # IPS RULE GENERATION
     rule_sid = 1000000 + random.randint(1,9999)
     if typ=="ip":
         rule_line = f'alert ip any any -> any any (msg:"RedShark IP {indicator} | MITRE: {m}"; sid:{rule_sid}; rev:1;)\n'
@@ -147,28 +148,36 @@ def securenation():
     if not rows: return 0
     return round(sum([r["severity"] for r in rows])/len(rows),1)
 
-# ---------------- BULLETIN ----------------
-def bulletin():
-    rows=db().execute("SELECT indicator, type, severity FROM threats ORDER BY id DESC LIMIT 5").fetchall()
-    return [{"indicator":r["indicator"], "type":r["type"], "severity":r["severity"]} for r in rows]
+# ---------------- EXECUTIVE SUMMARY ----------------
+def executive_summary():
+    rows=db().execute("""
+        SELECT indicator, type, sector, mitre, severity, created 
+        FROM threats ORDER BY id DESC LIMIT 5
+    """).fetchall()
+    return [dict(r) for r in rows]
 
-# ---------------- CHARTS (Nikkei Style) ----------------
-def nikkei_style_bar(x,y,title="# Sector Targeting"):
-    fig = go.Figure(go.Bar(x=x, y=y,
-                           marker=dict(color="#1f77b4", line=dict(color="#0b1b2a", width=1))))
-    fig.update_layout(plot_bgcolor="#0b1b2a", paper_bgcolor="#0b1b2a",
-                      font_color="#A3B8CC", title=title,
-                      xaxis=dict(showgrid=False), yaxis=dict(showgrid=False))
-    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+# ---------------- NIKKEI STYLE CHART ----------------
+def nikkei_chart(x,y,title):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode='lines+markers',
+        line=dict(color="#00FFCC", width=4, shape='spline', smoothing=1.3),
+        marker=dict(size=10, color="#FFFFFF", line=dict(width=2, color="#00FFCC"))
+    ))
+    fig.update_layout(plot_bgcolor="#0b1b2a",
+                      paper_bgcolor="#0b1b2a",
+                      font_color="#A3B8CC",
+                      title=title,
+                      xaxis=dict(showgrid=False),
+                      yaxis=dict(showgrid=False))
+    return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 def malaysia_map():
     rows = db().execute("SELECT lat,lon,severity FROM threats").fetchall()
-    lat, lon, sev = [r["lat"] for r in rows], [r["lon"] for r in rows], [r["severity"] for r in rows]
-    colors, sizes = [], []
-    for s in sev:
-        if s>=85: colors.append("red"); sizes.append(18)
-        elif s>=70: colors.append("orange"); sizes.append(12)
-        else: colors.append("yellow"); sizes.append(10)
+    lat, lon = [r["lat"] for r in rows], [r["lon"] for r in rows]
+    sev = [r["severity"] for r in rows]
+    colors = ["#FF3C3C" if s>=85 else "#FF9900" if s>=70 else "#FFFF00" for s in sev]
+    sizes = [20 if s>=85 else 14 if s>=70 else 10 for s in sev]
     fig = go.Figure()
     fig.add_trace(go.Scattermapbox(
         lat=lat, lon=lon, mode="markers",
@@ -184,27 +193,23 @@ def malaysia_map():
         margin=dict(l=0,r=0,t=0,b=0),
         mapbox=dict(accesstoken=None)
     )
-    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+    return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 def timeline_chart():
     rows=db().execute("SELECT substr(created,1,10) d, COUNT(*) c FROM threats GROUP BY d ORDER BY d").fetchall()
-    x=[r["d"] for r in rows]; y=[r["c"] for r in rows]
-    return nikkei_style_bar(x,y,"Threat Timeline")
+    return nikkei_chart([r["d"] for r in rows],[r["c"] for r in rows],"Threat Timeline")
 
 def sector_chart():
     rows=db().execute("SELECT sector, COUNT(*) c FROM threats GROUP BY sector ORDER BY c DESC").fetchall()
-    labels=[r["sector"] for r in rows]; values=[r["c"] for r in rows]
-    return nikkei_style_bar(labels,values,"Sector Targeting")
+    return nikkei_chart([r["sector"] for r in rows],[r["c"] for r in rows],"Sector Targeting")
 
 def indicator_type_chart():
     rows=db().execute("SELECT type, COUNT(*) c FROM threats GROUP BY type").fetchall()
-    labels=[r["type"] for r in rows]; values=[r["c"] for r in rows]
-    return nikkei_style_bar(labels,values,"Indicator Type Distribution")
+    return nikkei_chart([r["type"] for r in rows],[r["c"] for r in rows],"Indicator Type Distribution")
 
 def mitre_chart():
     rows=db().execute("SELECT mitre, COUNT(*) c FROM threats GROUP BY mitre").fetchall()
-    labels=[r["mitre"] for r in rows]; values=[r["c"] for r in rows]
-    return nikkei_style_bar(labels,values,"MITRE Techniques Trend")
+    return nikkei_chart([r["mitre"] for r in rows],[r["c"] for r in rows],"MITRE Techniques Trend")
 
 # ---------------- DASHBOARD HTML ----------------
 HTML = """<html>
@@ -219,10 +224,12 @@ body{background:#0b1b2a;color:#A3B8CC;font-family:Arial;}
 .card{background:#13263b;padding:20px;margin:15px;border-radius:8px;}
 table{width:100%;border-collapse:collapse;}
 td,th{padding:8px;border-bottom:1px solid #1f3d5c;text-align:center;}
-a.download-link{color:#FFA500;font-weight:bold;text-decoration:none;}
-.center{text-align:center;}
-.blink {animation: blink-animation 1s infinite;color:#DC143C;font-weight:bold;}
-@keyframes blink-animation {0% {opacity:1;}50% {opacity:0;}100% {opacity:1;}}
+.center{text-align:center;margin-top:15px;}
+button.download-btn{
+    background:#FFA500;color:#0b1b2a;font-weight:bold;padding:10px 18px;
+    border:none;border-radius:5px;margin-right:8px;cursor:pointer;
+}
+button.download-btn:hover{background:#FFB84D;}
 </style>
 </head>
 <body>
@@ -233,10 +240,10 @@ SecureNation Index: <b>{{index}}</b>
 </div>
 
 <div class="card">
-<h3>Bulletin</h3>
+<h3>Executive Summary</h3>
 <ul>
-{% for b in bulletin %}
-<li>{{b.indicator}} ({{b.type}}, Severity: {{b.severity}})</li>
+{% for b in summary %}
+<li>{{b.indicator}} | {{b.type}} | {{b.sector}} | MITRE: {{b.mitre}} | Severity: {{b.severity}} | {{b.created}}</li>
 {% endfor %}
 </ul>
 </div>
@@ -270,32 +277,30 @@ SecureNation Index: <b>{{index}}</b>
 <h3>Latest Threat Indicators</h3>
 <table id="threat_table">
 <thead>
-<tr><th>ID</th><th>Indicator</th><th>Type</th><th>Sector</th><th>Severity</th></tr>
+<tr><th>ID</th><th>Indicator</th><th>Type</th><th>Sector</th><th>Severity</th><th>MITRE</th><th>Timestamp</th></tr>
 </thead>
 <tbody>
 {% for r in rows %}
-<tr class="{{'blink' if r.severity>=85 else ''}}">
+<tr>
 <td>{{r.id}}</td>
 <td>{{r.indicator}}</td>
 <td>{{r.type}}</td>
 <td>{{r.sector}}</td>
 <td>{{r.severity}}</td>
+<td>{{r.mitre}}</td>
+<td>{{r.created}}</td>
 </tr>
 {% endfor %}
 </tbody>
 </table>
 </div>
 
-<div class="card center">
-<a class="download-link" href="/csv">Download CSV</a> |
-<a class="download-link" href="/json">Download JSON</a> |
-<a class="download-link" href="/pdf">Download PDF</a> |
-<a class="download-link" href="/download_ips">Download IPS Signatures</a>
+<div class="center">
+<button class="download-btn" onclick="window.location='/csv'">CSV</button>
+<button class="download-btn" onclick="window.location='/json'">JSON</button>
+<button class="download-btn" onclick="window.location='/pdf'">PDF</button>
+<button class="download-btn" onclick="window.location='/download_ips'">IPS RULE</button>
 </div>
-
-<p class="center" style="opacity:0.6;">
-Developed and analyzed by darkgrid@redshark.my using publicly available threat intelligence sources
-</p>
 
 <script>
 var timeline={{timeline|safe}};
@@ -308,21 +313,6 @@ Plotly.newPlot("mitre",mitre.data,mitre.layout);
 Plotly.newPlot("sector",sector.data,sector.layout);
 Plotly.newPlot("indicator_type",indicator_type.data,indicator_type.layout);
 Plotly.newPlot("map",map.data,map.layout);
-
-// Animate pulsing for critical red markers
-var mapData = map.data[0];
-var sizes = mapData.marker.size;
-var growing = true;
-setInterval(function(){
-    for(var i=0;i<sizes.length;i++){
-        if(mapData.marker.color[i]=="red"){
-            sizes[i] = growing ? 25 : 18;
-        }
-    }
-    mapData.marker.size = sizes;
-    Plotly.redraw("map");
-    growing = !growing;
-}, 800);
 
 $(document).ready(function(){ $('#threat_table').DataTable(); });
 </script>
@@ -338,7 +328,7 @@ def dashboard():
         HTML,
         rows=rows,
         index=securenation(),
-        bulletin=bulletin(),
+        summary=executive_summary(),
         timeline=timeline_chart(),
         mitre=mitre_chart(),
         sector=sector_chart(),
@@ -369,11 +359,11 @@ def json_export():
 
 @app.route("/pdf")
 def pdf_export():
-    rows=db().execute("SELECT indicator,type,sector,severity,created FROM threats LIMIT 50").fetchall()
+    rows=db().execute("SELECT indicator,type,sector,severity,mitre,created FROM threats LIMIT 50").fetchall()
     buffer=io.BytesIO()
-    data=[["Indicator","Type","Sector","Severity","Timestamp"]]
+    data=[["Indicator","Type","Sector","Severity","MITRE","Timestamp"]]
     for r in rows:
-        data.append([r["indicator"],r["type"],r["sector"],r["severity"],r["created"]])
+        data.append([r["indicator"],r["type"],r["sector"],r["severity"],r["mitre"],r["created"]])
     pdf=SimpleDocTemplate(buffer,pagesize=landscape(A4))
     table=Table(data)
     pdf.build([table])
