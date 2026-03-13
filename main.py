@@ -17,8 +17,8 @@ from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import landscape, A4
 
 app = Flask(__name__)
-DB="/tmp/redshark_cti_v7.db"
-RULE_FILE="/tmp/redshark_ips_v7.rules"
+DB="/tmp/redshark_cti_v7_2.db"
+RULE_FILE="/tmp/redshark_ips_v7_2.rules"
 
 # ---------------- DATABASE ----------------
 def db():
@@ -88,7 +88,7 @@ def insert_threat(indicator,typ,severity):
     created=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     conn.execute("""
     INSERT INTO threats(indicator,type,actor,campaign,mitre,sector,severity,confidence,lat,lon,created)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
     """,(indicator,typ,actor,campaign,mit,sector,severity,confidence,lat,lon,created))
     conn.commit()
     generate_rule(indicator,typ)
@@ -136,7 +136,7 @@ def background_feed_loop():
         fetch_threatfox()
         fetch_feodo()
         fetch_urlhaus()
-        time.sleep(30)  # refresh every 30s
+        time.sleep(30)
 
 threading.Thread(target=background_feed_loop,daemon=True).start()
 
@@ -152,15 +152,16 @@ def timeline_chart():
     x=[r["d"] for r in rows]
     y=[r["c"] for r in rows]
     fig=go.Figure()
-    fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(width=4)))
-    fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
+    fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",line=dict(width=3,color="#FFA500")))
+    fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",
+                      xaxis=dict(showgrid=False),yaxis=dict(showgrid=False))
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
 def actor_chart():
     rows=db().execute("SELECT actor,COUNT(*) c FROM threats GROUP BY actor").fetchall()
     x=[r["actor"] for r in rows]
     y=[r["c"] for r in rows]
-    fig=go.Figure(go.Bar(x=x,y=y))
+    fig=go.Figure(go.Bar(x=x,y=y,marker_color="#00eaff"))
     fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
@@ -172,12 +173,42 @@ def indicator_chart():
     fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
 
+def mitre_chart():
+    rows=db().execute("SELECT mitre,COUNT(*) c FROM threats GROUP BY mitre").fetchall()
+    labels=[r["mitre"] for r in rows]
+    values=[r["c"] for r in rows]
+    fig=go.Figure(go.Bar(x=labels,y=values,marker_color="#FFA500"))
+    fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC",xaxis_tickangle=-45)
+    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+
+def sector_chart():
+    rows=db().execute("SELECT sector,COUNT(*) c FROM threats GROUP BY sector").fetchall()
+    labels=[r["sector"] for r in rows]
+    values=[r["c"] for r in rows]
+    fig=go.Figure(go.Bar(x=labels,y=values,marker_color="#00eaff"))
+    fig.update_layout(plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
+    return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+
 def malaysia_map():
-    rows=db().execute("SELECT lat,lon FROM threats").fetchall()
-    lat=[r["lat"] for r in rows]
-    lon=[r["lon"] for r in rows]
+    rows=db().execute("SELECT lat,lon,severity FROM threats").fetchall()
+    lat=[]
+    lon=[]
+    color=[]
+    size=[]
+    for r in rows:
+        lat.append(r["lat"])
+        lon.append(r["lon"])
+        if r["severity"]>=85:
+            color.append("crimson")
+            size.append(14)
+        elif r["severity"]>=70:
+            color.append("orange")
+            size.append(10)
+        else:
+            color.append("yellow")
+            size.append(6)
     fig=go.Figure(go.Scattergeo(lat=lat,lon=lon,mode="markers",
-                                 marker=dict(size=10,color="crimson",opacity=0.9)))
+                                 marker=dict(size=size,color=color,opacity=0.9)))
     fig.update_layout(geo=dict(scope="asia",center=dict(lat=4.5,lon=102)),
                       plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
@@ -186,38 +217,49 @@ def malaysia_map():
 HTML="""
 <html>
 <head>
-<title>RedShark CTI v7.0</title>
+<title>RedShark CTI v7.2</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0b1b2a;color:#A3B8CC;font-family:Arial}
 .card{background:#13263b;padding:20px;margin:15px;border-radius:8px}
 table{width:100%;border-collapse:collapse}
 td,th{padding:10px;border-bottom:1px solid #1f3d5c}
-.btn{background:#1f2f45;padding:10px 20px;margin:5px;color:#A3B8CC;border:none;border-radius:6px}
+th{cursor:pointer}
+.btn{background:#1f2f45;padding:10px 20px;margin:5px;color:#A3B8CC;font-weight:bold;border:none;border-radius:6px;cursor:pointer}
 .progress{background:#1f2f45;border-radius:6px;overflow:hidden;height:20px;width:100%}
 .progress-bar{height:20px;background:crimson;width:{{index}}%}
+.critical{color:crimson;font-weight:bold}
 </style>
 </head>
 <body>
 
-<h2>RedShark CTI Dashboard v7.0</h2>
+<h2>RedShark CTI Dashboard v7.2</h2>
 
 <div class="card">
 SecureNation Index
 <div class="progress"><div class="progress-bar"></div></div>
 </div>
 
-<div class="card"><h3>Threat Timeline</h3><div id="timeline"></div></div>
+<div class="card"><h3>Timeline (Nikkei Style)</h3><div id="timeline"></div></div>
 <div class="card"><h3>Actor Activity</h3><div id="actor"></div></div>
 <div class="card"><h3>Indicator Type</h3><div id="indicator"></div></div>
+<div class="card"><h3>MITRE ATT&CK Heatmap</h3><div id="mitre"></div></div>
+<div class="card"><h3>Sector Targeting</h3><div id="sector"></div></div>
 <div class="card"><h3>Malaysia Attack Map</h3><div id="map"></div></div>
 
 <div class="card">
 <h3>Latest Indicators</h3>
-<table>
-<tr><th>ID</th><th>Indicator</th><th>Actor</th><th>Campaign</th><th>Severity</th><th>Confidence</th></tr>
-{% for r in rows %}
+<table id="indicatorTable">
 <tr>
+<th onclick="sortTable(0)">ID</th>
+<th onclick="sortTable(1)">Indicator</th>
+<th onclick="sortTable(2)">Actor</th>
+<th onclick="sortTable(3)">Campaign</th>
+<th onclick="sortTable(4)">Severity</th>
+<th onclick="sortTable(5)">Confidence</th>
+</tr>
+{% for r in rows %}
+<tr class="{% if r.severity>=85 %}critical{% endif %}">
 <td>{{r.id}}</td>
 <td>{{r.indicator}}</td>
 <td>{{r.actor}}</td>
@@ -237,14 +279,25 @@ SecureNation Index
 </div>
 
 <script>
+function sortTable(n) {
+    var table=document.getElementById("indicatorTable")
+    var rows=Array.from(table.rows).slice(1)
+    rows.sort((a,b)=>a.cells[n].innerText.localeCompare(b.cells[n].innerText))
+    rows.forEach(r=>table.appendChild(r))
+}
+
 var timeline={{timeline|safe}}
 var actor={{actor|safe}}
 var indicator={{indicator|safe}}
+var mitre={{mitre|safe}}
+var sector={{sector|safe}}
 var map={{map|safe}}
 
 Plotly.newPlot("timeline",timeline.data,timeline.layout)
 Plotly.newPlot("actor",actor.data,actor.layout)
 Plotly.newPlot("indicator",indicator.data,indicator.layout)
+Plotly.newPlot("mitre",mitre.data,mitre.layout)
+Plotly.newPlot("sector",sector.data,sector.layout)
 Plotly.newPlot("map",map.data,map.layout)
 </script>
 </body>
@@ -261,6 +314,8 @@ def dashboard():
                                   timeline=timeline_chart(),
                                   actor=actor_chart(),
                                   indicator=indicator_chart(),
+                                  mitre=mitre_chart(),
+                                  sector=sector_chart(),
                                   map=malaysia_map())
 
 # ---------------- EXPORT ----------------
