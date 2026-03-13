@@ -139,6 +139,11 @@ def securenation():
     if not rows: return 0
     return round(sum([r["severity"] for r in rows])/len(rows),1)
 
+def progress_color(index):
+    if index>=85: return "crimson"
+    if index>=70: return "orange"
+    return "green"
+
 # ---------------- CHARTS ----------------
 def timeline_chart():
     try:
@@ -225,15 +230,17 @@ def malaysia_map():
         return json.dumps({"data":[],"layout":{}})
 
 # ---------------- DASHBOARD HTML ----------------
-HTML = """... (same as previous HTML template with dark theme, progress bar, tables, buttons) ..."""
+HTML = """..."""  # Use full HTML from v7.2.4 with slow blinking markers, progress bar dynamic color, Nikkei-style charts
 
 # ---------------- DASHBOARD ----------------
 @app.route("/")
 def dashboard():
     rows = db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall() or []
+    index=securenation()
     return render_template_string(HTML,
                                   rows=rows,
-                                  index=securenation(),
+                                  index=index,
+                                  progress_color=progress_color(index),
                                   timeline=timeline_chart(),
                                   actor=actor_chart(),
                                   indicator=indicator_chart(),
