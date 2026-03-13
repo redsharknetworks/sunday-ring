@@ -17,8 +17,8 @@ from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import landscape, A4
 
 app = Flask(__name__)
-DB="/tmp/redshark_cti_v7_2.db"
-RULE_FILE="/tmp/redshark_ips_v7_2.rules"
+DB="/tmp/redshark_cti_v7_2_1.db"
+RULE_FILE="/tmp/redshark_ips_v7_2_1.rules"
 
 # ---------------- DATABASE ----------------
 def db():
@@ -47,6 +47,19 @@ def init_db():
     conn.commit()
 
 init_db()
+
+# ---------------- SEED DUMMY DATA ----------------
+def seed_dummy_data():
+    conn = db()
+    if conn.execute("SELECT 1 FROM threats LIMIT 1").fetchone():
+        return
+    sample_indicators = [
+        ("192.168.1.100", "ip", 90),
+        ("malicious.com/path", "url", 75),
+        ("abcd1234ef5678", "hash", 80)
+    ]
+    for ind, typ, sev in sample_indicators:
+        insert_threat(ind, typ, sev)
 
 # ---------------- DATA ----------------
 states={
@@ -207,17 +220,22 @@ def malaysia_map():
         else:
             color.append("yellow")
             size.append(6)
-    fig=go.Figure(go.Scattergeo(lat=lat,lon=lon,mode="markers",
+    fig=go.Figure(go.Scatter3d(x=lon,y=lat,z=[s for s in size],mode="markers",
                                  marker=dict(size=size,color=color,opacity=0.9)))
-    fig.update_layout(geo=dict(scope="asia",center=dict(lat=4.5,lon=102)),
-                      plot_bgcolor="#0b1b2a",paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
+    fig.update_layout(scene=dict(xaxis=dict(showbackground=False),
+                                 yaxis=dict(showbackground=False),
+                                 zaxis=dict(showbackground=False)),
+                      paper_bgcolor="#0b1b2a",font_color="#A3B8CC")
     return json.dumps(fig,cls=plotly.utils.PlotlyJSONEncoder)
+
+# ---------------- SEED DATA ----------------
+seed_dummy_data()
 
 # ---------------- DASHBOARD HTML ----------------
 HTML="""
 <html>
 <head>
-<title>RedShark CTI v7.2</title>
+<title>RedShark CTI v7.2.1</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0b1b2a;color:#A3B8CC;font-family:Arial}
@@ -228,24 +246,23 @@ th{cursor:pointer}
 .btn{background:#1f2f45;padding:10px 20px;margin:5px;color:#A3B8CC;font-weight:bold;border:none;border-radius:6px;cursor:pointer}
 .progress{background:#1f2f45;border-radius:6px;overflow:hidden;height:20px;width:100%}
 .progress-bar{height:20px;background:crimson;width:{{index}}%}
-.critical{color:crimson;font-weight:bold}
 </style>
 </head>
 <body>
 
-<h2>RedShark CTI Dashboard v7.2</h2>
+<h2>RedShark CTI Dashboard v7.2.1</h2>
 
 <div class="card">
 SecureNation Index
 <div class="progress"><div class="progress-bar"></div></div>
 </div>
 
-<div class="card"><h3>Timeline (Nikkei Style)</h3><div id="timeline"></div></div>
+<div class="card"><h3>Timeline</h3><div id="timeline"></div></div>
 <div class="card"><h3>Actor Activity</h3><div id="actor"></div></div>
 <div class="card"><h3>Indicator Type</h3><div id="indicator"></div></div>
 <div class="card"><h3>MITRE ATT&CK Heatmap</h3><div id="mitre"></div></div>
 <div class="card"><h3>Sector Targeting</h3><div id="sector"></div></div>
-<div class="card"><h3>Malaysia Attack Map</h3><div id="map"></div></div>
+<div class="card"><h3>Malaysia Attack 3D Heatmap</h3><div id="map"></div></div>
 
 <div class="card">
 <h3>Latest Indicators</h3>
@@ -259,7 +276,7 @@ SecureNation Index
 <th onclick="sortTable(5)">Confidence</th>
 </tr>
 {% for r in rows %}
-<tr class="{% if r.severity>=85 %}critical{% endif %}">
+<tr>
 <td>{{r.id}}</td>
 <td>{{r.indicator}}</td>
 <td>{{r.actor}}</td>
