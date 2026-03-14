@@ -4,27 +4,23 @@ import csv
 import json
 import random
 import sqlite3
-import threading
 import zipfile
 from datetime import datetime
-
 from flask import Flask, render_template_string, send_file, jsonify
 from flask_socketio import SocketIO
-from reportlab.platypus import SimpleDocTemplate, Table
-from reportlab.lib.pagesizes import letter, landscape
 
 # ---------------- EVENTLET PATCH ---------------- #
 import eventlet
 eventlet.monkey_patch()  # Must patch before socketio.run()
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'redshark_v15.1'
+app.config['SECRET_KEY'] = 'redshark_v15.2'
 socketio = SocketIO(app, async_mode='eventlet')  # use eventlet
 
-DB_FILE = "redshark_v15.1.db"
+# ---------------- DATABASE ---------------- #
+DB_FILE = os.path.join("/tmp","redshark_v15.2.db")  # writable path on Render
 DISCLAIMER = "Developed and analysed by darkgrid@redshark.my using publicly available sources"
 
-# ---------------- DATABASE ---------------- #
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -102,7 +98,7 @@ def generate_feed():
             "mitre": random.choice(mitre_map),
             "score": threat_score(sev),
             "category": category,
-            "country": "Unknown",  # optional placeholder
+            "country": "Unknown",
             "lat": lat,
             "lon": lon,
             "asn": asn,
@@ -128,13 +124,15 @@ def save_iocs(feed, emit_update=True):
     if emit_update:
         socketio.emit('new_iocs', {'iocs': feed}, broadcast=True)
 
-# ---------------- BACKGROUND ENGINE ---------------- #
-def threat_engine():
-    while True:
-        save_iocs(generate_feed())
-        socketio.sleep(60)
-
-threading.Thread(target=threat_engine, daemon=True).start()
+# ---------------- SOCKETIO BACKGROUND TASK ---------------- #
+@socketio.on('connect')
+def start_background_feed():
+    # Start a background task only once
+    def feed_task():
+        while True:
+            save_iocs(generate_feed())
+            socketio.sleep(60)  # eventlet sleep
+    socketio.start_background_task(feed_task)
 
 # ---------------- DASHBOARD ---------------- #
 @app.route("/")
