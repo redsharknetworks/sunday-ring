@@ -5,11 +5,11 @@ import json
 import random
 import sqlite3
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, render_template_string, send_file, jsonify
 
 app = Flask(__name__)
-DB_FILE = os.path.join("/tmp","redshark_v15.3.db")  # Render-safe writable path
+DB_FILE = os.path.join("/tmp","redshark_v16.db")  # Render-safe
 DISCLAIMER = "Developed and analysed by darkgrid@redshark.my using publicly available sources"
 
 # ---------------- DATABASE ---------------- #
@@ -36,13 +36,14 @@ def init_db():
     )
     """)
     conn.commit()
-    # Pre-populate a few sample IOCs if empty
+
+    # Prepopulate sample Malaysian IOCs
     c.execute("SELECT COUNT(*) FROM indicators")
     if c.fetchone()[0]==0:
         sample = []
-        for _ in range(10):
-            lat = random.uniform(-90,90)
-            lon = random.uniform(-180,180)
+        for _ in range(15):
+            lat = random.uniform(1.0, 7.5)       # Malaysia lat
+            lon = random.uniform(99.5, 119.0)    # Malaysia lon
             sev = random.choice(["Low","Medium","High","Critical"])
             sample.append((
                 f"malicious{random.randint(1,999)}.net",
@@ -59,7 +60,7 @@ def init_db():
                 ]),
                 {"Low":20,"Medium":50,"High":75,"Critical":95}[sev],
                 random.choice(["Malware","Phishing","Botnet","C2","Recon"]),
-                "Unknown",
+                "Malaysia",
                 lat,
                 lon,
                 f"AS{random.randint(1000,99999)}",
@@ -80,12 +81,7 @@ init_db()
 def random_ip(): return f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
 def random_domain(): return f"malicious{random.randint(1,999)}.net"
 def random_hash(): return os.urandom(16).hex()
-def threat_score(sev):
-    return {"Low": random.randint(10,30),
-            "Medium": random.randint(40,60),
-            "High": random.randint(70,85),
-            "Critical": random.randint(90,100)}[sev]
-def random_location(): return (random.uniform(-90,90), random.uniform(-180,180))
+def threat_score(sev): return {"Low": random.randint(10,30),"Medium": random.randint(40,60),"High": random.randint(70,85),"Critical": random.randint(90,100)}[sev]
 def enrich_ioc(typ): return (f"AS{random.randint(1000,99999)}", random.choice(["malicious","suspicious","clean"]))
 
 def generate_feed():
@@ -103,7 +99,8 @@ def generate_feed():
     for _ in range(random.randint(12,25)):
         typ = random.choice(["IP","Domain","Hash"])
         indicator = random_ip() if typ=="IP" else random_domain() if typ=="Domain" else random_hash()
-        lat, lon = random_location()
+        lat = random.uniform(1.0, 7.5)       # Malaysia-focused
+        lon = random.uniform(99.5, 119.0)
         sev = random.choice(["Low","Medium","High","Critical"])
         category = random.choice(categories)
         asn, reputation = enrich_ioc(typ)
@@ -115,7 +112,7 @@ def generate_feed():
             "mitre": random.choice(mitre_map),
             "score": threat_score(sev),
             "category": category,
-            "country": "Unknown",
+            "country": "Malaysia",
             "lat": lat,
             "lon": lon,
             "asn": asn,
@@ -172,7 +169,7 @@ h1{text-align:center;color:#38bdf8}
 </head>
 <body>
 <h1>RedShark Threat Intelligence Platform</h1>
-<div class="highlight" id="highlight"><b>Latest Security Highlight (GMT+8)</b><br>No major threat detected</div>
+<div class="highlight" id="highlight"><b>Latest Malaysia Security Highlight (GMT+8)</b><br>No major threat detected</div>
 <div class="ticker" id="ticker"></div>
 <div id="map"></div>
 <canvas id="mitre"></canvas>
@@ -206,7 +203,7 @@ h1{text-align:center;color:#38bdf8}
 <small id="disclaimer">{{disclaimer}}</small>
 <script>
 $(document).ready(function(){ $('#cti').DataTable({pageLength:50})})
-var map=L.map('map').setView([20,0],2)
+var map=L.map('map').setView([4.2,102],5)
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
 {% for r in rows %}
 var color="blue"; if("{{r[4]}}"=="Low") color="green"; if("{{r[4]}}"=="Medium") color="orange";
