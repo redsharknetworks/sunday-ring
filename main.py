@@ -2,6 +2,8 @@ import os
 import sqlite3
 import random
 import requests
+import threading
+import time
 from datetime import datetime
 from flask import Flask, render_template_string
 
@@ -34,7 +36,7 @@ MALAYSIA_LOCATIONS = [
 ]
 
 SOURCES = ["OTX", "AbuseIPDB", "Spamhaus", "EmergingThreats"]
-SEVERITIES = ["High","Medium","Low"]
+SEVERITIES = ["High", "Medium", "Low"]
 
 OTX_API_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
 ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb8674d52aaf14544a100"
@@ -74,7 +76,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-def get_events(limit=300):
+def get_events(limit=200):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     rows = c.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
@@ -91,6 +93,7 @@ def get_country_from_ip(ip):
     if cached:
         conn.close()
         return cached[0], cached[1], cached[2]
+    country, lat, lon = "Unknown", 0.0, 0.0
     try:
         r = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
         data = r.json()
@@ -98,79 +101,71 @@ def get_country_from_ip(ip):
         lat = data.get("lat",0.0)
         lon = data.get("lon",0.0)
     except:
-        country = "Unknown"
-        lat = 0.0
-        lon = 0.0
-    # cache
+        pass
     c.execute("INSERT OR REPLACE INTO geo_cache(ip,country,lat,lon) VALUES(?,?,?,?)",(ip,country,lat,lon))
     conn.commit()
     conn.close()
     return country, lat, lon
 
 # ===============================
-# Fetch CTI Feeds
+# Fetch CTI Feeds (non-blocking)
 # ===============================
 def fetch_cti_combined():
-    headers_otx = {"X-OTX-API-KEY": OTX_API_KEY}
-    headers_abuse = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
-
-    feeds = []
-
-    try:
-        r = requests.get(OTX_EXPORT_URL, headers=headers_otx, timeout=30)
-        feeds += r.text.splitlines()[:100]
-    except: pass
-
-    try:
-        r = requests.get(SPAMHAUS_DROP_URL, timeout=15)
-        feeds += [line.split()[0] for line in r.text.splitlines() if line and not line.startswith(";")][:100]
-    except: pass
-
-    try:
-        r = requests.get(EMERGINGTHREATS_URL, timeout=15)
-        feeds += [line.strip() for line in r.text.splitlines() if line and not line.startswith("#")][:100]
-    except: pass
-
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    for ip in feeds:
-        ip = ip.strip()
-        if not ip: continue
-        exist = c.execute("SELECT id FROM events WHERE ip=?", (ip,)).fetchone()
-        if exist: continue
-
-        severity = "Low"
+    while True:
+        headers_otx = {"X-OTX-API-KEY": OTX_API_KEY}
+        headers_abuse = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
+        feeds = []
         try:
-            rep = requests.get(ABUSE_CHECK_URL, headers=headers_abuse, params={"ipAddress": ip,"maxAgeInDays":90}, timeout=15)
-            score = rep.json().get("data", {}).get("abuseConfidenceScore", 0)
-            if score >= 80: severity="High"
-            elif score >= 40: severity="Medium"
-        except:
-            severity = "Medium"
+            r = requests.get(OTX_EXPORT_URL, headers=headers_otx, timeout=30)
+            feeds += r.text.splitlines()[:100]
+        except: pass
+        try:
+            r = requests.get(SPAMHAUS_DROP_URL, timeout=15)
+            feeds += [line.split()[0] for line in r.text.splitlines() if line and not line.startswith(";")][:100]
+        except: pass
+        try:
+            r = requests.get(EMERGINGTHREATS_URL, timeout=15)
+            feeds += [line.strip() for line in r.text.splitlines() if line and not line.startswith("#")][:100]
+        except: pass
 
-        country, src_lat, src_lon = get_country_from_ip(ip)
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        for ip in feeds:
+            ip = ip.strip()
+            if not ip: continue
+            exist = c.execute("SELECT id FROM events WHERE ip=?", (ip,)).fetchone()
+            if exist: continue
 
-        if country=="Malaysia":
-            loc = random.choice(MALAYSIA_LOCATIONS)
-            lat = loc[1]
-            lon = loc[2]
-        else:
-            lat = src_lat
-            lon = src_lon
+            severity = "Low"
+            try:
+                rep = requests.get(ABUSE_CHECK_URL, headers=headers_abuse, params={"ipAddress": ip,"maxAgeInDays":90}, timeout=15)
+                score = rep.json().get("data", {}).get("abuseConfidenceScore", 0)
+                if score >= 80: severity="High"
+                elif score >= 40: severity="Medium"
+            except:
+                severity = "Medium"
 
-        c.execute("""
-        INSERT INTO events(ip,source,severity,country,rule,description,lat,lon,timestamp)
-        VALUES(?,?,?,?,?,?,?,?,?)
-        """,(ip,"CTI Combined",severity,country,f"RSK-{random.randint(1000,9999)}","Threat IOC detected",lat,lon,datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    conn.close()
+            country, src_lat, src_lon = get_country_from_ip(ip)
+
+            if country=="Malaysia":
+                loc = random.choice(MALAYSIA_LOCATIONS)
+                lat, lon = loc[1], loc[2]
+            else:
+                lat, lon = src_lat, src_lon
+
+            c.execute("""
+            INSERT INTO events(ip,source,severity,country,rule,description,lat,lon,timestamp)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            """,(ip,"CTI Combined",severity,country,f"RSK-{random.randint(1000,9999)}","Threat IOC detected",lat,lon,datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+        time.sleep(600)  # refresh every 10 min
 
 # ===============================
-# Initialize DB + Fetch
+# Start background feed fetching
 # ===============================
 init_db()
-fetch_cti_combined()
+threading.Thread(target=fetch_cti_combined, daemon=True).start()
 
 # ===============================
 # Flask Dashboard
@@ -184,7 +179,7 @@ def dashboard():
     timeline = {}
     mapdata = []
     lines = []
-    aggregation = {}  # for ticker line aggregation
+    aggregation = {}
 
     for e in events:
         severity[e[3]] = severity.get(e[3],0)+1
@@ -264,7 +259,6 @@ Developed and analysed by darkgrid@redshark.my using publicly available sources
 <script>
 var map={{mapdata|tojson}};
 var lines={{lines|tojson}};
-
 var traces = [];
 
 lines.forEach(function(l){
