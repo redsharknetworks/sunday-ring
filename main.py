@@ -5,7 +5,7 @@ import requests
 import threading
 import time
 from datetime import datetime
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, request
 
 app = Flask(__name__)
 
@@ -37,15 +37,8 @@ MALAYSIA_LOCATIONS = [
 
 SEVERITY_WEIGHT = {"High": 3, "Medium": 2, "Low": 1}
 
-OTX_API_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
-ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb8674d52aaf14544a100"
-OTX_EXPORT_URL = "https://otx.alienvault.com/api/v1/indicators/export"
-ABUSE_CHECK_URL = "https://api.abuseipdb.com/api/v2/check"
-SPAMHAUS_DROP_URL = "https://www.spamhaus.org/drop/drop.txt"
-EMERGINGTHREATS_URL = "https://rules.emergingthreats.net/blockrules/compromised-ips.txt"
-
 # ===============================
-# Database Functions
+# Database Initialization
 # ===============================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -83,7 +76,7 @@ def get_events(limit=500):
     return rows
 
 # ===============================
-# Geolocation with caching
+# Geolocation Caching
 # ===============================
 def get_country_from_ip(ip):
     conn = sqlite3.connect(DB_PATH)
@@ -107,9 +100,16 @@ def get_country_from_ip(ip):
     return country, lat, lon
 
 # ===============================
-# Background Feed Fetching
+# Background CTI Fetching
 # ===============================
 def fetch_cti_combined():
+    OTX_API_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
+    ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb8674d52aaf14544a100"
+    OTX_EXPORT_URL = "https://otx.alienvault.com/api/v1/indicators/export"
+    ABUSE_CHECK_URL = "https://api.abuseipdb.com/api/v2/check"
+    SPAMHAUS_DROP_URL = "https://www.spamhaus.org/drop/drop.txt"
+    EMERGINGTHREATS_URL = "https://rules.emergingthreats.net/blockrules/compromised-ips.txt"
+
     while True:
         headers_otx = {"X-OTX-API-KEY": OTX_API_KEY}
         headers_abuse = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
@@ -146,7 +146,6 @@ def fetch_cti_combined():
                 severity = "Medium"
 
             country, src_lat, src_lon = get_country_from_ip(ip)
-
             if country=="Malaysia":
                 loc = random.choice(MALAYSIA_LOCATIONS)
                 lat, lon = loc[1], loc[2]
@@ -159,10 +158,10 @@ def fetch_cti_combined():
             """,(ip,"CTI Combined",severity,country,f"RSK-{random.randint(1000,9999)}","Threat IOC detected",lat,lon,datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         conn.close()
-        time.sleep(600)  # refresh every 10 min
+        time.sleep(600)
 
 # ===============================
-# Start background thread
+# Start Background Fetch
 # ===============================
 init_db()
 threading.Thread(target=fetch_cti_combined, daemon=True).start()
@@ -176,12 +175,18 @@ def dashboard():
     heat_data = []
     lines = []
     markers = []
+    severity_counts = {"High":0,"Medium":0,"Low":0}
+    timeline = {}
 
     for e in events:
         weight = SEVERITY_WEIGHT.get(e[3],1)
+        severity_counts[e[3]] += 1
+        hour = e[9][:13]
+        timeline[hour] = timeline.get(hour,0)+1
+
         if e[4]=="Malaysia":
             heat_data.append([e[7], e[8], weight])
-            if e[3]=="High":  # only high severity in marker cluster
+            if e[3]=="High":
                 markers.append({
                     "lat": e[7],
                     "lon": e[8],
@@ -198,21 +203,28 @@ def dashboard():
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
-<style>
-body{margin:0;padding:0;font-family:Arial;background:#0f1720;color:#e5e7eb;}
-#map{height:600px;}
-.header{font-size:28px;padding:15px;background:#111827;}
-.footer{text-align:center;font-size:12px;color:#9ca3af;margin-top:20px;}
-</style>
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster/dist/leaflet.markercluster.js"></script>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<style>
+body{margin:0;padding:0;font-family:Arial;background:#0f1720;color:#e5e7eb;}
+#map{height:500px;}
+#charts{display:flex;flex-wrap:wrap;}
+.chart{flex:1 1 30%;margin:10px;background:#111827;padding:10px;border-radius:8px;}
+.header{font-size:28px;padding:15px;background:#111827;}
+.footer{text-align:center;font-size:12px;color:#9ca3af;margin-top:20px;}
+</style>
 </head>
 <body>
 <div class="header">RedShark Cyber Threat Intelligence Platform
 <div style="font-size:12px">CTI Highlight {{time}}</div></div>
 
 <div id="map"></div>
+<div id="charts">
+    <div class="chart" id="severity_chart"></div>
+    <div class="chart" id="timeline_chart"></div>
+</div>
 
 <div class="footer">
 Developed and analysed by darkgrid@redshark.my using publicly available sources
@@ -241,10 +253,26 @@ mdata.forEach(function(m){
     markers.addLayer(marker);
 });
 map.addLayer(markers);
+
+// Charts
+var severity = {{severity_counts|tojson}};
+Plotly.newPlot('severity_chart',[{
+    x:Object.keys(severity),
+    y:Object.values(severity),
+    type:'bar',
+    marker:{color:['red','orange','cyan']}
+}], {title:'Severity Distribution',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
+
+var timeline = {{timeline|tojson}};
+Plotly.newPlot('timeline_chart',[{
+    x:Object.keys(timeline),
+    y:Object.values(timeline),
+    type:'scatter'
+}], {title:'Threat Timeline',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
 </script>
 </body>
 </html>
-""", heat_data=heat_data, lines=lines, markers=markers, time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+""", heat_data=heat_data, lines=lines, markers=markers, severity_counts=severity_counts, timeline=timeline, time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
