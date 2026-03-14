@@ -10,7 +10,6 @@ app = Flask(__name__)
 # ===============================
 # Database Setup
 # ===============================
-
 DB_DIR = "data"
 DB_PATH = os.path.join(DB_DIR, "cti.db")
 if not os.path.exists(DB_DIR):
@@ -37,7 +36,6 @@ MALAYSIA_LOCATIONS = [
 SOURCES = ["OTX", "AbuseIPDB", "Spamhaus", "EmergingThreats"]
 SEVERITIES = ["High","Medium","Low"]
 
-# CTI API Keys
 OTX_API_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
 ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb8674d52aaf14544a100"
 OTX_EXPORT_URL = "https://otx.alienvault.com/api/v1/indicators/export"
@@ -46,9 +44,8 @@ SPAMHAUS_DROP_URL = "https://www.spamhaus.org/drop/drop.txt"
 EMERGINGTHREATS_URL = "https://rules.emergingthreats.net/blockrules/compromised-ips.txt"
 
 # ===============================
-# Database functions
+# Database Functions
 # ===============================
-
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -66,32 +63,53 @@ def init_db():
         timestamp TEXT
     )
     """)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS geo_cache(
+        ip TEXT PRIMARY KEY,
+        country TEXT,
+        lat REAL,
+        lon REAL
+    )
+    """)
     conn.commit()
     conn.close()
 
-def get_events():
+def get_events(limit=300):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    rows = c.execute("SELECT * FROM events ORDER BY id DESC").fetchall()
+    rows = c.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     conn.close()
     return rows
 
 # ===============================
-# Dynamic Country Resolution
+# Geolocation with caching
 # ===============================
-
 def get_country_from_ip(ip):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    cached = c.execute("SELECT country,lat,lon FROM geo_cache WHERE ip=?", (ip,)).fetchone()
+    if cached:
+        conn.close()
+        return cached[0], cached[1], cached[2]
     try:
         r = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
         data = r.json()
-        return data.get("country","Unknown"), data.get("lat",0.0), data.get("lon",0.0)
+        country = data.get("country","Unknown")
+        lat = data.get("lat",0.0)
+        lon = data.get("lon",0.0)
     except:
-        return "Unknown", 0.0, 0.0
+        country = "Unknown"
+        lat = 0.0
+        lon = 0.0
+    # cache
+    c.execute("INSERT OR REPLACE INTO geo_cache(ip,country,lat,lon) VALUES(?,?,?,?)",(ip,country,lat,lon))
+    conn.commit()
+    conn.close()
+    return country, lat, lon
 
 # ===============================
 # Fetch CTI Feeds
 # ===============================
-
 def fetch_cti_combined():
     headers_otx = {"X-OTX-API-KEY": OTX_API_KEY}
     headers_abuse = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
@@ -138,19 +156,18 @@ def fetch_cti_combined():
             lat = loc[1]
             lon = loc[2]
         else:
-            lat = 0.0
-            lon = 0.0
+            lat = src_lat
+            lon = src_lon
 
         c.execute("""
         INSERT INTO events(ip,source,severity,country,rule,description,lat,lon,timestamp)
         VALUES(?,?,?,?,?,?,?,?,?)
-        """, (ip,"CTI Combined",severity,country,f"RSK-{random.randint(1000,9999)}","Threat IOC detected",lat,lon,datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-
+        """,(ip,"CTI Combined",severity,country,f"RSK-{random.randint(1000,9999)}","Threat IOC detected",lat,lon,datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
 
 # ===============================
-# Initialize DB + Fetch Feeds
+# Initialize DB + Fetch
 # ===============================
 init_db()
 fetch_cti_combined()
@@ -158,7 +175,6 @@ fetch_cti_combined()
 # ===============================
 # Flask Dashboard
 # ===============================
-
 @app.route("/")
 def dashboard():
     events = get_events()
@@ -168,6 +184,7 @@ def dashboard():
     timeline = {}
     mapdata = []
     lines = []
+    aggregation = {}  # for ticker line aggregation
 
     for e in events:
         severity[e[3]] = severity.get(e[3],0)+1
@@ -179,14 +196,19 @@ def dashboard():
         if e[4]=="Malaysia":
             mapdata.append({"lat":e[7],"lon":e[8],"sev":e[3],"ip":e[1]})
         else:
-            # Draw line toward Malaysia city
-            target = random.choice(MALAYSIA_LOCATIONS)
-            lines.append({"from_lat":e[7],"from_lon":e[8],"to_lat":target[1],"to_lon":target[2],"severity":e[3]})
+            key = e[1]
+            if key not in aggregation:
+                aggregation[key] = {"from_lat": e[7],"from_lon": e[8],"targets":[],"severity": e[3]}
+            aggregation[key]["targets"].append(random.choice(MALAYSIA_LOCATIONS))
+
+    for a in aggregation.values():
+        for t in a["targets"]:
+            lines.append({"from_lat": a["from_lat"],"from_lon":a["from_lon"],"to_lat": t[1],"to_lon":t[2],"severity": a["severity"]})
 
     return render_template_string("""
 <html>
 <head>
-<title>RedShark CTI v19.1</title>
+<title>RedShark Cyber Threat Intelligence Platform</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0f1720;color:#e5e7eb;font-family:Arial;}
@@ -196,16 +218,18 @@ table{width:100%;border-collapse:collapse;}
 th,td{padding:10px;border-bottom:1px solid #1f2937;}
 .high{color:red;font-weight:bold;animation: blink 1s infinite;}
 @keyframes blink{50%{opacity:0.3;}}
-.footer{text-align:center;font-size:12px;color:#9ca3af;}
+.footer{text-align:center;font-size:12px;color:#9ca3af;margin-top:20px;}
+input{margin-bottom:10px;padding:5px;width:100%;}
 </style>
 </head>
 <body>
 <div class="header">
-RedShark Cyber Threat Intelligence Platform v19.1
+RedShark Cyber Threat Intelligence Platform
 <div style="font-size:12px">CTI Highlight {{time}}</div>
 </div>
 
-<div class="section"><h3>Malaysia Threat Map</h3><div id="map"></div></div>
+<div class="section"><h3>Malaysia Threat Map (2D Heat + Attack Vectors)</h3>
+<div id="map"></div></div>
 
 <div class="section"><h3>CTI Analytics</h3>
 <div id="sev"></div><br>
@@ -215,7 +239,8 @@ RedShark Cyber Threat Intelligence Platform v19.1
 <div class="section"><h3>Threat Timeline</h3><div id="timeline"></div></div>
 
 <div class="section"><h3>Threat Events</h3>
-<table>
+<input id="search" placeholder="Search by IP, source, country" onkeyup="filterTable()">
+<table id="eventsTable">
 <tr><th>ID</th><th>IP</th><th>Source</th><th>Severity</th><th>Country</th><th>Rule</th><th>Timestamp</th></tr>
 {% for e in events %}
 <tr class="{{'high' if e[3]=='High' else ''}}">
@@ -241,6 +266,7 @@ var map={{mapdata|tojson}};
 var lines={{lines|tojson}};
 
 var traces = [];
+
 lines.forEach(function(l){
     traces.push({
         type:'scattergeo',
@@ -258,10 +284,13 @@ traces.push({
     lon: map.map(x=>x.lon),
     lat: map.map(x=>x.lat),
     text: map.map(x=>x.ip),
-    marker:{size:10,color:map.map(x=>x.sev=="High"?"red":x.sev=="Medium"?"orange":"cyan")}
+    marker:{size:15,color:map.map(x=>x.sev=="High"?"red":x.sev=="Medium"?"orange":"cyan"),opacity:0.7}
 });
 
-Plotly.newPlot("map",traces,{geo:{scope:"asia",center:{lat:4,lon:109},projection:{scale:7}},paper_bgcolor:"#0f1720"});
+Plotly.newPlot("map",traces,{
+    geo:{scope:"asia",center:{lat:4,lon:109},projection:{scale:7}},
+    paper_bgcolor:"#0f1720"
+});
 
 var sev={{severity|tojson}};
 Plotly.newPlot("sev",[{
@@ -282,6 +311,20 @@ var tl={{timeline|tojson}};
 Plotly.newPlot("timeline",[{
 x:Object.keys(tl),y:Object.values(tl),type:"scatter"
 }]);
+
+function filterTable(){
+    var input=document.getElementById("search").value.toUpperCase();
+    var table=document.getElementById("eventsTable");
+    var tr=table.getElementsByTagName("tr");
+    for(var i=1;i<tr.length;i++){
+        var tds=tr[i].getElementsByTagName("td");
+        var show=false;
+        for(var j=0;j<tds.length;j++){
+            if(tds[j].innerHTML.toUpperCase().indexOf(input)>-1){show=true;break;}
+        }
+        tr[i].style.display=show?"":"none";
+    }
+}
 </script>
 </body></html>
 """, events=events, mapdata=mapdata, lines=lines, severity=severity, sources=sources, countries=countries, timeline=timeline, time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
