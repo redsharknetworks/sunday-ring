@@ -5,7 +5,7 @@ import requests
 import threading
 import time
 from datetime import datetime
-from flask import Flask, render_template_string, request
+from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
@@ -227,12 +227,17 @@ body{margin:0;padding:0;font-family:Arial;background:#0f1720;color:#e5e7eb;}
 </div>
 
 <div class="footer">
-Developed and analysed by darkgrid@redshark.my using publicly available sources
+Map tiles © OpenStreetMap contributors | Developed by darkgrid@redshark.my using publicly available sources
 </div>
 
 <script>
+// Neutral map tile (no branding)
 var map = L.map('map').setView([4.2105,101.9758],6);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
+    subdomains: 'abcd',
+    maxZoom: 19
+}).addTo(map);
 
 // Heatmap
 var heat = L.heatLayer({{heat_data|tojson}}, {radius:25, blur:15, maxZoom:10, max:9}).addTo(map);
