@@ -7,7 +7,8 @@ import threading
 import requests
 import sqlite3
 from datetime import datetime
-from flask import Flask, render_template_string, send_file, jsonify, request
+from flask import Flask, render_template_string, send_file, jsonify
+
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import landscape, letter
 
@@ -34,8 +35,8 @@ def init_db():
             domain TEXT,
             severity TEXT,
             source TEXT,
-            lat REAL,
-            lon REAL,
+            lat REAL DEFAULT 0,
+            lon REAL DEFAULT 0,
             timestamp TEXT
         )
     ''')
@@ -60,14 +61,14 @@ def get_threats():
     conn.close()
     return rows
 
-# ====== FETCH THREAT INTEL (PLACEHOLDERS) ======
+# ====== THREAT INTEL FETCH (SAFE) ======
 def fetch_otx():
     try:
         r = requests.get(THREAT_FEEDS['otx'])
         if r.status_code == 200:
             data = r.json()
             for item in data.get("indicators", []):
-                insert_threat(item.get("ip"), item.get("domain"), "Medium", "OTX", lat=0.0, lon=0.0)
+                insert_threat(item.get("ip"), item.get("domain"), "Medium", "OTX")
     except Exception as e:
         print("OTX fetch error:", e)
 
@@ -78,24 +79,30 @@ def fetch_abuseipdb(ip_list=None):
         try:
             r = requests.get(f"{THREAT_FEEDS['abuseipdb']}?ipAddress={ip}", headers=headers)
             if r.status_code == 200:
-                insert_threat(ip, "", "High", "AbuseIPDB", lat=0.0, lon=0.0)
+                insert_threat(ip, "", "High", "AbuseIPDB")
         except Exception as e:
             print("AbuseIPDB fetch error:", e)
 
 def start_fetch_thread():
     def fetch_loop():
         while True:
-            fetch_otx()
-            fetch_abuseipdb()
+            try:
+                fetch_otx()
+            except Exception as e:
+                print("OTX thread error:", e)
+            try:
+                fetch_abuseipdb()
+            except Exception as e:
+                print("AbuseIPDB thread error:", e)
             threading.Event().wait(3600)
     t = threading.Thread(target=fetch_loop, daemon=True)
     t.start()
 
-# ====== PDF & CSV Export ======
+# ====== PDF & CSV/ZIP EXPORT ======
 def generate_pdf():
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
-    data = [["ID", "IP", "Domain", "Severity", "Source", "Lat", "Lon", "Timestamp"]]
+    data = [["ID","IP","Domain","Severity","Source","Lat","Lon","Timestamp"]]
     for row in get_threats():
         data.append(list(row))
     table = Table(data)
@@ -109,17 +116,29 @@ def generate_csv_zip():
     writer.writerow(["ID","IP","Domain","Severity","Source","Lat","Lon","Timestamp"])
     for row in get_threats():
         writer.writerow(list(row))
-    csv_bytes = csv_buffer.getvalue().encode()
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("threats.csv", csv_bytes)
+        zf.writestr("threats.csv", csv_buffer.getvalue())
     zip_buffer.seek(0)
     return zip_buffer
 
-# ====== ROUTES ======
+# ====== DASHBOARD ROUTE ======
 @app.route("/")
 def dashboard():
     threats = get_threats()
+    threats_json = [
+        {
+            "ip": t[1],
+            "lat": float(t[5] or 0.0),
+            "lon": float(t[6] or 0.0),
+            "severity": t[3]
+        } for t in threats
+    ]
+    # Chart data by severity
+    chart_data = {}
+    for t in threats:
+        chart_data[t[3]] = chart_data.get(t[3],0)+1
+
     html = '''
     <!DOCTYPE html>
     <html lang="en">
@@ -146,12 +165,12 @@ def dashboard():
 
         <div id="map"></div>
         <script>
-            var map = L.map('map').setView([20,0], 2);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution: ''}).addTo(map);
+            var map = L.map('map').setView([20,0],2);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:''}).addTo(map);
             var threats = {{ threats_json|safe }};
             threats.forEach(function(t){
                 var color = t.severity=="High"?"red":"orange";
-                var circle = L.circle([t.lat, t.lon], {color: color, radius:50000}).addTo(map);
+                var circle = L.circle([t.lat,t.lon],{color: color, radius:50000}).addTo(map);
                 if(t.severity=="High"){
                     circle.bindPopup("Critical: "+t.ip).openPopup();
                 }
@@ -162,17 +181,17 @@ def dashboard():
         <script>
             var ctx = document.getElementById('severityChart').getContext('2d');
             var threatData = {{ chart_data|safe }};
-            var severityChart = new Chart(ctx, {
+            new Chart(ctx, {
                 type: 'bar',
                 data: {
                     labels: Object.keys(threatData),
                     datasets: [{
-                        label: 'Threat Count',
+                        label:'Threat Count',
                         data: Object.values(threatData),
-                        backgroundColor: ['#ff4d4d','#ffa500','#00bfff']
+                        backgroundColor:['#ff4d4d','#ffa500','#00bfff']
                     }]
                 },
-                options: {responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}}}
+                options:{responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}}}
             });
         </script>
 
@@ -197,13 +216,9 @@ def dashboard():
     </body>
     </html>
     '''
-    # Prepare chart data
-    chart_data = {}
-    for t in threats:
-        severity = t[3]
-        chart_data[severity] = chart_data.get(severity,0)+1
-    return render_template_string(html, threats=threats, threats_json=json.dumps([{"ip":t[1],"lat":t[5],"lon":t[6],"severity":t[3]} for t in threats]), chart_data=json.dumps(chart_data), timestamp=datetime.utcnow().isoformat(), disclaimer=DISCLAIMER)
+    return render_template_string(html, threats=threats, threats_json=json.dumps(threats_json), chart_data=json.dumps(chart_data), timestamp=datetime.utcnow().isoformat(), disclaimer=DISCLAIMER)
 
+# ====== EXPORT ROUTES ======
 @app.route("/export/pdf")
 def export_pdf():
     pdf_buffer = generate_pdf()
@@ -216,11 +231,11 @@ def export_csv_zip():
 
 @app.route("/api/threats")
 def api_threats():
-    data = [{"id": t[0], "ip": t[1], "domain": t[2], "severity": t[3], "source": t[4], "lat": t[5], "lon": t[6], "timestamp": t[7]} for t in get_threats()]
+    data = [{"id":t[0],"ip":t[1],"domain":t[2],"severity":t[3],"source":t[4],"lat":t[5],"lon":t[6],"timestamp":t[7]} for t in get_threats()]
     return jsonify(data)
 
 # ====== START SERVER ======
 if __name__ == "__main__":
     init_db()
     start_fetch_thread()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False)
