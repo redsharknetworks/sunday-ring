@@ -34,10 +34,7 @@ MALAYSIA_LOCATIONS = [
     ("Putrajaya", 2.9264, 101.6964),
 ]
 
-COUNTRIES = ["Russia","China","USA","Brazil","Iran","India","Germany","Vietnam"]
-
 SOURCES = ["OTX", "AbuseIPDB", "Spamhaus", "EmergingThreats"]
-
 SEVERITIES = ["High","Medium","Low"]
 
 # CTI API Keys
@@ -78,6 +75,18 @@ def get_events():
     rows = c.execute("SELECT * FROM events ORDER BY id DESC").fetchall()
     conn.close()
     return rows
+
+# ===============================
+# Dynamic Country Resolution
+# ===============================
+
+def get_country_from_ip(ip):
+    try:
+        r = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
+        data = r.json()
+        return data.get("country","Unknown")
+    except:
+        return "Unknown"
 
 # ===============================
 # Fetch OTX + AbuseIPDB + Spamhaus + EmergingThreats
@@ -124,6 +133,7 @@ def fetch_cti_combined():
         if exist:
             continue
 
+        # --- Severity via AbuseIPDB ---
         severity = "Low"
         try:
             params = {"ipAddress": ip, "maxAgeInDays": 90}
@@ -136,7 +146,14 @@ def fetch_cti_combined():
         except:
             severity = "Medium"
 
-        loc = random.choice(MALAYSIA_LOCATIONS)
+        # --- Country Detection ---
+        country = get_country_from_ip(ip)
+
+        # --- Map Malaysia only to Ibu Negeri ---
+        if country == "Malaysia":
+            loc = random.choice(MALAYSIA_LOCATIONS)
+        else:
+            loc = (None, None)  # Lat/Lon optional for non-Malaysia
 
         c.execute("""
         INSERT INTO events(
@@ -146,11 +163,11 @@ def fetch_cti_combined():
             ip,
             "CTI Combined",
             severity,
-            "External",
+            country,
             f"RSK-{random.randint(1000,9999)}",
             "Threat IOC detected",
-            loc[1],
-            loc[2],
+            loc[1] if loc[1] else 0.0,
+            loc[2] if loc[2] else 0.0,
             datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ))
 
