@@ -21,13 +21,13 @@ THREAT_FEEDS = {
     "talos": "https://talosintelligence.com/some_endpoint"
 }
 DISCLAIMER = "Developed and analysed by darkgrid@redshark.my using publicly available sources"
-
 DB_PATH = "soc_data.db"
 
 # ====== DATABASE ======
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Create table if missing
     c.execute('''
         CREATE TABLE IF NOT EXISTS threats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,6 +40,21 @@ def init_db():
             timestamp TEXT
         )
     ''')
+    conn.commit()
+    conn.close()
+    migrate_db()
+
+# Auto-migration for lat/lon columns
+def migrate_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Check existing columns
+    c.execute("PRAGMA table_info(threats)")
+    columns = [col[1] for col in c.fetchall()]
+    if "lat" not in columns:
+        c.execute("ALTER TABLE threats ADD COLUMN lat REAL DEFAULT 0")
+    if "lon" not in columns:
+        c.execute("ALTER TABLE threats ADD COLUMN lon REAL DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -61,7 +76,7 @@ def get_threats():
     conn.close()
     return rows
 
-# ====== THREAT INTEL FETCH (SAFE) ======
+# ====== THREAT INTEL FETCH ======
 def fetch_otx():
     try:
         r = requests.get(THREAT_FEEDS['otx'])
@@ -134,7 +149,6 @@ def dashboard():
             "severity": t[3]
         } for t in threats
     ]
-    # Chart data by severity
     chart_data = {}
     for t in threats:
         chart_data[t[3]] = chart_data.get(t[3],0)+1
