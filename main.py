@@ -2,19 +2,23 @@ import os
 import io
 import csv
 import json
-import time
 import random
 import sqlite3
 import threading
 import zipfile
 from datetime import datetime, timedelta
-from flask import Flask, render_template_string, send_file, jsonify, request
 
+from flask import Flask, render_template_string, send_file, jsonify, request
+from flask_socketio import SocketIO, emit
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter, landscape
 
 app = Flask(__name__)
-DB_FILE = "redshark_v13.db"
+app.config['SECRET_KEY'] = 'redshark_v15'
+socketio = SocketIO(app)
+
+DB_FILE = "redshark_v15.db"
+DISCLAIMER = "Developed and analysed by darkgrid@redshark.my using publicly available sources"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -33,6 +37,8 @@ def init_db():
         country TEXT,
         lat REAL,
         lon REAL,
+        asn TEXT,
+        reputation TEXT,
         first_seen TEXT,
         last_seen TEXT
     )
@@ -70,12 +76,18 @@ threat_categories = ["Malware","Phishing","Botnet","C2","Recon"]
 def random_ip(): return f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
 def random_domain(): return f"malicious{random.randint(1,999)}.net"
 def random_hash(): return os.urandom(16).hex()
-
 def threat_score(sev):
     return {"Low": random.randint(10,30),
             "Medium": random.randint(40,60),
             "High": random.randint(70,85),
             "Critical": random.randint(90,100)}[sev]
+
+# ---------------- THREAT ENRICHMENT PLACEHOLDER ---------------- #
+def enrich_ioc(indicator_type):
+    # Placeholder enrichment data
+    asn = f"AS{random.randint(1000,99999)}"
+    reputation = random.choice(["malicious","suspicious","clean"])
+    return asn, reputation
 
 # ---------------- FEED ENGINE ---------------- #
 def generate_feed():
@@ -87,6 +99,7 @@ def generate_feed():
         loc = random.choice(locations)
         sev = random.choice(["Low","Medium","High","Critical"])
         category = random.choice(threat_categories)
+        asn, reputation = enrich_ioc(typ)
         data.append({
             "indicator": indicator,
             "type": typ,
@@ -98,69 +111,53 @@ def generate_feed():
             "country": loc[0],
             "lat": loc[1],
             "lon": loc[2],
+            "asn": asn,
+            "reputation": reputation,
             "first_seen": datetime.utcnow().isoformat(),
             "last_seen": datetime.utcnow().isoformat()
         })
     return data
 
-def save_iocs(feed):
+def save_iocs(feed, emit_update=True):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     for f in feed:
         c.execute("""
         INSERT INTO indicators
-        (indicator,type,source,severity,mitre,score,category,country,lat,lon,first_seen,last_seen)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        (indicator,type,source,severity,mitre,score,category,country,lat,lon,asn,reputation,first_seen,last_seen)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,(f["indicator"],f["type"],f["source"],f["severity"],f["mitre"],
-             f["score"],f["category"],f["country"],f["lat"],f["lon"],f["first_seen"],f["last_seen"]))
+             f["score"],f["category"],f["country"],f["lat"],f["lon"],
+             f["asn"], f["reputation"], f["first_seen"], f["last_seen"]))
     conn.commit()
     conn.close()
+    # Emit to WebSocket clients
+    if emit_update:
+        socketio.emit('new_iocs', {'iocs': feed}, broadcast=True)
 
 # ---------------- BACKGROUND FEED ENGINE ---------------- #
 def threat_engine():
     while True:
         save_iocs(generate_feed())
-        time.sleep(60)  # every 1 min
+        socketio.sleep(60)  # use socketio.sleep for compatibility with WebSocket
 
 threading.Thread(target=threat_engine,daemon=True).start()
 
 # ---------------- DASHBOARD ---------------- #
 @app.route("/")
 def dashboard():
-    search = request.args.get("q","")
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    if search:
-        c.execute("""
-        SELECT indicator,type,source,severity,mitre,score,category,country,lat,lon,last_seen
-        FROM indicators WHERE indicator LIKE ? ORDER BY last_seen DESC
-        """,(f"%{search}%",))
-    else:
-        c.execute("""
-        SELECT indicator,type,source,severity,mitre,score,category,country,lat,lon,last_seen
-        FROM indicators ORDER BY last_seen DESC
-        """)
-    rows = c.fetchall()
-    conn.close()
-
-    malaysia_time=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-    highlight="No major threat detected"
-    if rows:
-        latest=rows[0]
-        highlight=f"{latest[3]} {latest[6]} threat {latest[0]} via {latest[2]} at {malaysia_time}"
-    ticker=[f"{r[3]} {r[6]} {r[0]} via {r[2]}" for r in rows[:10]]
-
     html="""
 <!DOCTYPE html>
 <html>
 <head>
-<title>RedShark v13 SOC Platform</title>
+<title>RedShark Threat Intelligence Platform</title>
 <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
 <style>
 body{background:#020617;color:white;font-family:Arial}
 h1{text-align:center;color:#38bdf8}
@@ -172,17 +169,14 @@ h1{text-align:center;color:#38bdf8}
 .medium{color:orange}
 .high{color:red}
 .critical{color:red;font-weight:bold;animation:blink 1s infinite}
+#disclaimer{font-size:0.8em;text-align:center;color:#888;margin:30px}
 @keyframes blink{50%{opacity:0}}
 </style>
 </head>
 <body>
-<h1>RedShark v13 SOC Platform</h1>
-<div class="highlight"><b>Latest Malaysia Security Highlight (GMT+8)</b><br>{{highlight}}</div>
-<form method="get" style="text-align:center">
-<input name="q" placeholder="Search IOC">
-<button type="submit">Search</button>
-</form>
-<div class="ticker">{% for t in ticker %}🚨 {{t}} &nbsp;&nbsp;{% endfor %}</div>
+<h1>RedShark Threat Intelligence Platform</h1>
+<div class="highlight" id="highlight"><b>Latest Malaysia Security Highlight (GMT+8)</b><br>No major threat detected</div>
+<div class="ticker" id="ticker"></div>
 <div id="map"></div>
 <canvas id="mitre"></canvas>
 <canvas id="severity"></canvas>
@@ -197,24 +191,12 @@ h1{text-align:center;color:#38bdf8}
 <th>MITRE</th>
 <th>Score</th>
 <th>Country</th>
+<th>ASN</th>
+<th>Reputation</th>
 <th>Last Seen</th>
 </tr>
 </thead>
-<tbody>
-{% for r in rows %}
-<tr>
-<td>{{r[0]}}</td>
-<td>{{r[1]}}</td>
-<td>{{r[2]}}</td>
-<td class="{{r[3]|lower}}">{{r[3]}}</td>
-<td>{{r[6]}}</td>
-<td>{{r[4]}}</td>
-<td>{{r[5]}}</td>
-<td>{{r[7]}}</td>
-<td>{{r[10]}}</td>
-</tr>
-{% endfor %}
-</tbody>
+<tbody id="table-body"></tbody>
 </table>
 <div style="text-align:center;margin:20px">
 <button onclick="window.location='/export/json'">JSON</button>
@@ -222,41 +204,70 @@ h1{text-align:center;color:#38bdf8}
 <button onclick="window.location='/export/pdf'">PDF</button>
 <button onclick="window.location='/export/ids'">IDS</button>
 <button onclick="window.location='/export/zip'">IOC ZIP</button>
-<button onclick="window.location='/refresh'">Refresh</button>
 </div>
+<small id="disclaimer">{{disclaimer}}</small>
 <script>
-$(document).ready(function(){ $('#cti').DataTable({pageLength:50})})
-var map=L.map('map').setView([20,0],2)
+var socket = io();
+var map = L.map('map').setView([20,0],2)
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
-var points={{rows|tojson}}
-points.forEach(function(p){
-var lat=p[8],lon=p[9],color="blue"
-if(p[3]=="Low")color="green"
-if(p[3]=="Medium")color="orange"
-if(p[3]=="High")color="red"
-if(p[3]=="Critical")color="darkred"
-L.circleMarker([lat,lon],{radius:7,color:color,fillOpacity:0.7}).addTo(map)
-.bindPopup(p[0]+"<br>"+p[3]+" "+p[6])
-})
-var mitre_labels = {{rows|map(attribute=4)|list|tojson}}
-var mitre_counts = {}
-mitre_labels.forEach(function(m){ mitre_counts[m]=(mitre_counts[m]||0)+1 })
-var ctx = document.getElementById('mitre').getContext('2d')
-new Chart(ctx,{type:'bar',data:{labels:Object.keys(mitre_counts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitre_counts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}})
+var markers=[];
 
-var severity_labels={{rows|map(attribute=3)|list|tojson}}
-var severity_counts={}
-severity_labels.forEach(function(s){ severity_counts[s]=(severity_counts[s]||0)+1 })
-var ctx2 = document.getElementById('severity').getContext('2d')
-new Chart(ctx2,{type:'bar',data:{labels:Object.keys(severity_counts),datasets:[{label:'Severity Count',data:Object.values(severity_counts),backgroundColor:['green','orange','red','darkred']}]},options:{plugins:{legend:{display:false}}}})
-</script>
-<script>
-setTimeout(function(){location.reload();},20000)
+var mitre_chart = new Chart(document.getElementById('mitre'),{
+type:'bar',data:{labels:[],datasets:[{label:'MITRE ATT&CK Count',data:[],backgroundColor:[],borderRadius:10,borderWidth:1}]},
+options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}
+})
+var severity_chart = new Chart(document.getElementById('severity'),{
+type:'bar',data:{labels:[],datasets:[{label:'Severity Count',data:[],backgroundColor:['#22c55e','#f97316','#ef4444','#b91c1c'],borderRadius:10,borderWidth:1}]},
+options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}
+})
+
+function update_dashboard(iocs){
+    // update table
+    var tbody = $('#table-body'); tbody.empty();
+    var ticker_html = ''; var highlight_text = 'No major threat detected';
+    iocs.forEach(function(i,idx){
+        tbody.append('<tr>'+
+            `<td>${i.indicator}</td>`+
+            `<td>${i.type}</td>`+
+            `<td>${i.source}</td>`+
+            `<td class="${i.severity.toLowerCase()}">${i.severity}</td>`+
+            `<td>${i.category}</td>`+
+            `<td>${i.mitre}</td>`+
+            `<td>${i.score}</td>`+
+            `<td>${i.country}</td>`+
+            `<td>${i.asn}</td>`+
+            `<td>${i.reputation}</td>`+
+            `<td>${i.last_seen}</td>`+
+            '</tr>');
+        if(idx<10){ ticker_html+=`🚨 ${i.severity} ${i.category} ${i.indicator} via ${i.source} &nbsp;&nbsp;` }
+        if(idx===0) highlight_text=`${i.severity} ${i.category} threat ${i.indicator} via ${i.source} at ${(new Date()).toLocaleString('en-US',{timeZone:'Asia/Kuala_Lumpur'})}`
+    });
+    $('#ticker').html(ticker_html); $('#highlight').html('<b>Latest Malaysia Security Highlight (GMT+8)</b><br>'+highlight_text);
+
+    // update map
+    markers.forEach(m=>map.removeLayer(m)); markers=[];
+    iocs.forEach(function(i){
+        var color="blue"; if(i.severity=="Low") color="green"; if(i.severity=="Medium") color="orange";
+        if(i.severity=="High") color="red"; if(i.severity=="Critical") color="darkred";
+        var marker=L.circleMarker([i.lat,i.lon],{radius:7,color:color,fillOpacity:0.7}).addTo(map)
+        .bindPopup(i.indicator+"<br>"+i.severity+" "+i.category);
+        markers.push(marker);
+    });
+
+    // update charts
+    var mitre_counts = {}; var severity_counts={};
+    iocs.forEach(function(i){ mitre_counts[i.mitre]=(mitre_counts[i.mitre]||0)+1; severity_counts[i.severity]=(severity_counts[i.severity]||0)+1; });
+    mitre_chart.data.labels=Object.keys(mitre_counts); mitre_chart.data.datasets[0].data=Object.values(mitre_counts);
+    mitre_chart.data.datasets[0].backgroundColor=Object.keys(mitre_counts).map(_=>'rgba(56,189,248,0.7)'); mitre_chart.update();
+    severity_chart.data.labels=Object.keys(severity_counts); severity_chart.data.datasets[0].data=Object.values(severity_counts); severity_chart.update();
+}
+
+socket.on('new_iocs', function(data){ update_dashboard(data.iocs); });
 </script>
 </body>
 </html>
 """
-    return render_template_string(html,rows=rows,highlight=highlight,ticker=ticker)
+    return render_template_string(html,disclaimer=DISCLAIMER)
 
 # ---------------- EXPORTS ---------------- #
 @app.route("/export/json")
@@ -309,4 +320,4 @@ def refresh():
 # ---------------- RUN ---------------- #
 if __name__=="__main__":
     port=int(os.environ.get("PORT",5000))
-    app.run(host="0.0.0.0",port=port,debug=True)
+    socketio.run(app,host="0.0.0.0",port=port,debug=True)
