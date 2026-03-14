@@ -14,7 +14,7 @@ from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
 app = Flask(__name__)
-DB_FILE = "redshark_soc_v10_0_1.db"
+DB_FILE = "redshark_soc_v10_2.db"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -151,16 +151,16 @@ def dashboard():
 <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.10.0/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.min.js"></script>
 <style>
 body{background:#020617;color:white;font-family:Arial}
 h1{text-align:center;color:#38bdf8}
 .highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red}
 .ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;white-space:nowrap;overflow-x:auto}
-#map{height:500px;margin:20px}
+#map{height:400px;margin:20px}
+#globe{height:500px;margin:20px}
 #mitre{height:250px;margin:20px}
 .low{color:green}
 .medium{color:orange}
@@ -176,8 +176,11 @@ h1{text-align:center;color:#38bdf8}
 <input name="q" placeholder="Search IOC"><button type="submit">Search</button>
 </form>
 <div class="ticker">{% for t in ticker %}🚨 {{t}} &nbsp;&nbsp;{% endfor %}</div>
+
+<div id="globe"></div>
 <div id="map"></div>
 <canvas id="mitre"></canvas>
+
 <table id="cti" class="display">
 <thead>
 <tr>
@@ -192,6 +195,7 @@ h1{text-align:center;color:#38bdf8}
 {% endfor %}
 </tbody>
 </table>
+
 <div style="text-align:center;margin:20px">
 <button onclick="window.location='/export/json'">JSON</button>
 <button onclick="window.location='/export/csv'">CSV</button>
@@ -200,11 +204,12 @@ h1{text-align:center;color:#38bdf8}
 <button onclick="window.location='/export/zip'">IOC ZIP</button>
 <button onclick="window.location='/refresh'">Refresh</button>
 </div>
+
 <script>
 $(document).ready(function(){ $('#cti').DataTable({pageLength:50})})
 
-// Global attack map
-var map=L.map('map').setView([20,0],2)
+// Leaflet Malaysia map
+var map=L.map('map').setView([4.2,102.0],5)
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
 var points={{rows|tojson}}
 points.forEach(function(p){
@@ -223,6 +228,25 @@ var mitre_counts = {}
 mitre_labels.forEach(function(m){ mitre_counts[m]=(mitre_counts[m]||0)+1 })
 var ctx = document.getElementById('mitre').getContext('2d')
 new Chart(ctx,{type:'bar',data:{labels:Object.keys(mitre_counts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitre_counts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}})
+
+// Three.js globe
+var globeContainer=document.getElementById('globe')
+var scene=new THREE.Scene()
+var camera=new THREE.PerspectiveCamera(45,globeContainer.offsetWidth/globeContainer.offsetHeight,0.1,1000)
+var renderer=new THREE.WebGLRenderer({antialias:true})
+renderer.setSize(globeContainer.offsetWidth,globeContainer.offsetHeight)
+globeContainer.appendChild(renderer.domElement)
+var sphereGeo=new THREE.SphereGeometry(5,50,50)
+var sphereMat=new THREE.MeshBasicMaterial({color:0x08306b,wireframe:true})
+var globe=new THREE.Mesh(sphereGeo,sphereMat)
+scene.add(globe)
+camera.position.z=15
+var animate=function(){
+requestAnimationFrame(animate)
+globe.rotation.y+=0.002
+renderer.render(scene,camera)
+}
+animate()
 </script>
 </body>
 </html>
