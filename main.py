@@ -1,395 +1,442 @@
 import os
-import sqlite3
-import requests
-import json
-import csv
 import io
-import random
+import csv
+import json
+import sqlite3
 import threading
-from datetime import datetime
-from flask import Flask, render_template_string, send_file
-import plotly.graph_objs as go
-import plotly
-from reportlab.platypus import SimpleDocTemplate, Table
-from reportlab.lib.pagesizes import landscape, A4
+import time
+import random
+from datetime import datetime, timedelta
 
+import requests
+from flask import Flask, render_template_string, send_file, request, jsonify
+
+# ReportLab for PDF generation
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+
+# Initialize Flask app
 app = Flask(__name__)
 
-DB = "/tmp/threats.db"
-RULE_FILE = "/tmp/redshark.rules"
-
-# ---------------- DATABASE ----------------
-def db():
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Database setup
+DB_FILE = "cti_data.db"
 
 def init_db():
-    conn = db()
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS threats(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        indicator TEXT UNIQUE,
-        type TEXT,
-        mitre TEXT,
-        sector TEXT,
-        severity INTEGER,
-        lat REAL,
-        lon REAL,
-        created TEXT
-    )
-    """)
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS indicators (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            indicator TEXT NOT NULL,
+            type TEXT NOT NULL,
+            source TEXT,
+            severity TEXT,
+            first_seen TEXT,
+            last_seen TEXT,
+            description TEXT
+        )
+    ''')
     conn.commit()
+    conn.close()
 
 init_db()
 
-# ---------------- STATES & SECTORS ----------------
-states = {
-    "Johor":[1.49,103.74],"Kedah":[6.11,100.36],"Kelantan":[6.12,102.23],
-    "Melaka":[2.18,102.25],"Negeri Sembilan":[2.72,101.94],"Pahang":[3.81,103.32],
-    "Perak":[4.59,101.09],"Perlis":[6.44,100.20],"Pulau Pinang":[5.41,100.33],
-    "Sabah":[5.98,116.07],"Sarawak":[1.55,110.35],"Selangor":[3.07,101.51],
-    "Terengganu":[5.33,103.14],"Kuala Lumpur":[3.13,101.68]
-}
-sectors = ["Government","Banking","Telecommunications","Energy",
-           "Healthcare","Education","Manufacturing",
-           "Transportation","Retail","Technology"]
-mitre = ["Reconnaissance","Initial Access","Execution",
-         "Persistence","Privilege Escalation","Defense Evasion",
-         "Credential Access","Discovery","Lateral Movement",
-         "Collection","Command and Control","Exfiltration","Impact"]
+# Helper functions
+def fetch_external_data():
+    """Simulate fetching CTI data from external sources"""
+    sources = ["OTX", "AbuseIPDB", "Talos"]
+    types = ["IP", "Domain", "Hash"]
+    severities = ["Low", "Medium", "High", "Critical"]
+    
+    data = []
+    for _ in range(20):
+        indicator_type = random.choice(types)
+        indicator = ""
+        if indicator_type == "IP":
+            indicator = f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
+        elif indicator_type == "Domain":
+            indicator = f"malicious{random.randint(1,100)}.com"
+        else:
+            indicator = f"{os.urandom(8).hex()}"
+        
+        record = {
+            "indicator": indicator,
+            "type": indicator_type,
+            "source": random.choice(sources),
+            "severity": random.choice(severities),
+            "first_seen": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "last_seen": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "description": f"Sample {indicator_type} from CTI feed."
+        }
+        data.append(record)
+    
+    return data
 
-def rand_loc(): return random.choice(list(states.values()))
-def rand_sector(): return random.choice(sectors)
-def rand_mitre(): return random.choice(mitre)
-
-# ---------------- INSERT THREAT ----------------
-def insert_threat(indicator,typ,severity):
-    conn = db()
-    if conn.execute("SELECT 1 FROM threats WHERE indicator=?", (indicator,)).fetchone():
-        return
-    lat, lon = rand_loc()
-    m = rand_mitre()
-    s = rand_sector()
-    created = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    conn.execute("""
-    INSERT INTO threats(indicator,type,mitre,sector,severity,lat,lon,created)
-    VALUES(?,?,?,?,?,?,?,?)
-    """, (indicator, typ, m, s, severity, lat, lon, created))
+def save_data_to_db(records):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    for r in records:
+        cursor.execute('''
+            INSERT INTO indicators (indicator, type, source, severity, first_seen, last_seen, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (r["indicator"], r["type"], r["source"], r["severity"], r["first_seen"], r["last_seen"], r["description"]))
     conn.commit()
-    # IPS RULE GENERATION
-    rule_sid = 1000000 + random.randint(1,9999)
-    if typ=="ip":
-        rule_line = f'alert ip any any -> any any (msg:"RedShark IP {indicator} | MITRE: {m}"; sid:{rule_sid}; rev:1;)\n'
-    elif typ=="url":
-        rule_line = f'alert http any any -> any any (msg:"RedShark URL {indicator} | MITRE: {m}"; content:"{indicator}"; http_uri; sid:{rule_sid}; rev:1;)\n'
-    elif typ=="domain":
-        rule_line = f'alert http any any -> any any (msg:"RedShark DOMAIN {indicator} | MITRE: {m}"; content:"{indicator}"; http_host; sid:{rule_sid}; rev:1;)\n'
-    elif typ=="hash":
-        rule_line = f'# Hash {indicator} | MITRE: {m} (requires file inspection)\n'
-    else:
-        rule_line = f'# Unknown type {typ} {indicator} | MITRE: {m}\n'
-    with open(RULE_FILE,"a") as f:
-        f.write(rule_line)
+    conn.close()
 
-# ---------------- FEEDS ----------------
-def fetch_threatfox():
-    try:
-        url="https://threatfox.abuse.ch/export/json/recent/"
-        r = requests.get(url, timeout=10).json()
-        for i in r.get("data", [])[:40]:
-            insert_threat(i.get("ioc","unknown"), i.get("ioc_type","unknown"), 85)
-    except: pass
+# Background thread to fetch and update data periodically
+def update_data_loop(interval=300):
+    while True:
+        data = fetch_external_data()
+        save_data_to_db(data)
+        time.sleep(interval)
 
-def fetch_feodo():
-    try:
-        url="https://feodotracker.abuse.ch/downloads/ipblocklist.json"
-        data = requests.get(url, timeout=10).json()
-        for i in data[:40]:
-            insert_threat(i.get("ip_address","0.0.0.0"), "ip", 90)
-    except: pass
+threading.Thread(target=update_data_loop, daemon=True).start()
 
-def fetch_urlhaus():
-    try:
-        url="https://urlhaus.abuse.ch/downloads/csv_recent/"
-        data = requests.get(url, timeout=10).text.splitlines()
-        reader = csv.reader(data)
-        for row in list(reader)[10:50]:
-            if len(row)>2:
-                insert_threat(row[2],"url",70)
-    except: pass
-
-def fetch_hashes():
-    try:
-        url="https://mb-api.abuse.ch/api/v1/"
-        r = requests.post(url, data={"query":"get_recent"}, timeout=10).json()
-        for item in r.get("data", [])[:40]:
-            insert_threat(item.get("sha256_hash",""), "hash", 75)
-    except: pass
-
-def fetch_feeds():
-    fetch_threatfox()
-    fetch_feodo()
-    fetch_hashes()
-    fetch_urlhaus()
-
-# ---------------- SCHEDULER ----------------
-def scheduler():
-    fetch_feeds()
-    threading.Timer(900, scheduler).start()  # every 15 min
-
-def start_scheduler():
-    threading.Thread(target=scheduler, daemon=True).start()
-
-# ---------------- SECURENATION INDEX ----------------
-def securenation():
-    rows = db().execute("SELECT severity FROM threats ORDER BY id DESC LIMIT 100").fetchall()
-    if not rows: return 0
-    val = round(sum([r["severity"] for r in rows])/len(rows),1)
-    if val>=85: color="#FF3C3C"
-    elif val>=70: color="#FFA500"
-    else: color="#00FF99"
-    return val, color
-
-# ---------------- CTI HIGHLIGHT ----------------
-def cti_highlight():
-    rows=db().execute("""
-        SELECT indicator, type, sector, mitre, severity, created 
-        FROM threats ORDER BY id DESC LIMIT 5
-    """).fetchall()
-    highlights=[]
-    for r in rows:
-        statement = f"A new {r['type']} indicator targeting {r['sector']} sector leveraging {r['mitre']} detected."
-        highlights.append({"statement": statement, "created": r["created"]})
-    latest_time = rows[0]["created"] if rows else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    return latest_time, highlights
-
-# ---------------- NIKKEI STYLE CHART ----------------
-def nikkei_chart(x,y,title):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=x, y=y, mode='lines+markers',
-        line=dict(color="#00FFCC", width=4, shape='spline', smoothing=1.3),
-        marker=dict(size=10, color="#FFFFFF", line=dict(width=2, color="#00FFCC"))
-    ))
-    fig.update_layout(plot_bgcolor="#0b1b2a",
-                      paper_bgcolor="#0b1b2a",
-                      font_color="#A3B8CC",
-                      title=title,
-                      xaxis=dict(showgrid=False),
-                      yaxis=dict(showgrid=False))
-    return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
-
-def malaysia_map():
-    rows = db().execute("SELECT lat,lon,severity FROM threats").fetchall()
-    lat, lon = [r["lat"] for r in rows], [r["lon"] for r in rows]
-    sev = [r["severity"] for r in rows]
-    colors = ["#FF3C3C" if s>=85 else "#FF9900" if s>=70 else "#FFFF00" for s in sev]
-    sizes = [20 if s>=85 else 14 if s>=70 else 10 for s in sev]
-    fig = go.Figure()
-    fig.add_trace(go.Scattermapbox(
-        lat=lat, lon=lon, mode="markers",
-        marker=dict(size=sizes, color=colors, opacity=0.8),
-        text=[f"Severity: {s}" for s in sev],
-        hoverinfo="text"
-    ))
-    fig.update_layout(
-        mapbox_style="carto-darkmatter",
-        mapbox_center={"lat":4.5,"lon":102},
-        mapbox_zoom=4,
-        paper_bgcolor="#0b1b2a",
-        margin=dict(l=0,r=0,t=0,b=0),
-        mapbox=dict(accesstoken=None)
-    )
-    return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
-
-def timeline_chart():
-    rows=db().execute("SELECT substr(created,1,10) d, COUNT(*) c FROM threats GROUP BY d ORDER BY d").fetchall()
-    return nikkei_chart([r["d"] for r in rows],[r["c"] for r in rows],"Threat Timeline")
-
-def sector_chart():
-    rows=db().execute("SELECT sector, COUNT(*) c FROM threats GROUP BY sector ORDER BY c DESC").fetchall()
-    return nikkei_chart([r["sector"] for r in rows],[r["c"] for r in rows],"Sector Targeting")
-
-def indicator_type_chart():
-    rows=db().execute("SELECT type, COUNT(*) c FROM threats GROUP BY type").fetchall()
-    return nikkei_chart([r["type"] for r in rows],[r["c"] for r in rows],"Indicator Type Distribution")
-
-def mitre_chart():
-    rows=db().execute("SELECT mitre, COUNT(*) c FROM threats GROUP BY mitre").fetchall()
-    return nikkei_chart([r["mitre"] for r in rows],[r["c"] for r in rows],"MITRE Techniques Trend")
-
-# ---------------- DASHBOARD HTML ----------------
-HTML = """<html>
-<head>
-<title>RedShark Threat Intelligence Dashboard</title>
-<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-<link rel="stylesheet" href="https://cdn.datatables.net/1.13.4/css/jquery.dataTables.min.css">
-<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-<script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
-<style>
-body{background:#0b1b2a;color:#A3B8CC;font-family:Arial;}
-.card{background:#13263b;padding:20px;margin:15px;border-radius:8px;}
-table{width:100%;border-collapse:collapse;}
-td,th{padding:8px;border-bottom:1px solid #1f3d5c;text-align:center;}
-.center{text-align:center;margin-top:15px;}
-button.download-btn{
-    background:#2A3A4B;color:#A3B8CC;font-weight:bold;padding:10px 18px;
-    border:none;border-radius:5px;margin-right:8px;cursor:pointer;
-}
-button.download-btn:hover{background:#3A4A5C;}
-.secure-index{font-weight:bold;font-size:1.5em;}
-</style>
-</head>
-<body>
-<h2>RedShark Threat Intelligence Dashboard</h2>
-
-<div class="card">
-SecureNation Index: <span class="secure-index" style="color:{{index_color}}">{{index}}</span>
-</div>
-
-<div class="card">
-<h3>CTI Highlight at {{highlight_time}}</h3>
-<ul>
-{% for b in highlights %}
-<li>{{b.statement}}</li>
-{% endfor %}
-</ul>
-</div>
-
-<div class="card">
-<h3>Malaysia Cyber Attack Map</h3>
-<div id="map" style="height:400px;"></div>
-</div>
-
-<div class="card">
-<h3>Threat Timeline</h3>
-<div id="timeline" style="height:300px;"></div>
-</div>
-
-<div class="card">
-<h3>MITRE ATT&CK Techniques</h3>
-<div id="mitre" style="height:300px;"></div>
-</div>
-
-<div class="card">
-<h3>Sector Targeting</h3>
-<div id="sector" style="height:300px;"></div>
-</div>
-
-<div class="card">
-<h3>Indicator Type Distribution</h3>
-<div id="indicator_type" style="height:300px;"></div>
-</div>
-
-<div class="card">
-<h3>Latest Threat Indicators</h3>
-<table id="threat_table">
-<thead>
-<tr><th>ID</th><th>Indicator</th><th>Type</th><th>Sector</th><th>Severity</th><th>MITRE</th><th>Timestamp</th></tr>
-</thead>
-<tbody>
-{% for r in rows %}
-<tr>
-<td>{{r.id}}</td>
-<td>{{r.indicator}}</td>
-<td>{{r.type}}</td>
-<td>{{r.sector}}</td>
-<td>{{r.severity}}</td>
-<td>{{r.mitre}}</td>
-<td>{{r.created}}</td>
-</tr>
-{% endfor %}
-</tbody>
-</table>
-</div>
-
-<div class="center">
-<button class="download-btn" onclick="window.location='/csv'">CSV</button>
-<button class="download-btn" onclick="window.location='/json'">JSON</button>
-<button class="download-btn" onclick="window.location='/pdf'">PDF</button>
-<button class="download-btn" onclick="window.location='/download_ips'">IPS RULE</button>
-</div>
-
-<script>
-var timeline={{timeline|safe}};
-var mitre={{mitre|safe}};
-var sector={{sector|safe}};
-var indicator_type={{indicator_type|safe}};
-var map={{map|safe}};
-Plotly.newPlot("timeline",timeline.data,timeline.layout);
-Plotly.newPlot("mitre",mitre.data,mitre.layout);
-Plotly.newPlot("sector",sector.data,sector.layout);
-Plotly.newPlot("indicator_type",indicator_type.data,indicator_type.layout);
-Plotly.newPlot("map",map.data,map.layout);
-
-$(document).ready(function(){ $('#threat_table').DataTable(); });
-</script>
-</body>
-</html>
-"""
-
-# ---------------- DASHBOARD ROUTE ----------------
+# Flask routes
 @app.route("/")
 def dashboard():
-    index, index_color = securenation()
-    highlight_time, highlights = cti_highlight()
-    rows=db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall()
-    return render_template_string(
-        HTML,
-        rows=rows,
-        index=index,
-        index_color=index_color,
-        highlight_time=highlight_time,
-        highlights=highlights,
-        timeline=timeline_chart(),
-        mitre=mitre_chart(),
-        sector=sector_chart(),
-        indicator_type=indicator_type_chart(),
-        map=malaysia_map()
-    )
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT indicator, type, source, severity, first_seen, last_seen FROM indicators ORDER BY last_seen DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    html_template = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>CTI Dashboard v3</title>
+        <style>
+            body { font-family: Arial, sans-serif; background-color: #1e1e2f; color: #f0f0f0; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #444; padding: 8px; text-align: left; }
+            th { background-color: #282843; }
+            tr:nth-child(even) { background-color: #2b2b3b; }
+            .high { color: #ff4c4c; font-weight: bold; }
+            .medium { color: #ffa500; }
+            .low { color: #00ffcc; }
+        </style>
+    </head>
+    <body>
+        <h1>CTI Dashboard v3</h1>
+        <table>
+            <tr>
+                <th>Indicator</th>
+                <th>Type</th>
+                <th>Source</th>
+                <th>Severity</th>
+                <th>First Seen</th>
+                <th>Last Seen</th>
+            </tr>
+            {% for row in rows %}
+            <tr>
+                <td>{{ row[0] }}</td>
+                <td>{{ row[1] }}</td>
+                <td>{{ row[2] }}</td>
+                <td class="{{ row[3]|lower }}">{{ row[3] }}</td>
+                <td>{{ row[4] }}</td>
+                <td>{{ row[5] }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        <p>Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available sources.</p>
+    </body>
+    </html>
+    """
+    return render_template_string(html_template, rows=rows)
 
-# ---------------- EXPORT ----------------
-@app.route("/csv")
-def csv_export():
-    rows=db().execute("SELECT * FROM threats").fetchall()
-    out=io.StringIO()
-    writer=csv.writer(out)
-    if rows: writer.writerow(rows[0].keys())
-    for r in rows: writer.writerow(list(r))
-    mem=io.BytesIO(); mem.write(out.getvalue().encode()); mem.seek(0)
-    return send_file(mem,download_name="threats.csv",as_attachment=True)
+# Export routes
+@app.route("/export/csv")
+def export_csv():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM indicators")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID","Indicator","Type","Source","Severity","First Seen","Last Seen","Description"])
+    writer.writerows(rows)
+    output.seek(0)
+    
+    return send_file(io.BytesIO(output.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name="cti_export.csv")
 
-@app.route("/json")
-def json_export():
-    rows=db().execute("SELECT * FROM threats").fetchall()
-    data=[dict(r) for r in rows]
-    mem=io.BytesIO(); mem.write(json.dumps(data,indent=2).encode()); mem.seek(0)
-    return send_file(mem,download_name="threats.json",as_attachment=True)
-
-@app.route("/pdf")
-def pdf_export():
-    rows=db().execute("SELECT indicator,type,sector,severity,mitre,created FROM threats LIMIT 50").fetchall()
-    buffer=io.BytesIO()
-    data=[["Indicator","Type","Sector","Severity","MITRE","Timestamp"]]
+@app.route("/export/json")
+def export_json():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM indicators")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    data = []
     for r in rows:
-        data.append([r["indicator"],r["type"],r["sector"],r["severity"],r["mitre"],r["created"]])
-    pdf=SimpleDocTemplate(buffer,pagesize=landscape(A4))
-    table=Table(data)
-    pdf.build([table])
+        data.append({
+            "id": r[0],
+            "indicator": r[1],
+            "type": r[2],
+            "source": r[3],
+            "severity": r[4],
+            "first_seen": r[5],
+            "last_seen": r[6],
+            "description": r[7]
+        })
+    
+    return jsonify(data)
+
+# PDF export route
+@app.route("/export/pdf")
+def export_pdf():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT indicator, type, source, severity, first_seen, last_seen, description FROM indicators ORDER BY last_seen DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    elements = []
+    
+    styles = getSampleStyleSheet()
+    title_style = styles['Heading1']
+    normal_style = styles['Normal']
+    
+    elements.append(Paragraph("CTI Dashboard Export", title_style))
+    elements.append(Spacer(1, 12))
+    
+    # Build table data
+    table_data = [["Indicator","Type","Source","Severity","First Seen","Last Seen","Description"]]
+    for r in rows:
+        table_data.append(list(r))
+    
+    table = Table(table_data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.darkblue),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
+        ('ALIGN',(0,0),(-1,-1),'LEFT'),
+        ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
+        ('BOTTOMPADDING',(0,0),(-1,0),12),
+        ('BACKGROUND',(0,1),(-1,-1),colors.HexColor('#2b2b3b')),
+        ('GRID',(0,0),(-1,-1),0.5,colors.grey),
+    ]))
+    elements.append(table)
+    doc.build(elements)
+    
     buffer.seek(0)
-    return send_file(buffer,download_name="redshark-cti-report.pdf",as_attachment=True)
+    return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name="cti_export.pdf")
 
-@app.route("/download_ips")
-def download_ips():
-    if not os.path.exists(RULE_FILE):
-        open(RULE_FILE,"w").close()
-    return send_file(RULE_FILE, download_name="redshark-ips-signatures.rules", as_attachment=True)
 
-# ---------------- STARTUP ----------------
-try:
-    fetch_feeds()  # initial fetch
-except Exception as e:
-    print("Initial fetch failed:", e)
+# Route for top 10 indicators by frequency
+@app.route("/top10")
+def top10():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT indicator, type, source, COUNT(*) as freq
+        FROM indicators
+        GROUP BY indicator
+        ORDER BY freq DESC
+        LIMIT 10
+    ''')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    html_template = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Top 10 CTI Indicators</title>
+        <style>
+            body { font-family: Arial, sans-serif; background-color: #1e1e2f; color: #f0f0f0; }
+            table { width: 60%; border-collapse: collapse; margin: 30px auto; }
+            th, td { border: 1px solid #444; padding: 8px; text-align: left; }
+            th { background-color: #282843; }
+            tr:nth-child(even) { background-color: #2b2b3b; }
+        </style>
+    </head>
+    <body>
+        <h1 style="text-align:center;">Top 10 CTI Indicators</h1>
+        <table>
+            <tr>
+                <th>Indicator</th>
+                <th>Type</th>
+                <th>Source</th>
+                <th>Frequency</th>
+            </tr>
+            {% for row in rows %}
+            <tr>
+                <td>{{ row[0] }}</td>
+                <td>{{ row[1] }}</td>
+                <td>{{ row[2] }}</td>
+                <td>{{ row[3] }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </body>
+    </html>
+    """
+    return render_template_string(html_template, rows=rows)
 
-start_scheduler()
+
+# Interactive map route
+@app.route("/map")
+def map_dashboard():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT indicator, type, severity FROM indicators")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    # Prepare map points for JS (dummy lat/lon for demonstration)
+    points = []
+    for r in rows:
+        lat = random.uniform(-5, 5) + 3  # Adjust for Malaysia-like region
+        lon = random.uniform(100, 120) + 101
+        points.append({
+            "indicator": r[0],
+            "type": r[1],
+            "severity": r[2],
+            "lat": lat,
+            "lon": lon
+        })
+    
+    html_template = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>CTI Map Dashboard</title>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <style>
+            body { margin:0; padding:0; }
+            #map { width: 100%; height: 90vh; }
+            .high { color: red; font-weight:bold; }
+            .medium { color: orange; }
+            .low { color: green; }
+            .critical { color: darkred; font-weight:bold; text-decoration: blink; }
+        </style>
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    </head>
+    <body>
+        <h2 style="text-align:center;">CTI Map Dashboard</h2>
+        <div id="map"></div>
+        <script>
+            var map = L.map('map').setView([4.0, 102.0], 6);
+            L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 18
+            }).addTo(map);
+
+            var points = {{ points|tojson }};
+
+            points.forEach(function(p) {
+                var color = "blue";
+                if(p.severity.toLowerCase() === "high") color = "orange";
+                if(p.severity.toLowerCase() === "critical") color = "red";
+                if(p.severity.toLowerCase() === "medium") color = "yellow";
+                if(p.severity.toLowerCase() === "low") color = "green";
+
+                L.circleMarker([p.lat, p.lon], {
+                    radius: 8,
+                    color: color,
+                    fillColor: color,
+                    fillOpacity: 0.7
+                }).bindPopup("<b>Indicator:</b> " + p.indicator + "<br><b>Type:</b> " + p.type + "<br><b>Severity:</b> " + p.severity)
+                  .addTo(map);
+            });
+        </script>
+        <p style="text-align:center;">Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available sources.</p>
+    </body>
+    </html>
+    """
+    return render_template_string(html_template, points=points)
+
+# Route for dynamic charts (bar chart for severity counts)
+@app.route("/charts")
+def charts_dashboard():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT severity, COUNT(*) FROM indicators GROUP BY severity")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    # Prepare data for JS chart
+    chart_data = {row[0]: row[1] for row in rows}
+    severities = ["Low", "Medium", "High", "Critical"]
+    counts = [chart_data.get(s, 0) for s in severities]
+    
+    html_template = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>CTI Severity Chart</title>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <style>
+            body { font-family: Arial, sans-serif; background-color: #1e1e2f; color: #f0f0f0; text-align:center; }
+            canvas { max-width: 800px; margin: 50px auto; background-color: #2b2b3b; padding: 20px; border-radius: 10px; }
+        </style>
+    </head>
+    <body>
+        <h1>CTI Indicators Severity Chart</h1>
+        <canvas id="severityChart"></canvas>
+        <script>
+            var ctx = document.getElementById('severityChart').getContext('2d');
+            var chart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: {{ severities|tojson }},
+                    datasets: [{
+                        label: 'Number of Indicators',
+                        data: {{ counts|tojson }},
+                        backgroundColor: ['#00ffcc','#ffa500','#ff4c4c','#8b0000'],
+                        borderColor: ['#00ffcc','#ffa500','#ff4c4c','#8b0000'],
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: { beginAtZero: true }
+                    }
+                }
+            });
+        </script>
+        <p>Disclaimer: Developed and analysed by darkgrid@redshark.my using publicly available sources.</p>
+    </body>
+    </html>
+    """
+    return render_template_string(html_template, severities=severities, counts=counts)
+
+
+# Route for manual refresh
+@app.route("/refresh")
+def manual_refresh():
+    data = fetch_external_data()
+    save_data_to_db(data)
+    return "Data manually refreshed at " + datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# Auto-refresh interval control route (optional, can set via query)
+@app.route("/set_interval")
+def set_interval():
+    try:
+        interval = int(request.args.get("seconds", 300))
+        global update_interval
+        update_interval = interval
+        return f"Update interval set to {interval} seconds"
+    except Exception as e:
+        return str(e)
+
+
+# Home route redirect helper (optional)
+@app.route("/home")
+def home_redirect():
+    return dashboard()
+
+
+# Run Flask app
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
