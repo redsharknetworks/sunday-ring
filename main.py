@@ -14,7 +14,7 @@ from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
 app = Flask(__name__)
-DB_FILE = "redshark_v11_3.db"
+DB_FILE = "redshark_v11_4.db"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -93,7 +93,6 @@ def save_iocs(feed):
     conn.commit(); conn.close()
 
 # ---------------- INITIAL POPULATION ---------------- #
-# Populate 50 global IOCs on startup
 save_iocs(generate_feed(50))
 
 # ---------------- THREAT ENGINE ---------------- #
@@ -125,7 +124,7 @@ def dashboard():
     
     malaysia_time=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     highlight="No major threat detected"
-    malaysia_rows=[r for r in rows if -1<r[7]<10 and 100<r[8]<120]  # crude Malaysia region
+    malaysia_rows=[r for r in rows if -1<r[7]<10 and 100<r[8]<120]
     if malaysia_rows:
         latest=malaysia_rows[0]
         highlight=f"{latest[3]} threat {latest[0]} via {latest[2]} at {malaysia_time}"
@@ -199,6 +198,7 @@ Developed and analyzed by darkgrid@redshark.my using publicly available sources
 
 <script>
 $(document).ready(function(){ $('#cti').DataTable({pageLength:50})})
+
 var map=L.map('map').setView([0,0],2)
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
 var points={{rows|tojson}}
@@ -210,11 +210,8 @@ points.forEach(function(p){
     if(p[3]=="Critical") color="darkred"
     var marker=L.circleMarker([lat,lon],{radius:7,color:color,fillOpacity:0.7}).addTo(map)
     .bindPopup(p[0]+"<br>"+p[3])
-    if(p[3]=="Critical"){
-        marker.setStyle({weight:3})
-        setInterval(function(){marker.setStyle({fillOpacity:marker.options.fillOpacity==0.7?1:0.7})},1000)
-    }
 })
+
 var mitre_labels={{rows|map(attribute=4)|list|tojson}}
 var mitre_counts={}
 mitre_labels.forEach(function(m){ mitre_counts[m]=(mitre_counts[m]||0)+1 })
@@ -222,12 +219,14 @@ var sorted_mitre=Object.entries(mitre_counts).sort((a,b)=>b[1]-a[1]).slice(0,10)
 var ctx=document.getElementById('mitre').getContext('2d')
 new Chart(ctx,{type:'bar',data:{labels:sorted_mitre.map(e=>e[0]),datasets:[{label:'MITRE ATT&CK Count',data:sorted_mitre.map(e=>e[1]),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}})
 
+// ---------------- THREE.JS GLOBE WITH ANIMATED ARCS ---------------- //
 var globeContainer=document.getElementById('globe')
 var scene=new THREE.Scene()
 var camera=new THREE.PerspectiveCamera(45,globeContainer.offsetWidth/globeContainer.offsetHeight,0.1,1000)
 var renderer=new THREE.WebGLRenderer({antialias:true})
 renderer.setSize(globeContainer.offsetWidth,globeContainer.offsetHeight)
 globeContainer.appendChild(renderer.domElement)
+
 var sphereGeo=new THREE.SphereGeometry(5,50,50)
 var sphereMat=new THREE.MeshBasicMaterial({color:0x08306b,wireframe:true})
 var globe=new THREE.Mesh(sphereGeo,sphereMat)
@@ -243,19 +242,36 @@ function latLonToVector3(lat,lon,radius){
         radius*Math.sin(phi)*Math.sin(theta)
     )
 }
+
+// create animated arcs
+var arcs=[]
 points.forEach(function(p){
     var origin=latLonToVector3(0,0,5)
     var dest=latLonToVector3(p[7],p[8],5)
-    var mid=origin.clone().lerp(dest,0.5)
-    mid.multiplyScalar(1 + p[5]/100)
+    var mid=origin.clone().lerp(dest,0.5).multiplyScalar(1+p[5]/100)
     var curve=new THREE.QuadraticBezierCurve3(origin,mid,dest)
     var points_curve=curve.getPoints(50)
     var geometry=new THREE.BufferGeometry().setFromPoints(points_curve)
     var material=new THREE.LineBasicMaterial({color:p[3]=="Critical"?0xff0000:0x00ffff,linewidth:2})
     var line=new THREE.Line(geometry,material)
     scene.add(line)
+    arcs.push({line:line,points:points_curve,idx:0})
 })
-var animate=function(){requestAnimationFrame(animate);globe.rotation.y+=0.002;renderer.render(scene,camera)}
+
+// animate arcs as moving dots
+var dotGeom=new THREE.SphereGeometry(0.08,6,6)
+var dotMat=new THREE.MeshBasicMaterial({color:0xffff00})
+arcs.forEach(a=>{a.dot=new THREE.Mesh(dotGeom,dotMat);scene.add(a.dot)})
+
+function animate(){
+    requestAnimationFrame(animate)
+    globe.rotation.y+=0.002
+    arcs.forEach(a=>{
+        a.idx=(a.idx+1)%a.points.length
+        a.dot.position.copy(a.points[a.idx])
+    })
+    renderer.render(scene,camera)
+}
 animate()
 </script>
 </body>
