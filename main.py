@@ -84,12 +84,12 @@ def get_country_from_ip(ip):
     try:
         r = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
         data = r.json()
-        return data.get("country","Unknown")
+        return data.get("country","Unknown"), data.get("lat",0.0), data.get("lon",0.0)
     except:
-        return "Unknown"
+        return "Unknown", 0.0, 0.0
 
 # ===============================
-# Fetch OTX + AbuseIPDB + Spamhaus + EmergingThreats
+# Fetch CTI Feeds
 # ===============================
 
 def fetch_cti_combined():
@@ -98,84 +98,59 @@ def fetch_cti_combined():
 
     feeds = []
 
-    # --- OTX IOC ---
     try:
         r = requests.get(OTX_EXPORT_URL, headers=headers_otx, timeout=30)
-        iocs = r.text.splitlines()
-        feeds += iocs[:120]
-    except Exception as e:
-        print("OTX error:", e)
+        feeds += r.text.splitlines()[:100]
+    except: pass
 
-    # --- Spamhaus DROP ---
     try:
         r = requests.get(SPAMHAUS_DROP_URL, timeout=15)
-        feeds += [line.strip().split()[0] for line in r.text.splitlines() if line and not line.startswith(";")]
-    except:
-        pass
+        feeds += [line.split()[0] for line in r.text.splitlines() if line and not line.startswith(";")][:100]
+    except: pass
 
-    # --- EmergingThreats ---
     try:
         r = requests.get(EMERGINGTHREATS_URL, timeout=15)
-        feeds += [line.strip() for line in r.text.splitlines() if line and not line.startswith("#")]
-    except:
-        pass
+        feeds += [line.strip() for line in r.text.splitlines() if line and not line.startswith("#")][:100]
+    except: pass
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
     for ip in feeds:
         ip = ip.strip()
-        if not ip:
-            continue
-
-        # avoid duplicates
+        if not ip: continue
         exist = c.execute("SELECT id FROM events WHERE ip=?", (ip,)).fetchone()
-        if exist:
-            continue
+        if exist: continue
 
-        # --- Severity via AbuseIPDB ---
         severity = "Low"
         try:
-            params = {"ipAddress": ip, "maxAgeInDays": 90}
-            rep = requests.get(ABUSE_CHECK_URL, headers=headers_abuse, params=params, timeout=15)
+            rep = requests.get(ABUSE_CHECK_URL, headers=headers_abuse, params={"ipAddress": ip,"maxAgeInDays":90}, timeout=15)
             score = rep.json().get("data", {}).get("abuseConfidenceScore", 0)
-            if score >= 80:
-                severity = "High"
-            elif score >= 40:
-                severity = "Medium"
+            if score >= 80: severity="High"
+            elif score >= 40: severity="Medium"
         except:
             severity = "Medium"
 
-        # --- Country Detection ---
-        country = get_country_from_ip(ip)
+        country, src_lat, src_lon = get_country_from_ip(ip)
 
-        # --- Map Malaysia only to Ibu Negeri ---
-        if country == "Malaysia":
+        if country=="Malaysia":
             loc = random.choice(MALAYSIA_LOCATIONS)
+            lat = loc[1]
+            lon = loc[2]
         else:
-            loc = (None, None)  # Lat/Lon optional for non-Malaysia
+            lat = 0.0
+            lon = 0.0
 
         c.execute("""
-        INSERT INTO events(
-            ip,source,severity,country,rule,description,lat,lon,timestamp
-        ) VALUES(?,?,?,?,?,?,?,?,?)
-        """, (
-            ip,
-            "CTI Combined",
-            severity,
-            country,
-            f"RSK-{random.randint(1000,9999)}",
-            "Threat IOC detected",
-            loc[1] if loc[1] else 0.0,
-            loc[2] if loc[2] else 0.0,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ))
+        INSERT INTO events(ip,source,severity,country,rule,description,lat,lon,timestamp)
+        VALUES(?,?,?,?,?,?,?,?,?)
+        """, (ip,"CTI Combined",severity,country,f"RSK-{random.randint(1000,9999)}","Threat IOC detected",lat,lon,datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
     conn.commit()
     conn.close()
 
 # ===============================
-# Initialize Database + Fetch Feeds
+# Initialize DB + Fetch Feeds
 # ===============================
 init_db()
 fetch_cti_combined()
@@ -187,12 +162,12 @@ fetch_cti_combined()
 @app.route("/")
 def dashboard():
     events = get_events()
-
     severity = {s:0 for s in SEVERITIES}
     sources = {}
     countries = {}
     timeline = {}
     mapdata = []
+    lines = []
 
     for e in events:
         severity[e[3]] = severity.get(e[3],0)+1
@@ -200,12 +175,18 @@ def dashboard():
         countries[e[4]] = countries.get(e[4],0)+1
         hour = e[9][0:13]
         timeline[hour] = timeline.get(hour,0)+1
-        mapdata.append({"lat": e[7], "lon": e[8], "sev": e[3], "ip": e[1]})
+
+        if e[4]=="Malaysia":
+            mapdata.append({"lat":e[7],"lon":e[8],"sev":e[3],"ip":e[1]})
+        else:
+            # Draw line toward Malaysia city
+            target = random.choice(MALAYSIA_LOCATIONS)
+            lines.append({"from_lat":e[7],"from_lon":e[8],"to_lat":target[1],"to_lon":target[2],"severity":e[3]})
 
     return render_template_string("""
 <html>
 <head>
-<title>RedShark CTI v19</title>
+<title>RedShark CTI v19.1</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{background:#0f1720;color:#e5e7eb;font-family:Arial;}
@@ -220,7 +201,7 @@ th,td{padding:10px;border-bottom:1px solid #1f2937;}
 </head>
 <body>
 <div class="header">
-RedShark Cyber Threat Intelligence Platform v19
+RedShark Cyber Threat Intelligence Platform v19.1
 <div style="font-size:12px">CTI Highlight {{time}}</div>
 </div>
 
@@ -257,12 +238,30 @@ Developed and analysed by darkgrid@redshark.my using publicly available sources
 
 <script>
 var map={{mapdata|tojson}};
-Plotly.newPlot("map",[{
-type:"scattergeo",mode:"markers",
-lat:map.map(x=>x.lat),lon:map.map(x=>x.lon),
-text:map.map(x=>x.ip),
-marker:{size:10,color:map.map(x=>x.sev=="High"?"red":x.sev=="Medium"?"orange":"cyan")}
-}],{geo:{scope:"asia",center:{lat:4,lon:109},projection:{scale:7}},paper_bgcolor:"#0f1720"});
+var lines={{lines|tojson}};
+
+var traces = [];
+lines.forEach(function(l){
+    traces.push({
+        type:'scattergeo',
+        mode:'lines',
+        lon:[l.from_lon,l.to_lon],
+        lat:[l.from_lat,l.to_lat],
+        line:{width:l.severity=="High"?3:1,color:l.severity=="High"?"red":"orange"},
+        opacity:0.7
+    });
+});
+
+traces.push({
+    type:'scattergeo',
+    mode:'markers',
+    lon: map.map(x=>x.lon),
+    lat: map.map(x=>x.lat),
+    text: map.map(x=>x.ip),
+    marker:{size:10,color:map.map(x=>x.sev=="High"?"red":x.sev=="Medium"?"orange":"cyan")}
+});
+
+Plotly.newPlot("map",traces,{geo:{scope:"asia",center:{lat:4,lon:109},projection:{scale:7}},paper_bgcolor:"#0f1720"});
 
 var sev={{severity|tojson}};
 Plotly.newPlot("sev",[{
@@ -285,8 +284,7 @@ x:Object.keys(tl),y:Object.values(tl),type:"scatter"
 }]);
 </script>
 </body></html>
-""", events=events, mapdata=mapdata, severity=severity, sources=sources,
-countries=countries, timeline=timeline, time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+""", events=events, mapdata=mapdata, lines=lines, severity=severity, sources=sources, countries=countries, timeline=timeline, time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 # ===============================
 # Run
