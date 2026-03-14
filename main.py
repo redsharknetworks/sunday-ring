@@ -12,7 +12,7 @@ from reportlab.lib.pagesizes import letter
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
-DB_FILE = "redshark_v11.db"
+DB_FILE = "redshark_v11_6.db"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -53,7 +53,7 @@ def random_ip(): return f"{random.randint(1,255)}.{random.randint(0,255)}.{rando
 def random_domain(): return f"malicious{random.randint(1,999)}.net"
 def random_hash(): return os.urandom(16).hex()
 def threat_score(sev): return {"Low": random.randint(10,30),"Medium": random.randint(40,60),"High": random.randint(70,85),"Critical": random.randint(90,100)}[sev]
-def random_location(): return (random.uniform(-90,90), random.uniform(-180,180))
+def random_location(): return (random.uniform(-60,70), random.uniform(-180,180))
 
 def generate_feed(num_entries=25):
     feeds=["OTX","Talos","AbuseIPDB"]
@@ -92,7 +92,6 @@ def save_iocs(feed):
 # ---------------- SCHEDULED INGESTION ---------------- #
 def scheduled_ingest():
     save_iocs(generate_feed(25))
-    print(f"[{datetime.utcnow().isoformat()}] Saved 25 IOCs")
 scheduler = BackgroundScheduler()
 scheduler.add_job(scheduled_ingest,'interval',minutes=1)
 scheduler.start()
@@ -113,16 +112,112 @@ def dashboard():
         FROM indicators ORDER BY last_seen DESC
         """)
     rows=c.fetchall(); conn.close()
-    
+
     malaysia_time=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-    highlight="No major threat detected"
     malaysia_rows=[r for r in rows if -1<r[7]<10 and 100<r[8]<120]
+    highlight="No major threat detected"
     if malaysia_rows:
         latest=malaysia_rows[0]
         highlight=f"{latest[3]} threat {latest[0]} via {latest[2]} at {malaysia_time}"
     ticker=[f"{r[3]} {r[0]} via {r[2]}" for r in rows[:15]]
-    
-    html = """..."""  # Same as previous v11.5 dashboard HTML (with global map, MITRE chart, table, download buttons, disclaimer)
+
+    html="""
+<!DOCTYPE html>
+<html>
+<head>
+<title>RedShark Threat Intelligence Dashboard</title>
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body{background:#020617;color:white;font-family:Arial}
+h1{text-align:center;color:#38bdf8}
+.highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red}
+.ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155}
+#map{height:450px;margin:20px}
+#mitre{height:250px;margin:20px}
+.low{color:green}
+.medium{color:orange}
+.high{color:red}
+.critical{color:red;font-weight:bold;animation:blink 1s infinite}
+@keyframes blink{50%{opacity:0}}
+</style>
+</head>
+<body>
+<h1>RedShark Threat Intelligence Dashboard</h1>
+<div class="highlight"><b>Latest Malaysia Security Highlight (GMT+8)</b><br>{{highlight}}</div>
+<form method="get" style="text-align:center">
+<input name="q" placeholder="Search IOC">
+<button type="submit">Search</button>
+</form>
+<div class="ticker">{% for t in ticker %}🚨 {{t}} &nbsp;&nbsp;{% endfor %}</div>
+<div id="map"></div>
+<canvas id="mitre"></canvas>
+<table id="cti" class="display">
+<thead>
+<tr>
+<th>Indicator</th>
+<th>Type</th>
+<th>Source</th>
+<th>Severity</th>
+<th>MITRE</th>
+<th>Score</th>
+<th>Country</th>
+<th>Last Seen</th>
+</tr>
+</thead>
+<tbody>
+{% for r in rows %}
+<tr>
+<td>{{r[0]}}</td>
+<td>{{r[1]}}</td>
+<td>{{r[2]}}</td>
+<td class="{{r[3]|lower}}">{{r[3]}}</td>
+<td>{{r[4]}}</td>
+<td>{{r[5]}}</td>
+<td>{{r[6]}}</td>
+<td>{{r[9]}}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+<div style="text-align:center;margin:20px">
+<button onclick="window.location='/export/json'">JSON</button>
+<button onclick="window.location='/export/csv'">CSV</button>
+<button onclick="window.location='/export/pdf'">PDF</button>
+<button onclick="window.location='/export/ids'">IDS</button>
+<button onclick="window.location='/export/zip'">IOC ZIP</button>
+<button onclick="window.location='/refresh'">Refresh Feed</button>
+</div>
+<div style="text-align:center;font-size:12px;color:gray;margin-top:20px">
+Developed & analyzed by darkgrid@redshark.my using publicly available sources
+</div>
+<script>
+$(document).ready(function(){ $('#cti').DataTable({pageLength:50})})
+var map=L.map('map').setView([20,0],2)
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
+var points={{rows|tojson}}
+points.forEach(function(p){
+var lat=p[7],lon=p[8],color="blue"
+if(p[3]=="Low")color="green"
+if(p[3]=="Medium")color="orange"
+if(p[3]=="High")color="red"
+if(p[3]=="Critical")color="darkred"
+L.circleMarker([lat,lon],{radius:7,color:color,fillOpacity:0.7}).addTo(map)
+.bindPopup(p[0]+"<br>"+p[3])
+})
+var mitre_labels = {{rows|map(attribute=4)|list|tojson}}
+var mitre_counts = {}
+mitre_labels.forEach(function(m){ mitre_counts[m]=(mitre_counts[m]||0)+1 })
+var ctx = document.getElementById('mitre').getContext('2d')
+new Chart(ctx,{type:'bar',data:{labels:Object.keys(mitre_counts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitre_counts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}})
+</script>
+</body>
+</html>
+"""
     return render_template_string(html, rows=rows, highlight=highlight, ticker=ticker)
 
 # ---------------- EXPORTS ---------------- #
@@ -158,6 +253,7 @@ def export_zip():
     mem.seek(0)
     return send_file(mem,as_attachment=True,download_name="redshark_iocs.zip")
 
+# ---------------- REFRESH ---------------- #
 @app.route("/refresh")
 def refresh():
     save_iocs(generate_feed(25))
