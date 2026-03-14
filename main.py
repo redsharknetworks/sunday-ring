@@ -1,15 +1,15 @@
-import os, io, csv, json, sqlite3, threading, time, random, requests
+import os, io, csv, json, sqlite3, threading, time, requests, random
 from datetime import datetime
 from flask import Flask, render_template_string, send_file, jsonify
 from zipfile import ZipFile
 from collections import deque
 
 app = Flask(__name__)
-DB = "soc_full.db"
+DB = "soc_v3_real.db"
 
-# ==================================
-# DATABASE INIT (THREAD-SAFE)
-# ==================================
+# -----------------------------
+# DATABASE INIT
+# -----------------------------
 def init_db():
     conn = sqlite3.connect(DB, check_same_thread=False)
     c = conn.cursor()
@@ -26,29 +26,40 @@ def init_db():
         cluster_id INTEGER,
         lat REAL,
         lon REAL,
-        created TEXT
+        fetched_at TEXT
     )
     """)
     conn.commit(); conn.close()
 
 init_db()
 
-# ==================================
+# -----------------------------
 # MITRE MAPPING
-# ==================================
+# -----------------------------
 def mitre_map(cat):
-    mapping = {
-        "C2":"Command and Control",
-        "Recon":"Reconnaissance",
-        "Botnet":"Persistence",
-        "Phishing":"Initial Access",
-        "Malware":"Execution"
-    }
+    mapping = {"C2":"Command and Control",
+               "Recon":"Reconnaissance",
+               "Botnet":"Persistence",
+               "Phishing":"Initial Access",
+               "Malware":"Execution"}
     return mapping.get(cat,"Unknown")
 
-# ==================================
-# GEO ENRICHMENT
-# ==================================
+# -----------------------------
+# Threat ingestion feeds
+# -----------------------------
+FEEDS = {
+    "Feodo Tracker": "https://feodotracker.abuse.ch/downloads/ipblocklist.txt",
+    "EmergingThreats Block": "https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt",
+    "EmergingThreats Compromised": "https://rules.emergingthreats.net/blockrules/compromised-ips.txt",
+    "Blocklist.de": "https://lists.blocklist.de/lists/all.txt"
+}
+
+# In-memory latest threats cache
+latest_threats = deque(maxlen=100)
+
+# -----------------------------
+# GEO enrichment
+# -----------------------------
 def geo_ip(ip):
     try:
         r = requests.get(f"http://ip-api.com/json/{ip}", timeout=5).json()
@@ -56,49 +67,28 @@ def geo_ip(ip):
     except:
         return "Unknown","Unknown",0,0
 
-# ==================================
-# THREAT FEEDS (demo)
-# ==================================
-def fetch_spamhaus():
-    try:
-        r = requests.get("https://www.spamhaus.org/drop/drop.txt", timeout=20)
-        return [l.split(";")[0].strip() for l in r.text.splitlines() if l and not l.startswith(";") and "/" in l][:50]
-    except:
-        return []
-
-# ==================================
-# AI THREAT CLUSTERING (demo)
-# ==================================
-def assign_cluster(ip):
-    return random.randint(1,5)
-
-# ==================================
-# IN-MEMORY CACHE FOR LIVE MAP
-# ==================================
-latest_threats = deque(maxlen=50)
-
-# ==================================
-# STORE THREAT (THREAD SAFE)
-# ==================================
-def store(ip, source):
+# -----------------------------
+# Store threat
+# -----------------------------
+def store_threat(ip, source):
     categories=["C2","Recon","Botnet","Malware","Phishing"]
     sev=random.choice(["Low","Medium","High","Critical"])
     cat=random.choice(categories)
-    mitre=mitre_map(cat)
+    mitre = mitre_map(cat)
     country, asn, lat, lon = geo_ip(ip)
-    cluster = assign_cluster(ip)
+    cluster = random.randint(1,5)
 
     # store to DB
     conn = sqlite3.connect(DB, check_same_thread=False)
     c = conn.cursor()
     c.execute("""
-        INSERT INTO threats(ip,country,asn,category,severity,mitre,source,cluster_id,lat,lon,created)
+        INSERT INTO threats(ip,country,asn,category,severity,mitre,source,cluster_id,lat,lon,fetched_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-    """,(ip, country, asn, cat, sev, mitre, source, cluster, lat, lon, datetime.utcnow().isoformat()))
+    """,(ip,country,asn,cat,sev,mitre,source,cluster,lat,lon,datetime.utcnow().isoformat()))
     conn.commit(); conn.close()
 
-    # store to live cache for map
-    latest_threats.append({
+    # store to cache for live map
+    latest_threats.appendleft({
         "ip": ip,
         "country": country,
         "asn": asn,
@@ -112,23 +102,43 @@ def store(ip, source):
         "time": datetime.utcnow().isoformat()
     })
 
-# ==================================
-# INGESTION LOOP (multi-thread safe)
-# ==================================
-def ingestion_loop():
+# -----------------------------
+# Fetch feed
+# -----------------------------
+def fetch_feed(name, url):
+    try:
+        r = requests.get(url, timeout=15)
+        lines = r.text.splitlines()
+        ips = []
+        for l in lines:
+            l = l.strip()
+            if not l or l.startswith("#") or l.startswith(";"):
+                continue
+            parts = l.split()
+            ip = parts[0]
+            if ip.count(".") == 3:
+                ips.append(ip)
+        return ips
+    except Exception as e:
+        print(f"Error fetching feed {name}: {e}")
+        return []
+
+# -----------------------------
+# Ingestion loop (real feeds)
+# -----------------------------
+def ingest_loop():
     while True:
-        try:
-            ips = fetch_spamhaus()
-            for ip in ips: store(ip,"Spamhaus")
-        except:
-            pass
-        time.sleep(1800)  # every 30 min
+        for name,url in FEEDS.items():
+            ips = fetch_feed(name,url)
+            for ip in ips:
+                store_threat(ip,name)
+        time.sleep(3600)  # every 1 hour
 
-threading.Thread(target=ingestion_loop, daemon=True).start()
+threading.Thread(target=ingest_loop, daemon=True).start()
 
-# ==================================
-# THREAT INDEX
-# ==================================
+# -----------------------------
+# Threat index
+# -----------------------------
 def threat_index():
     conn = sqlite3.connect(DB, check_same_thread=False)
     c = conn.cursor()
@@ -142,48 +152,48 @@ def threat_index():
         total += count
     return round(score/total,2) if total>0 else 0
 
-# ==================================
-# API FOR LIVE DATA
-# ==================================
+# -----------------------------
+# API
+# -----------------------------
 @app.route("/api/threats")
-def api():
+def api_threats():
     return jsonify(list(latest_threats))
 
-# ==================================
-# REPORT EXPORTS
-# ==================================
+# -----------------------------
+# Downloads
+# -----------------------------
 @app.route("/download/csv")
 def download_csv():
     conn = sqlite3.connect(DB, check_same_thread=False)
     c = conn.cursor(); c.execute("SELECT * FROM threats"); rows = c.fetchall(); conn.close()
     output = io.StringIO(); writer = csv.writer(output)
-    writer.writerow(["ID","IP","Country","ASN","Category","Severity","MITRE","Source","Cluster","Lat","Lon","Created"])
+    writer.writerow(["ID","IP","Country","ASN","Category","Severity","MITRE","Source","Cluster","Lat","Lon","FetchedAt"])
     for r in rows: writer.writerow(r)
     mem = io.BytesIO(); mem.write(output.getvalue().encode()); mem.seek(0)
-    return send_file(mem, download_name="soc_full.csv", as_attachment=True)
+    return send_file(mem, download_name="soc_real.csv", as_attachment=True)
 
 @app.route("/download/json")
 def download_json():
     conn = sqlite3.connect(DB, check_same_thread=False)
     c = conn.cursor(); c.execute("SELECT * FROM threats"); rows = c.fetchall(); conn.close()
     mem = io.BytesIO(); mem.write(json.dumps(rows, indent=2).encode()); mem.seek(0)
-    return send_file(mem, download_name="soc_full.json", as_attachment=True)
+    return send_file(mem, download_name="soc_real.json", as_attachment=True)
 
 @app.route("/download/rules")
 def download_rules():
     conn = sqlite3.connect(DB, check_same_thread=False)
     c = conn.cursor(); c.execute("SELECT ip FROM threats"); ips = c.fetchall(); conn.close()
-    rules=""
+    rules = ""
     for ip in ips:
-        rules += f"alert ip {ip[0]} any -> any any (msg:\"SOC Full Block {ip[0]}\"; sid:{random.randint(100000,999999)};)\n"
-    mem = io.BytesIO(); 
-    with ZipFile(mem,'w') as z: z.writestr("soc_full_rules.rules", rules)
+        rules += f"alert ip {ip[0]} any -> any any (msg:\"SOC Real Block {ip[0]}\"; sid:{random.randint(100000,999999)};)\n"
+    mem = io.BytesIO()
+    with ZipFile(mem,'w') as z: z.writestr("soc_real_rules.rules", rules)
     mem.seek(0)
-    return send_file(mem, download_name="soc_full_rules.zip", as_attachment=True)
+    return send_file(mem, download_name="soc_real_rules.zip", as_attachment=True)
 
-# ==================================
-# DASHBOARD UI (Dark-Blue-Grey Theme)
-# ==================================
+# -----------------------------
+# Dashboard
+# -----------------------------
 @app.route("/")
 def dashboard():
     title = f"CTI HIGHLIGHT AT {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -204,18 +214,14 @@ canvas{{background:#0e1a2b;display:block;margin:20px auto;border:1px solid #3341
 <body>
 <h1>{title}</h1>
 <h3>Threat Index: {threat_index()}</h3>
-
 <canvas id="map" width="1000" height="500"></canvas>
-
 <table id="tbl">
 <tr><th>IP</th><th>Country</th><th>ASN</th><th>Category</th><th>Severity</th><th>MITRE</th><th>Source</th><th>Cluster</th><th>Lat</th><th>Lon</th><th>Time</th></tr>
 </table>
-
 <br>
 <button onclick="window.location='/download/csv'">CSV</button>
 <button onclick="window.location='/download/json'">JSON</button>
 <button onclick="window.location='/download/rules'">IDS Rules</button>
-
 <br><small>Developed and analysed by darkgrid@redshark.my using publicly available sources</small>
 
 <script>
@@ -242,7 +248,6 @@ function drawMap(){{
         let y = canvas.height*(90-t.lat)/180
         ctx.beginPath(); ctx.arc(x,y,4,0,2*Math.PI)
         ctx.fillStyle = (t.severity=="Critical") ? "#ff4c4c" : "#00ffae"; ctx.fill()
-        // Draw simple attack lines from Malaysia (lat 4.2 lon 101.7)
         ctx.beginPath(); ctx.moveTo(canvas.width*(180+101.7)/360, canvas.height*(90-4.2)/180)
         ctx.lineTo(x,y); ctx.stroke()
     }})
@@ -255,6 +260,5 @@ loadData(); setInterval(loadData,30000); drawMap()
 """
     return html
 
-# ==================================
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
