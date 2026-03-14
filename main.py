@@ -12,7 +12,7 @@ from reportlab.lib.pagesizes import letter
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
-DB_FILE = "redshark_v11_6.db"
+DB_FILE = "redshark_v11_7.db"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -88,6 +88,14 @@ def save_iocs(feed):
         """,(f["indicator"],f["type"],f["source"],f["severity"],f["mitre"],
              f["score"],f["country"],f["lat"],f["lon"],f["first_seen"],f["last_seen"]))
     conn.commit(); conn.close()
+
+# ---------------- INITIAL POPULATE ---------------- #
+conn = sqlite3.connect(DB_FILE)
+c = conn.cursor()
+c.execute("SELECT COUNT(*) FROM indicators")
+if c.fetchone()[0]==0:
+    save_iocs(generate_feed(50))
+conn.close()
 
 # ---------------- SCHEDULED INGESTION ---------------- #
 def scheduled_ingest():
