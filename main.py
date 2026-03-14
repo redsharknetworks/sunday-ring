@@ -14,7 +14,7 @@ from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
 app = Flask(__name__)
-DB_FILE = "redshark_soc_v10_2.db"
+DB_FILE = "redshark_soc_v10_2_1.db"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -209,18 +209,20 @@ h1{text-align:center;color:#38bdf8}
 $(document).ready(function(){ $('#cti').DataTable({pageLength:50})})
 
 // Leaflet Malaysia map
-var map=L.map('map').setView([4.2,102.0],5)
+var map = L.map('map').setView([4.2, 102.0], 5)
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
-var points={{rows|tojson}}
+var points = {{rows|tojson}}
 points.forEach(function(p){
-var lat=p[7],lon=p[8],color="blue"
-if(p[3]=="Low")color="green"
-if(p[3]=="Medium")color="orange"
-if(p[3]=="High")color="red"
-if(p[3]=="Critical")color="darkred"
-L.circleMarker([lat,lon],{radius:7,color:color,fillOpacity:0.7}).addTo(map)
-.bindPopup(p[0]+"<br>"+p[3])
+    var lat = p[7], lon = p[8], color="blue"
+    if(p[3]=="Low") color="green"
+    if(p[3]=="Medium") color="orange"
+    if(p[3]=="High") color="red"
+    if(p[3]=="Critical") color="darkred"
+    L.circleMarker([lat,lon], {radius:7, color:color, fillOpacity:0.7})
+        .addTo(map)
+        .bindPopup(p[0]+"<br>"+p[3])
 })
+setTimeout(function(){ map.invalidateSize(); }, 500)
 
 // MITRE heatmap
 var mitre_labels = {{rows|map(attribute=4)|list|tojson}}
@@ -230,28 +232,28 @@ var ctx = document.getElementById('mitre').getContext('2d')
 new Chart(ctx,{type:'bar',data:{labels:Object.keys(mitre_counts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitre_counts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}})
 
 // Three.js globe
-var globeContainer=document.getElementById('globe')
-var scene=new THREE.Scene()
-var camera=new THREE.PerspectiveCamera(45,globeContainer.offsetWidth/globeContainer.offsetHeight,0.1,1000)
-var renderer=new THREE.WebGLRenderer({antialias:true})
-renderer.setSize(globeContainer.offsetWidth,globeContainer.offsetHeight)
+var globeContainer = document.getElementById('globe')
+var scene = new THREE.Scene()
+var camera = new THREE.PerspectiveCamera(45, globeContainer.offsetWidth / globeContainer.offsetHeight, 0.1, 1000)
+var renderer = new THREE.WebGLRenderer({antialias:true})
+renderer.setSize(globeContainer.offsetWidth, globeContainer.offsetHeight)
 globeContainer.appendChild(renderer.domElement)
-var sphereGeo=new THREE.SphereGeometry(5,50,50)
-var sphereMat=new THREE.MeshBasicMaterial({color:0x08306b,wireframe:true})
-var globe=new THREE.Mesh(sphereGeo,sphereMat)
+var sphereGeo = new THREE.SphereGeometry(5, 50, 50)
+var sphereMat = new THREE.MeshBasicMaterial({color:0x08306b, wireframe:true})
+var globe = new THREE.Mesh(sphereGeo, sphereMat)
 scene.add(globe)
-camera.position.z=15
-var animate=function(){
-requestAnimationFrame(animate)
-globe.rotation.y+=0.002
-renderer.render(scene,camera)
+camera.position.z = 15
+var animate = function(){
+    requestAnimationFrame(animate)
+    globe.rotation.y += 0.002
+    renderer.render(scene, camera)
 }
 animate()
 </script>
 </body>
 </html>
 """
-    return render_template_string(html,rows=rows,highlight=highlight,ticker=ticker)
+    return render_template_string(html, rows=rows, highlight=highlight, ticker=ticker)
 
 # ---------------- EXPORTS ---------------- #
 @app.route("/export/json")
@@ -265,7 +267,7 @@ def export_csv():
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("SELECT * FROM indicators"); rows=c.fetchall(); conn.close()
     output=io.StringIO(); writer=csv.writer(output); writer.writerows(rows)
-    return send_file(io.BytesIO(output.getvalue().encode()),as_attachment=True,download_name="redshark_cti.csv")
+    return send_file(io.BytesIO(output.getvalue().encode()), as_attachment=True, download_name="redshark_cti.csv")
 
 @app.route("/export/pdf")
 def export_pdf():
@@ -274,7 +276,7 @@ def export_pdf():
     rows=c.fetchall(); conn.close()
     buffer=io.BytesIO(); doc=SimpleDocTemplate(buffer,pagesize=letter)
     table=Table(rows); doc.build([table]); buffer.seek(0)
-    return send_file(buffer,as_attachment=True,download_name="redshark_report.pdf")
+    return send_file(buffer, as_attachment=True, download_name="redshark_report.pdf")
 
 @app.route("/export/ids")
 def export_ids():
@@ -282,7 +284,7 @@ def export_ids():
     c.execute("SELECT indicator FROM indicators WHERE type='IP'"); rows=c.fetchall(); conn.close()
     rules=""; sid=100000
     for r in rows: rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\\n'; sid+=1
-    return send_file(io.BytesIO(rules.encode()),as_attachment=True,download_name="redshark.rules")
+    return send_file(io.BytesIO(rules.encode()), as_attachment=True, download_name="redshark.rules")
 
 @app.route("/export/zip")
 def export_zip():
@@ -291,7 +293,7 @@ def export_zip():
     mem=io.BytesIO()
     with zipfile.ZipFile(mem,'w',zipfile.ZIP_DEFLATED) as z: z.writestr("ioc_list.txt","\\n".join([r[0] for r in rows]))
     mem.seek(0)
-    return send_file(mem,as_attachment=True,download_name="redshark_iocs.zip")
+    return send_file(mem, as_attachment=True, download_name="redshark_iocs.zip")
 
 # ---------------- REFRESH ---------------- #
 @app.route("/refresh")
@@ -301,4 +303,4 @@ def refresh():
 
 # ---------------- RUN ---------------- #
 if __name__=="__main__":
-    app.run(host="0.0.0.0",port=5000)
+    app.run(host="0.0.0.0", port=5000)
