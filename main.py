@@ -18,12 +18,11 @@ app = Flask(__name__)
 THREAT_FEEDS = {
     "otx": "https://otx.alienvault.com/api/v1/indicators/export",
     "abuseipdb": "https://api.abuseipdb.com/api/v2/check",
-    "talos": "https://talosintelligence.com/some_endpoint"
 }
 DISCLAIMER = "Developed and analysed by darkgrid@redshark.my using publicly available sources"
 DB_PATH = "soc_data.db"
 
-# ===== DATABASE & MIGRATION =====
+# ===== DATABASE =====
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -73,7 +72,7 @@ def get_threats():
     conn.close()
     return rows
 
-# ===== THREAT INTEL SAFE FETCH =====
+# ===== BACKGROUND FETCH THREAD =====
 def safe_fetch(fetch_func):
     try:
         fetch_func()
@@ -106,7 +105,7 @@ def start_fetch_thread():
         while True:
             safe_fetch(fetch_otx)
             safe_fetch(fetch_abuseipdb)
-            threading.Event().wait(3600)  # 1 hour interval
+            threading.Event().wait(3600)  # Fetch every 1 hour
     t = threading.Thread(target=fetch_loop, daemon=True)
     t.start()
 
@@ -238,4 +237,5 @@ def api_threats():
 if __name__ == "__main__":
     init_db()
     start_fetch_thread()
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
