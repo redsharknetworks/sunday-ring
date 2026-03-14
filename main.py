@@ -38,6 +38,7 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+
 init_db()
 
 # ---------------- MITRE ---------------- #
@@ -57,10 +58,10 @@ def random_hash(): return os.urandom(16).hex()
 def threat_score(sev): return {"Low": random.randint(10,30),"Medium": random.randint(40,60),"High": random.randint(70,85),"Critical": random.randint(90,100)}[sev]
 def random_location(): return (random.uniform(-90,90), random.uniform(-180,180))
 
-def generate_feed():
+def generate_feed(num_entries=25):
     feeds=["OTX","Talos","AbuseIPDB"]
     data=[]
-    for _ in range(random.randint(15,25)):
+    for _ in range(num_entries):
         typ=random.choice(["IP","Domain","Hash"])
         indicator=random_ip() if typ=="IP" else random_domain() if typ=="Domain" else random_hash()
         lat, lon = random_location()
@@ -91,10 +92,16 @@ def save_iocs(feed):
              f["score"],f["country"],f["lat"],f["lon"],f["first_seen"],f["last_seen"]))
     conn.commit(); conn.close()
 
+# ---------------- INITIAL POPULATION ---------------- #
+# Populate 50 global IOCs on startup
+save_iocs(generate_feed(50))
+
+# ---------------- THREAT ENGINE ---------------- #
 def threat_engine():
     while True:
         save_iocs(generate_feed())
         time.sleep(45)
+
 threading.Thread(target=threat_engine,daemon=True).start()
 
 # ---------------- DASHBOARD ---------------- #
@@ -118,15 +125,13 @@ def dashboard():
     
     malaysia_time=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     highlight="No major threat detected"
-    # pick latest Malaysian threat if exists
-    malaysia_rows=[r for r in rows if -1<r[7]<10 and 100<r[8]<120] # crude approx Malaysia lat/lon
+    malaysia_rows=[r for r in rows if -1<r[7]<10 and 100<r[8]<120]  # crude Malaysia region
     if malaysia_rows:
         latest=malaysia_rows[0]
         highlight=f"{latest[3]} threat {latest[0]} via {latest[2]} at {malaysia_time}"
     ticker=[f"{r[3]} {r[0]} via {r[2]}" for r in rows[:15]]
     
-    html="""
-<!DOCTYPE html>
+    html="""<!DOCTYPE html>
 <html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
@@ -194,8 +199,6 @@ Developed and analyzed by darkgrid@redshark.my using publicly available sources
 
 <script>
 $(document).ready(function(){ $('#cti').DataTable({pageLength:50})})
-
-// ---------------- Leaflet Global Map ----------------
 var map=L.map('map').setView([0,0],2)
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
 var points={{rows|tojson}}
@@ -212,8 +215,6 @@ points.forEach(function(p){
         setInterval(function(){marker.setStyle({fillOpacity:marker.options.fillOpacity==0.7?1:0.7})},1000)
     }
 })
-
-// ---------------- MITRE Top 10 chart ----------------
 var mitre_labels={{rows|map(attribute=4)|list|tojson}}
 var mitre_counts={}
 mitre_labels.forEach(function(m){ mitre_counts[m]=(mitre_counts[m]||0)+1 })
@@ -221,7 +222,6 @@ var sorted_mitre=Object.entries(mitre_counts).sort((a,b)=>b[1]-a[1]).slice(0,10)
 var ctx=document.getElementById('mitre').getContext('2d')
 new Chart(ctx,{type:'bar',data:{labels:sorted_mitre.map(e=>e[0]),datasets:[{label:'MITRE ATT&CK Count',data:sorted_mitre.map(e=>e[1]),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}})
 
-// ---------------- Three.js Globe with Curved Global Arcs ----------------
 var globeContainer=document.getElementById('globe')
 var scene=new THREE.Scene()
 var camera=new THREE.PerspectiveCamera(45,globeContainer.offsetWidth/globeContainer.offsetHeight,0.1,1000)
@@ -243,8 +243,6 @@ function latLonToVector3(lat,lon,radius){
         radius*Math.sin(phi)*Math.sin(theta)
     )
 }
-
-// Curved arcs
 points.forEach(function(p){
     var origin=latLonToVector3(0,0,5)
     var dest=latLonToVector3(p[7],p[8],5)
@@ -257,17 +255,11 @@ points.forEach(function(p){
     var line=new THREE.Line(geometry,material)
     scene.add(line)
 })
-
-var animate=function(){
-    requestAnimationFrame(animate)
-    globe.rotation.y+=0.002
-    renderer.render(scene,camera)
-}
+var animate=function(){requestAnimationFrame(animate);globe.rotation.y+=0.002;renderer.render(scene,camera)}
 animate()
 </script>
 </body>
-</html>
-"""
+</html>"""
     return render_template_string(html,rows=rows,highlight=highlight,ticker=ticker)
 
 # ---------------- EXPORTS ---------------- #
