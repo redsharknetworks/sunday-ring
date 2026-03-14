@@ -5,7 +5,7 @@ import requests
 import threading
 import time
 from datetime import datetime
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, jsonify
 
 app = Flask(__name__)
 
@@ -35,8 +35,7 @@ MALAYSIA_LOCATIONS = [
     ("Putrajaya", 2.9264, 101.6964),
 ]
 
-SOURCES = ["OTX", "AbuseIPDB", "Spamhaus", "EmergingThreats"]
-SEVERITIES = ["High", "Medium", "Low"]
+SEVERITY_WEIGHT = {"High": 3, "Medium": 2, "Low": 1}
 
 OTX_API_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
 ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb8674d52aaf14544a100"
@@ -76,7 +75,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-def get_events(limit=200):
+def get_events(limit=500):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     rows = c.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
@@ -108,13 +107,14 @@ def get_country_from_ip(ip):
     return country, lat, lon
 
 # ===============================
-# Fetch CTI Feeds (non-blocking)
+# Background Feed Fetching
 # ===============================
 def fetch_cti_combined():
     while True:
         headers_otx = {"X-OTX-API-KEY": OTX_API_KEY}
         headers_abuse = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
         feeds = []
+
         try:
             r = requests.get(OTX_EXPORT_URL, headers=headers_otx, timeout=30)
             feeds += r.text.splitlines()[:100]
@@ -162,7 +162,7 @@ def fetch_cti_combined():
         time.sleep(600)  # refresh every 10 min
 
 # ===============================
-# Start background feed fetching
+# Start background thread
 # ===============================
 init_db()
 threading.Thread(target=fetch_cti_combined, daemon=True).start()
@@ -173,158 +173,78 @@ threading.Thread(target=fetch_cti_combined, daemon=True).start()
 @app.route("/")
 def dashboard():
     events = get_events()
-    severity = {s:0 for s in SEVERITIES}
-    sources = {}
-    countries = {}
-    timeline = {}
-    mapdata = []
+    heat_data = []
     lines = []
-    aggregation = {}
+    markers = []
 
     for e in events:
-        severity[e[3]] = severity.get(e[3],0)+1
-        sources[e[2]] = sources.get(e[2],0)+1
-        countries[e[4]] = countries.get(e[4],0)+1
-        hour = e[9][0:13]
-        timeline[hour] = timeline.get(hour,0)+1
-
+        weight = SEVERITY_WEIGHT.get(e[3],1)
         if e[4]=="Malaysia":
-            mapdata.append({"lat":e[7],"lon":e[8],"sev":e[3],"ip":e[1]})
+            heat_data.append([e[7], e[8], weight])
+            if e[3]=="High":  # only high severity in marker cluster
+                markers.append({
+                    "lat": e[7],
+                    "lon": e[8],
+                    "popup": f"IP: {e[1]}<br>Source: {e[2]}<br>Severity: {e[3]}<br>Country: {e[4]}<br>Time: {e[9]}"
+                })
         else:
-            key = e[1]
-            if key not in aggregation:
-                aggregation[key] = {"from_lat": e[7],"from_lon": e[8],"targets":[],"severity": e[3]}
-            aggregation[key]["targets"].append(random.choice(MALAYSIA_LOCATIONS))
-
-    for a in aggregation.values():
-        for t in a["targets"]:
-            lines.append({"from_lat": a["from_lat"],"from_lon":a["from_lon"],"to_lat": t[1],"to_lon":t[2],"severity": a["severity"]})
+            loc = random.choice(MALAYSIA_LOCATIONS)
+            lines.append({"from_lat": e[7],"from_lon": e[8],"to_lat": loc[1],"to_lon": loc[2],"severity": e[3]})
 
     return render_template_string("""
 <html>
 <head>
 <title>RedShark Cyber Threat Intelligence Platform</title>
-<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
 <style>
-body{background:#0f1720;color:#e5e7eb;font-family:Arial;}
+body{margin:0;padding:0;font-family:Arial;background:#0f1720;color:#e5e7eb;}
+#map{height:600px;}
 .header{font-size:28px;padding:15px;background:#111827;}
-.section{background:#111827;margin:20px;padding:20px;border-radius:10px;}
-table{width:100%;border-collapse:collapse;}
-th,td{padding:10px;border-bottom:1px solid #1f2937;}
-.high{color:red;font-weight:bold;animation: blink 1s infinite;}
-@keyframes blink{50%{opacity:0.3;}}
 .footer{text-align:center;font-size:12px;color:#9ca3af;margin-top:20px;}
-input{margin-bottom:10px;padding:5px;width:100%;}
 </style>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster/dist/leaflet.markercluster.js"></script>
 </head>
 <body>
-<div class="header">
-RedShark Cyber Threat Intelligence Platform
-<div style="font-size:12px">CTI Highlight {{time}}</div>
-</div>
+<div class="header">RedShark Cyber Threat Intelligence Platform
+<div style="font-size:12px">CTI Highlight {{time}}</div></div>
 
-<div class="section"><h3>Malaysia Threat Map (2D Heat + Attack Vectors)</h3>
-<div id="map"></div></div>
-
-<div class="section"><h3>CTI Analytics</h3>
-<div id="sev"></div><br>
-<div id="src"></div><br>
-<div id="country"></div></div>
-
-<div class="section"><h3>Threat Timeline</h3><div id="timeline"></div></div>
-
-<div class="section"><h3>Threat Events</h3>
-<input id="search" placeholder="Search by IP, source, country" onkeyup="filterTable()">
-<table id="eventsTable">
-<tr><th>ID</th><th>IP</th><th>Source</th><th>Severity</th><th>Country</th><th>Rule</th><th>Timestamp</th></tr>
-{% for e in events %}
-<tr class="{{'high' if e[3]=='High' else ''}}">
-<td>{{e[0]}}</td><td>{{e[1]}}</td><td>{{e[2]}}</td><td>{{e[3]}}</td><td>{{e[4]}}</td><td>{{e[5]}}</td><td>{{e[9]}}</td>
-</tr>
-{% endfor %}
-</table></div>
-
-<div class="section"><h3>Firewall Block Rules</h3><pre>
-{% for e in events %}
-{% if e[3]=='High' %}
-iptables -A INPUT -s {{e[1]}} -j DROP
-{% endif %}
-{% endfor %}
-</pre></div>
+<div id="map"></div>
 
 <div class="footer">
 Developed and analysed by darkgrid@redshark.my using publicly available sources
 </div>
 
 <script>
-var map={{mapdata|tojson}};
-var lines={{lines|tojson}};
-var traces = [];
+var map = L.map('map').setView([4.2105,101.9758],6);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
 
+// Heatmap
+var heat = L.heatLayer({{heat_data|tojson}}, {radius:25, blur:15, maxZoom:10, max:9}).addTo(map);
+
+// Attack lines
+var lines = {{lines|tojson}};
 lines.forEach(function(l){
-    traces.push({
-        type:'scattergeo',
-        mode:'lines',
-        lon:[l.from_lon,l.to_lon],
-        lat:[l.from_lat,l.to_lat],
-        line:{width:l.severity=="High"?3:1,color:l.severity=="High"?"red":"orange"},
-        opacity:0.7
-    });
+    var latlngs = [[l.from_lat,l.from_lon],[l.to_lat,l.to_lon]];
+    var color = l.severity=="High"?"red":"orange";
+    L.polyline(latlngs,{color:color,weight:l.severity=="High"?3:1,opacity:0.7}).addTo(map);
 });
 
-traces.push({
-    type:'scattergeo',
-    mode:'markers',
-    lon: map.map(x=>x.lon),
-    lat: map.map(x=>x.lat),
-    text: map.map(x=>x.ip),
-    marker:{size:15,color:map.map(x=>x.sev=="High"?"red":x.sev=="Medium"?"orange":"cyan"),opacity:0.7}
+// Marker cluster for high severity
+var markers = L.markerClusterGroup();
+var mdata = {{markers|tojson}};
+mdata.forEach(function(m){
+    var marker = L.marker([m.lat,m.lon]).bindPopup(m.popup);
+    markers.addLayer(marker);
 });
-
-Plotly.newPlot("map",traces,{
-    geo:{scope:"asia",center:{lat:4,lon:109},projection:{scale:7}},
-    paper_bgcolor:"#0f1720"
-});
-
-var sev={{severity|tojson}};
-Plotly.newPlot("sev",[{
-values:Object.values(sev),labels:Object.keys(sev),type:"pie",hole:.5
-}]);
-
-var src={{sources|tojson}};
-Plotly.newPlot("src",[{
-x:Object.keys(src),y:Object.values(src),type:"bar"
-}]);
-
-var country={{countries|tojson}};
-Plotly.newPlot("country",[{
-x:Object.keys(country),y:Object.values(country),type:"bar"
-}]);
-
-var tl={{timeline|tojson}};
-Plotly.newPlot("timeline",[{
-x:Object.keys(tl),y:Object.values(tl),type:"scatter"
-}]);
-
-function filterTable(){
-    var input=document.getElementById("search").value.toUpperCase();
-    var table=document.getElementById("eventsTable");
-    var tr=table.getElementsByTagName("tr");
-    for(var i=1;i<tr.length;i++){
-        var tds=tr[i].getElementsByTagName("td");
-        var show=false;
-        for(var j=0;j<tds.length;j++){
-            if(tds[j].innerHTML.toUpperCase().indexOf(input)>-1){show=true;break;}
-        }
-        tr[i].style.display=show?"":"none";
-    }
-}
+map.addLayer(markers);
 </script>
-</body></html>
-""", events=events, mapdata=mapdata, lines=lines, severity=severity, sources=sources, countries=countries, timeline=timeline, time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+</body>
+</html>
+""", heat_data=heat_data, lines=lines, markers=markers, time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-# ===============================
-# Run
-# ===============================
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
