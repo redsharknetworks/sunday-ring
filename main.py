@@ -11,12 +11,11 @@ from datetime import datetime
 from flask import Flask, render_template_string, send_file, jsonify
 from zipfile import ZipFile
 from collections import deque
-import ipaddress
 
 app = Flask(__name__)
-DB_FILE = "soc_v3_full_demo.db"
+DB_FILE = "soc_v3_cti.db"
 db_lock = threading.Lock()
-latest_threats = deque(maxlen=500)
+latest_threats = deque(maxlen=100)  # Keep last 100 threats for map/table
 
 # ========================
 # DATABASE SETUP
@@ -42,6 +41,7 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+
 init_db()
 
 # ========================
@@ -66,10 +66,8 @@ def store_threat(ip, source, country=None, asn=None, lat=None, lon=None, categor
     if category is None: category=random.choice(categories)
     if mitre is None: mitre = mitre_map(category)
     if country is None or asn is None or lat is None or lon is None:
-        # For demo, default unknown
         country, asn, lat, lon = "Unknown","Unknown",0,0
     cluster_id = random.randint(1,5)
-
     with db_lock:
         conn = sqlite3.connect(DB_FILE, check_same_thread=False)
         c = conn.cursor()
@@ -79,30 +77,28 @@ def store_threat(ip, source, country=None, asn=None, lat=None, lon=None, categor
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
             """,(ip,country,asn,category,severity,mitre,source,cluster_id,lat,lon,datetime.utcnow().isoformat()))
             conn.commit()
-            conn.close()
             latest_threats.appendleft({
                 "ip":ip,"country":country,"asn":asn,"category":category,
                 "severity":severity,"mitre":mitre,"source":source,"cluster":cluster_id,
                 "lat":lat,"lon":lon,"time":datetime.utcnow().isoformat()
             })
-            return True
         except sqlite3.IntegrityError:
-            conn.close()
-            return False
+            pass
+        conn.close()
 
 # ========================
-# DEMO BAD IPS (CURRENT KNOWN)
+# PRELOAD DEMO BAD IPs
 # ========================
 def preload_demo_bad_ips():
     demo_ips = [
-        {"ip":"192.9.135.73","country":"France","asn":"ASXXXX","category":"C2","severity":"Critical","mitre":"Command and Control","source":"ThreatFeed","lat":48.85,"lon":2.35},
-        {"ip":"51.161.81.190","country":"UK","asn":"ASYYYY","category":"Botnet","severity":"High","mitre":"Persistence","source":"ThreatFeed","lat":51.51,"lon":-0.13},
-        {"ip":"37.252.6.219","country":"Russia","asn":"ASZZZZ","category":"Malware","severity":"High","mitre":"Execution","source":"ThreatFeed","lat":55.75,"lon":37.62},
-        {"ip":"172.232.185.9","country":"USA","asn":"ASAAAA","category":"Recon","severity":"Medium","mitre":"Reconnaissance","source":"ThreatFeed","lat":40.71,"lon":-74.01},
-        {"ip":"172.232.188.170","country":"USA","asn":"ASBBBB","category":"Botnet","severity":"High","mitre":"Persistence","source":"ThreatFeed","lat":34.05,"lon":-118.24},
-        {"ip":"180.76.76.76","country":"China","asn":"AS58577","category":"Malware","severity":"Critical","mitre":"Execution","source":"ThreatFeed","lat":39.9075,"lon":116.39723},
-        {"ip":"203.0.113.5","country":"Malaysia","asn":"AS4788","category":"Botnet","severity":"Medium","mitre":"Persistence","source":"ThreatFeed","lat":3.139,"lon":101.686},
-        {"ip":"159.203.69.20","country":"Netherlands","asn":"AS14061","category":"Phishing","severity":"High","mitre":"Initial Access","source":"ThreatFeed","lat":52.3676,"lon":4.9041}
+        {"ip":"192.9.135.73","country":"France","asn":"ASXXXX","category":"C2","severity":"Critical","mitre":"Command and Control","source":"Feodo Tracker","lat":48.85,"lon":2.35},
+        {"ip":"51.161.81.190","country":"UK","asn":"ASYYYY","category":"Botnet","severity":"High","mitre":"Persistence","source":"Feodo Tracker","lat":51.51,"lon":-0.13},
+        {"ip":"37.252.6.219","country":"Russia","asn":"ASZZZZ","category":"Malware","severity":"High","mitre":"Execution","source":"Feodo Tracker","lat":55.75,"lon":37.62},
+        {"ip":"172.232.185.9","country":"USA","asn":"ASAAAA","category":"Recon","severity":"Medium","mitre":"Reconnaissance","source":"Feodo Tracker","lat":40.71,"lon":-74.01},
+        {"ip":"172.232.188.170","country":"USA","asn":"ASBBBB","category":"Botnet","severity":"High","mitre":"Persistence","source":"Feodo Tracker","lat":34.05,"lon":-118.24},
+        {"ip":"180.76.76.76","country":"China","asn":"AS58577","category":"Malware","severity":"Critical","mitre":"Execution","source":"Feodo Tracker","lat":39.9075,"lon":116.39723},
+        {"ip":"203.0.113.5","country":"Malaysia","asn":"AS4788","category":"Botnet","severity":"Medium","mitre":"Persistence","source":"Feodo Tracker","lat":3.139,"lon":101.686},
+        {"ip":"159.203.69.20","country":"Netherlands","asn":"AS14061","category":"Phishing","severity":"High","mitre":"Initial Access","source":"Feodo Tracker","lat":52.3676,"lon":4.9041}
     ]
     for d in demo_ips:
         store_threat(d["ip"],d["source"],d["country"],d["asn"],d["lat"],d["lon"],d["category"],d["severity"],d["mitre"])
@@ -126,6 +122,31 @@ def threat_index():
     return round(score/total,2) if total>0 else 0
 
 # ========================
+# BACKGROUND FEED INGESTION (every 5 minutes)
+# ========================
+FEED_URLS = [
+    "https://feodotracker.abuse.ch/downloads/ipblocklist.csv",
+    # You can add more public feeds here
+]
+
+def fetch_feeds():
+    while True:
+        for url in FEED_URLS:
+            try:
+                r = requests.get(url, timeout=10)
+                if r.status_code == 200:
+                    lines = r.text.splitlines()
+                    for line in lines:
+                        if line.startswith("#") or not line.strip(): continue
+                        ip = line.strip()
+                        store_threat(ip, source=url)
+            except Exception as e:
+                print(f"[Feed Error] {url}: {e}")
+        time.sleep(300)  # 5 minutes
+
+threading.Thread(target=fetch_feeds,daemon=True).start()
+
+# ========================
 # API
 # ========================
 @app.route("/api/threats")
@@ -133,7 +154,7 @@ def api_threats():
     return jsonify(list(latest_threats))
 
 # ========================
-# CSV / JSON / IDS DOWNLOAD
+# DOWNLOAD CSV / JSON / IDS RULES
 # ========================
 @app.route("/download/csv")
 def download_csv():
@@ -210,7 +231,7 @@ let tr=document.createElement("tr")
 tr.innerHTML=`<td>${{t.ip}}</td><td>${{t.country}}</td><td>${{t.asn}}</td><td>${{t.category}}</td><td>${{sev}}</td><td>${{t.mitre}}</td><td>${{t.source}}</td><td>${{t.cluster}}</td><td>${{t.lat}}</td><td>${{t.lon}}</td><td>${{t.time}}</td>`
 tbl.appendChild(tr)
 }})}
-loadData(); setInterval(loadData,30000)
+loadData(); setInterval(loadData,15000)  // table refresh every 15s
 
 function drawMap(){{
 const canvas=document.getElementById("map")
@@ -230,9 +251,8 @@ ctx.arc(x,y,4,0,2*Math.PI)
 ctx.fillStyle=(t.severity=="Critical")?"#ff4c4c":"#00ffae"
 ctx.fill()
 }})
-setTimeout(drawMap,5000)
 }}
-drawMap()
+drawMap(); setInterval(drawMap,10000)  // map redraw every 10s
 </script>
 </body>
 </html>
