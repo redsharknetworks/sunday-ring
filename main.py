@@ -172,17 +172,53 @@ threading.Thread(target=fetch_cti_combined, daemon=True).start()
 @app.route("/")
 def dashboard():
     events = get_events()
+
+    # If no events, insert 5 dummy test events
+    if not events:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        for i in range(5):
+            loc = random.choice(MALAYSIA_LOCATIONS)
+            c.execute("""
+            INSERT INTO events(ip,source,severity,country,rule,description,lat,lon,timestamp)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            """,(
+                f"192.168.1.{i+1}",
+                "Test Feed",
+                random.choice(["High","Medium","Low"]),
+                "Malaysia",
+                f"RSK-{1000+i}",
+                "Test IOC",
+                loc[1],
+                loc[2],
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ))
+        conn.commit()
+        conn.close()
+        events = get_events()
+
     heat_data = []
     lines = []
     markers = []
     severity_counts = {"High":0,"Medium":0,"Low":0}
     timeline = {}
+    table_rows = []
 
     for e in events:
         weight = SEVERITY_WEIGHT.get(e[3],1)
         severity_counts[e[3]] += 1
         hour = e[9][:13]
         timeline[hour] = timeline.get(hour,0)+1
+
+        table_rows.append({
+            "ip": e[1],
+            "source": e[2],
+            "severity": e[3],
+            "country": e[4],
+            "rule": e[5],
+            "description": e[6],
+            "timestamp": e[9]
+        })
 
         if e[4]=="Malaysia":
             heat_data.append([e[7], e[8], weight])
@@ -214,6 +250,10 @@ body{margin:0;padding:0;font-family:Arial;background:#0f1720;color:#e5e7eb;}
 .chart{flex:1 1 30%;margin:10px;background:#111827;padding:10px;border-radius:8px;}
 .header{font-size:28px;padding:15px;background:#111827;}
 .footer{text-align:center;font-size:12px;color:#9ca3af;margin-top:20px;}
+table{width:100%; border-collapse: collapse; background:#111827; color:#e5e7eb;}
+th, td{padding:6px; border:1px solid #1f2937;}
+thead{background:#1f2937;}
+#table_container{max-height:300px; overflow:auto; margin:10px;}
 </style>
 </head>
 <body>
@@ -226,15 +266,33 @@ body{margin:0;padding:0;font-family:Arial;background:#0f1720;color:#e5e7eb;}
     <div class="chart" id="timeline_chart"></div>
 </div>
 
+<div id="table_container">
+<table>
+<thead>
+<tr>
+<th>IP</th><th>Source</th><th>Severity</th><th>Country</th><th>Rule</th><th>Description</th><th>Timestamp</th>
+</tr>
+</thead>
+<tbody>
+{% for row in table_rows %}
+<tr>
+<td>{{row.ip}}</td><td>{{row.source}}</td><td>{{row.severity}}</td>
+<td>{{row.country}}</td><td>{{row.rule}}</td><td>{{row.description}}</td><td>{{row.timestamp}}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+
 <div class="footer">
 Map tiles © OpenStreetMap contributors | Developed by darkgrid@redshark.my using publicly available sources
 </div>
 
 <script>
-// Neutral map tile (no branding)
+// Neutral map tile
 var map = L.map('map').setView([4.2105,101.9758],6);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; OpenStreetMap contributors',
+    attribution: '',
     subdomains: 'abcd',
     maxZoom: 19
 }).addTo(map);
@@ -274,10 +332,11 @@ Plotly.newPlot('timeline_chart',[{
     y:Object.values(timeline),
     type:'scatter'
 }], {title:'Threat Timeline',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
+
 </script>
 </body>
 </html>
-""", heat_data=heat_data, lines=lines, markers=markers, severity_counts=severity_counts, timeline=timeline, time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+""", heat_data=heat_data, lines=lines, markers=markers, severity_counts=severity_counts, timeline=timeline, table_rows=table_rows, time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
