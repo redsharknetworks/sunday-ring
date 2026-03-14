@@ -14,7 +14,7 @@ from reportlab.lib.pagesizes import landscape, letter
 
 app = Flask(__name__)
 
-# ====== CONFIG ======
+# ===== CONFIG =====
 THREAT_FEEDS = {
     "otx": "https://otx.alienvault.com/api/v1/indicators/export",
     "abuseipdb": "https://api.abuseipdb.com/api/v2/check",
@@ -23,11 +23,10 @@ THREAT_FEEDS = {
 DISCLAIMER = "Developed and analysed by darkgrid@redshark.my using publicly available sources"
 DB_PATH = "soc_data.db"
 
-# ====== DATABASE ======
+# ===== DATABASE & MIGRATION =====
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Create table if missing
     c.execute('''
         CREATE TABLE IF NOT EXISTS threats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,11 +43,9 @@ def init_db():
     conn.close()
     migrate_db()
 
-# Auto-migration for lat/lon columns
 def migrate_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Check existing columns
     c.execute("PRAGMA table_info(threats)")
     columns = [col[1] for col in c.fetchall()]
     if "lat" not in columns:
@@ -76,7 +73,13 @@ def get_threats():
     conn.close()
     return rows
 
-# ====== THREAT INTEL FETCH ======
+# ===== THREAT INTEL SAFE FETCH =====
+def safe_fetch(fetch_func):
+    try:
+        fetch_func()
+    except Exception as e:
+        print("Background fetch error:", e)
+
 def fetch_otx():
     try:
         r = requests.get(THREAT_FEEDS['otx'])
@@ -101,19 +104,13 @@ def fetch_abuseipdb(ip_list=None):
 def start_fetch_thread():
     def fetch_loop():
         while True:
-            try:
-                fetch_otx()
-            except Exception as e:
-                print("OTX thread error:", e)
-            try:
-                fetch_abuseipdb()
-            except Exception as e:
-                print("AbuseIPDB thread error:", e)
-            threading.Event().wait(3600)
+            safe_fetch(fetch_otx)
+            safe_fetch(fetch_abuseipdb)
+            threading.Event().wait(3600)  # 1 hour interval
     t = threading.Thread(target=fetch_loop, daemon=True)
     t.start()
 
-# ====== PDF & CSV/ZIP EXPORT ======
+# ===== PDF & CSV/ZIP EXPORT =====
 def generate_pdf():
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
@@ -137,17 +134,13 @@ def generate_csv_zip():
     zip_buffer.seek(0)
     return zip_buffer
 
-# ====== DASHBOARD ROUTE ======
+# ===== DASHBOARD ROUTE =====
 @app.route("/")
 def dashboard():
     threats = get_threats()
     threats_json = [
-        {
-            "ip": t[1],
-            "lat": float(t[5] or 0.0),
-            "lon": float(t[6] or 0.0),
-            "severity": t[3]
-        } for t in threats
+        {"ip": t[1], "lat": float(t[5] or 0), "lon": float(t[6] or 0), "severity": t[3] or "Unknown"}
+        for t in threats
     ]
     chart_data = {}
     for t in threats:
@@ -163,14 +156,14 @@ def dashboard():
         <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <style>
-            body {background: #0f0f0f; color: #f0f0f0; font-family: Arial;}
-            table {border-collapse: collapse; width: 100%;}
-            th, td {border: 1px solid #444; padding: 6px; text-align: left; word-wrap: break-word;}
-            th {background: #222;}
-            .blink {animation: blinker 1s linear infinite; color: #ff4d4d; font-weight: bold;}
-            @keyframes blinker {50% {opacity: 0;}}
-            #map {height: 400px; margin-bottom: 20px;}
-            canvas {background: #111; color: #f0f0f0; margin-bottom: 20px;}
+            body {background:#0f0f0f; color:#f0f0f0; font-family:Arial;}
+            table {border-collapse: collapse; width:100%;}
+            th, td {border:1px solid #444; padding:6px; text-align:left; word-wrap:break-word;}
+            th {background:#222;}
+            .blink {animation: blinker 1s linear infinite; color:#ff4d4d; font-weight:bold;}
+            @keyframes blinker {50% {opacity:0;}}
+            #map {height:400px; margin-bottom:20px;}
+            canvas {background:#111; color:#f0f0f0; margin-bottom:20px;}
         </style>
     </head>
     <body>
@@ -184,7 +177,7 @@ def dashboard():
             var threats = {{ threats_json|safe }};
             threats.forEach(function(t){
                 var color = t.severity=="High"?"red":"orange";
-                var circle = L.circle([t.lat,t.lon],{color: color, radius:50000}).addTo(map);
+                var circle = L.circle([t.lat,t.lon], {color: color, radius:50000}).addTo(map);
                 if(t.severity=="High"){
                     circle.bindPopup("Critical: "+t.ip).openPopup();
                 }
@@ -199,11 +192,7 @@ def dashboard():
                 type: 'bar',
                 data: {
                     labels: Object.keys(threatData),
-                    datasets: [{
-                        label:'Threat Count',
-                        data: Object.values(threatData),
-                        backgroundColor:['#ff4d4d','#ffa500','#00bfff']
-                    }]
+                    datasets: [{label:'Threat Count', data:Object.values(threatData), backgroundColor:['#ff4d4d','#ffa500','#00bfff']}]
                 },
                 options:{responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}}}
             });
@@ -232,23 +221,20 @@ def dashboard():
     '''
     return render_template_string(html, threats=threats, threats_json=json.dumps(threats_json), chart_data=json.dumps(chart_data), timestamp=datetime.utcnow().isoformat(), disclaimer=DISCLAIMER)
 
-# ====== EXPORT ROUTES ======
+# ===== EXPORT ROUTES =====
 @app.route("/export/pdf")
 def export_pdf():
-    pdf_buffer = generate_pdf()
-    return send_file(pdf_buffer, as_attachment=True, download_name="threats_report.pdf", mimetype="application/pdf")
+    return send_file(generate_pdf(), as_attachment=True, download_name="threats_report.pdf", mimetype="application/pdf")
 
 @app.route("/export/csvzip")
 def export_csv_zip():
-    zip_buffer = generate_csv_zip()
-    return send_file(zip_buffer, as_attachment=True, download_name="threats.zip", mimetype="application/zip")
+    return send_file(generate_csv_zip(), as_attachment=True, download_name="threats.zip", mimetype="application/zip")
 
 @app.route("/api/threats")
 def api_threats():
-    data = [{"id":t[0],"ip":t[1],"domain":t[2],"severity":t[3],"source":t[4],"lat":t[5],"lon":t[6],"timestamp":t[7]} for t in get_threats()]
-    return jsonify(data)
+    return jsonify([{"id":t[0], "ip":t[1], "domain":t[2], "severity":t[3], "source":t[4], "lat":t[5], "lon":t[6], "timestamp":t[7]} for t in get_threats()])
 
-# ====== START SERVER ======
+# ===== START SERVER =====
 if __name__ == "__main__":
     init_db()
     start_fetch_thread()
