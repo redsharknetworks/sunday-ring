@@ -1,7 +1,6 @@
 import os
 import io
 import csv
-import json
 import time
 import random
 import sqlite3
@@ -9,32 +8,34 @@ import threading
 import zipfile
 from datetime import datetime, timedelta
 
-from flask import Flask, render_template_string, send_file, jsonify
-import requests
+from flask import Flask, render_template_string, send_file, jsonify, request
+from reportlab.platypus import SimpleDocTemplate, Table
+from reportlab.lib.pagesizes import letter
 
 app = Flask(__name__)
 
-DB_FILE="redshark_cti.db"
+DB_FILE = "redshark_v7.db"
 
-# ------------------------------------------------
-# DATABASE INIT
-# ------------------------------------------------
+# ---------------- DATABASE ---------------- #
 
 def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
 
-    conn=sqlite3.connect(DB_FILE)
-    cursor=conn.cursor()
-
-    cursor.execute("""
+    c.execute("""
     CREATE TABLE IF NOT EXISTS indicators(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    indicator TEXT,
-    type TEXT,
-    source TEXT,
-    severity TEXT,
-    country TEXT,
-    first_seen TEXT,
-    last_seen TEXT
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        indicator TEXT,
+        type TEXT,
+        source TEXT,
+        severity TEXT,
+        mitre TEXT,
+        score INTEGER,
+        country TEXT,
+        lat REAL,
+        lon REAL,
+        first_seen TEXT,
+        last_seen TEXT
     )
     """)
 
@@ -43,43 +44,58 @@ def init_db():
 
 init_db()
 
-# ------------------------------------------------
-# MALAYSIA REGIONS
-# ------------------------------------------------
+# ---------------- GLOBAL LOCATIONS ---------------- #
 
-malaysia_regions=[
-("Kuala Lumpur",3.1390,101.6869),
-("Cyberjaya",2.9225,101.6559),
-("Penang",5.4164,100.3327),
-("Johor",1.4927,103.7414),
-("Sabah",5.9804,116.0735),
-("Sarawak",1.5533,110.3592)
+locations = [
+("Malaysia",4.2,102.0),
+("Singapore",1.35,103.82),
+("China",35,103),
+("USA",37,-95),
+("Russia",61,105),
+("Germany",51,10),
+("Brazil",-10,-55)
 ]
 
-# ------------------------------------------------
-# IOC GENERATOR
-# ------------------------------------------------
+# ---------------- MITRE ---------------- #
+
+mitre_map = [
+"T1046 Network Service Discovery",
+"T1059 Command Execution",
+"T1566 Phishing",
+"T1071 C2 Communication",
+"T1105 Exfiltration",
+"T1190 Exploit Public Application"
+]
+
+# ---------------- IOC GENERATOR ---------------- #
 
 def random_ip():
     return f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
 
 def random_domain():
-    return f"bad{random.randint(1,999)}.com"
+    return f"malicious{random.randint(1,999)}.net"
 
 def random_hash():
     return os.urandom(16).hex()
 
-# ------------------------------------------------
-# SIMULATED THREAT FEED
-# ------------------------------------------------
+# ---------------- THREAT SCORE ---------------- #
+
+def threat_score(sev):
+    return {
+        "Low": random.randint(10,30),
+        "Medium": random.randint(40,60),
+        "High": random.randint(70,85),
+        "Critical": random.randint(90,100)
+    }[sev]
+
+# ---------------- FEED ENGINE ---------------- #
 
 def generate_feed():
 
-    feeds=["OTX","AbuseIPDB","Talos"]
-
+    feeds=["OTX","Talos","AbuseIPDB"]
     data=[]
 
-    for i in range(random.randint(5,15)):
+    for i in range(random.randint(10,20)):
 
         typ=random.choice(["IP","Domain","Hash"])
 
@@ -90,15 +106,20 @@ def generate_feed():
         else:
             indicator=random_hash()
 
-        region=random.choice(malaysia_regions)
+        loc=random.choice(locations)
+        sev=random.choice(["Low","Medium","High","Critical"])
 
         data.append({
 
         "indicator":indicator,
         "type":typ,
         "source":random.choice(feeds),
-        "severity":random.choice(["Low","Medium","High","Critical"]),
-        "country":region[0],
+        "severity":sev,
+        "mitre":random.choice(mitre_map),
+        "score":threat_score(sev),
+        "country":loc[0],
+        "lat":loc[1],
+        "lon":loc[2],
         "first_seen":datetime.utcnow().isoformat(),
         "last_seen":datetime.utcnow().isoformat()
 
@@ -106,92 +127,77 @@ def generate_feed():
 
     return data
 
-# ------------------------------------------------
-# SAVE IOC
-# ------------------------------------------------
-
 def save_iocs(feed):
 
     conn=sqlite3.connect(DB_FILE)
-    cursor=conn.cursor()
+    c=conn.cursor()
 
     for f in feed:
 
-        cursor.execute("""
+        c.execute("""
         INSERT INTO indicators
-        (indicator,type,source,severity,country,first_seen,last_seen)
-        VALUES (?,?,?,?,?,?,?)
+        (indicator,type,source,severity,mitre,score,country,lat,lon,first_seen,last_seen)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """,(
+
         f["indicator"],
         f["type"],
         f["source"],
         f["severity"],
+        f["mitre"],
+        f["score"],
         f["country"],
+        f["lat"],
+        f["lon"],
         f["first_seen"],
         f["last_seen"]
+
         ))
 
     conn.commit()
     conn.close()
 
-# ------------------------------------------------
-# BACKGROUND ENGINE
-# ------------------------------------------------
-
 def threat_engine():
-
     while True:
-
-        feed=generate_feed()
-        save_iocs(feed)
-
-        time.sleep(120)
+        save_iocs(generate_feed())
+        time.sleep(90)
 
 threading.Thread(target=threat_engine,daemon=True).start()
 
-# ------------------------------------------------
-# DASHBOARD
-# ------------------------------------------------
+# ---------------- DASHBOARD ---------------- #
 
 @app.route("/")
 def dashboard():
 
+    search=request.args.get("q","")
+
     conn=sqlite3.connect(DB_FILE)
-    cursor=conn.cursor()
+    c=conn.cursor()
 
-    cursor.execute("""
-    SELECT indicator,type,source,severity,country,first_seen,last_seen
-    FROM indicators
-    ORDER BY last_seen DESC
-    """)
+    if search:
+        c.execute("""
+        SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen
+        FROM indicators
+        WHERE indicator LIKE ?
+        ORDER BY last_seen DESC
+        """,(f"%{search}%",))
+    else:
+        c.execute("""
+        SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen
+        FROM indicators
+        ORDER BY last_seen DESC
+        """)
 
-    rows=cursor.fetchall()
+    rows=c.fetchall()
     conn.close()
-
-    map_points=[]
-
-    for r in rows:
-
-        region=random.choice(malaysia_regions)
-
-        map_points.append({
-        "indicator":r[0],
-        "type":r[1],
-        "source":r[2],
-        "severity":r[3],
-        "lat":region[1],
-        "lon":region[2]
-        })
 
     malaysia_time=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
 
-    highlight="No threat detected"
+    highlight="No major threat detected"
 
     if rows:
-
         latest=rows[0]
-
-        highlight=f"{latest[3]} threat {latest[0]} detected via {latest[2]} at {malaysia_time}"
+        highlight=f"{latest[3]} threat {latest[0]} via {latest[2]}"
 
     ticker=[f"{r[3]} {r[0]} via {r[2]}" for r in rows[:10]]
 
@@ -202,18 +208,16 @@ def dashboard():
 
 <head>
 
-<title>RedShark Threat Intelligence Dashboard</title>
+<title>RedShark Threat Intelligence Dashboard v7</title>
 
 <link rel="stylesheet"
 href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 
 <link rel="stylesheet"
 href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
 <style>
@@ -226,12 +230,12 @@ h1{text-align:center;color:#38bdf8}
 
 .ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155}
 
-#map{height:450px;margin:20px}
+#map{height:500px;margin:20px}
 
 .low{color:green}
 .medium{color:orange}
 .high{color:red}
-.critical{color:darkred;font-weight:bold;animation:blink 1s infinite}
+.critical{color:red;font-weight:bold;animation:blink 1s infinite}
 
 @keyframes blink{50%{opacity:0}}
 
@@ -241,12 +245,19 @@ h1{text-align:center;color:#38bdf8}
 
 <body>
 
-<h1>RedShark Threat Intelligence Dashboard</h1>
+<h1>RedShark Threat Intelligence Dashboard v7</h1>
 
 <div class="highlight">
-<b>Latest Security Highlight</b><br>
+
+<b>Latest Security Highlight (Malaysia GMT+8)</b><br>
 {{highlight}}
+
 </div>
+
+<form method="get" style="text-align:center">
+<input name="q" placeholder="Search IOC">
+<button type="submit">Search</button>
+</form>
 
 <div class="ticker">
 {% for t in ticker %}
@@ -256,7 +267,7 @@ h1{text-align:center;color:#38bdf8}
 
 <div id="map"></div>
 
-<table id="ctitable" class="display">
+<table id="cti" class="display">
 
 <thead>
 
@@ -265,8 +276,9 @@ h1{text-align:center;color:#38bdf8}
 <th>Type</th>
 <th>Source</th>
 <th>Severity</th>
-<th>Region</th>
-<th>First Seen</th>
+<th>MITRE</th>
+<th>Score</th>
+<th>Country</th>
 <th>Last Seen</th>
 </tr>
 
@@ -284,6 +296,7 @@ h1{text-align:center;color:#38bdf8}
 <td>{{r[4]}}</td>
 <td>{{r[5]}}</td>
 <td>{{r[6]}}</td>
+<td>{{r[9]}}</td>
 </tr>
 
 {% endfor %}
@@ -291,55 +304,47 @@ h1{text-align:center;color:#38bdf8}
 </tbody>
 </table>
 
-<div style="text-align:center;margin:40px;">
+<div style="text-align:center;margin:40px">
 
-<button onclick="window.location='/export/json'">Download JSON</button>
-
-<button onclick="window.location='/export/csv'">Download CSV</button>
-
-<button onclick="window.location='/export/report'">Download PDF</button>
-
-<button onclick="window.location='/export/ids'">IDS Rules</button>
-
+<button onclick="window.location='/export/json'">JSON</button>
+<button onclick="window.location='/export/csv'">CSV</button>
+<button onclick="window.location='/export/pdf'">PDF</button>
+<button onclick="window.location='/export/ids'">IDS</button>
 <button onclick="window.location='/export/zip'">IOC ZIP</button>
-
-<button onclick="window.location='/analytics'">SOC Analytics</button>
-
-<button onclick="window.location='/refresh'">Refresh Feed</button>
+<button onclick="window.location='/refresh'">Refresh</button>
 
 </div>
 
 <script>
 
 $(document).ready(function(){
-
-$('#ctitable').DataTable({
-pageLength:50
+$('#cti').DataTable({pageLength:50})
 })
 
-})
-
-var map=L.map('map').setView([4.5,102],6)
+var map=L.map('map').setView([20,0],2)
 
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
 
-var points={{map_points|tojson}}
+var points={{rows|tojson}}
 
 points.forEach(function(p){
 
+var lat=p[7]
+var lon=p[8]
+
 var color="blue"
 
-if(p.severity=="Low")color="green"
-if(p.severity=="Medium")color="orange"
-if(p.severity=="High")color="red"
-if(p.severity=="Critical")color="darkred"
+if(p[3]=="Low")color="green"
+if(p[3]=="Medium")color="orange"
+if(p[3]=="High")color="red"
+if(p[3]=="Critical")color="darkred"
 
-L.circleMarker([p.lat,p.lon],{
-radius:8,
+L.circleMarker([lat,lon],{
+radius:7,
 color:color,
 fillOpacity:0.7
 }).addTo(map)
-.bindPopup(p.indicator+"<br>"+p.severity)
+.bindPopup(p[0]+"<br>"+p[3])
 
 })
 
@@ -350,63 +355,35 @@ fillOpacity:0.7
 
 """
 
-    return render_template_string(html,
-        rows=rows,
-        map_points=map_points,
-        highlight=highlight,
-        ticker=ticker)
+    return render_template_string(html,rows=rows,highlight=highlight,ticker=ticker)
 
-# ------------------------------------------------
-# ANALYTICS
-# ------------------------------------------------
-
-@app.route("/analytics")
-def analytics():
-
-    conn=sqlite3.connect(DB_FILE)
-    cursor=conn.cursor()
-
-    cursor.execute("SELECT severity,COUNT(*) FROM indicators GROUP BY severity")
-    sev=cursor.fetchall()
-
-    conn.close()
-
-    return jsonify(sev)
-
-# ------------------------------------------------
-# EXPORT JSON
-# ------------------------------------------------
+# ---------------- EXPORTS ---------------- #
 
 @app.route("/export/json")
 def export_json():
 
     conn=sqlite3.connect(DB_FILE)
-    cursor=conn.cursor()
+    c=conn.cursor()
 
-    cursor.execute("SELECT * FROM indicators")
-    rows=cursor.fetchall()
+    c.execute("SELECT * FROM indicators")
+    rows=c.fetchall()
 
     conn.close()
 
     return jsonify(rows)
 
-# ------------------------------------------------
-# EXPORT CSV
-# ------------------------------------------------
-
 @app.route("/export/csv")
 def export_csv():
 
     conn=sqlite3.connect(DB_FILE)
-    cursor=conn.cursor()
+    c=conn.cursor()
 
-    cursor.execute("SELECT * FROM indicators")
-    rows=cursor.fetchall()
+    c.execute("SELECT * FROM indicators")
+    rows=c.fetchall()
 
     conn.close()
 
     output=io.StringIO()
-
     writer=csv.writer(output)
     writer.writerows(rows)
 
@@ -416,106 +393,80 @@ def export_csv():
     as_attachment=True,
     download_name="redshark_cti.csv")
 
-# ------------------------------------------------
-# IDS RULES
-# ------------------------------------------------
-
-@app.route("/export/ids")
-def export_ids():
+@app.route("/export/pdf")
+def export_pdf():
 
     conn=sqlite3.connect(DB_FILE)
-    cursor=conn.cursor()
+    c=conn.cursor()
 
-    cursor.execute("SELECT indicator FROM indicators WHERE type='IP'")
-    rows=cursor.fetchall()
-
-    conn.close()
-
-    rules=""
-
-    sid=100000
-
-    for r in rows:
-
-        rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\n'
-        sid+=1
-
-    return send_file(io.BytesIO(rules.encode()),
-    as_attachment=True,
-    download_name="redshark.rules")
-
-# ------------------------------------------------
-# ZIP IOC
-# ------------------------------------------------
-
-@app.route("/export/zip")
-def export_zip():
-
-    conn=sqlite3.connect(DB_FILE)
-    cursor=conn.cursor()
-
-    cursor.execute("SELECT indicator FROM indicators")
-    rows=cursor.fetchall()
-
-    conn.close()
-
-    mem=io.BytesIO()
-
-    with zipfile.ZipFile(mem,'w',zipfile.ZIP_DEFLATED) as z:
-
-        z.writestr("ioc.txt","\n".join([r[0] for r in rows]))
-
-    mem.seek(0)
-
-    return send_file(mem,
-    as_attachment=True,
-    download_name="redshark_iocs.zip")
-
-# ------------------------------------------------
-# PDF REPORT
-# ------------------------------------------------
-
-@app.route("/export/report")
-def export_report():
-
-    from reportlab.platypus import SimpleDocTemplate,Table
-    from reportlab.lib.pagesizes import letter
-
-    conn=sqlite3.connect(DB_FILE)
-    cursor=conn.cursor()
-
-    cursor.execute("SELECT * FROM indicators LIMIT 100")
-    rows=cursor.fetchall()
+    c.execute("SELECT indicator,type,source,severity,mitre FROM indicators LIMIT 100")
+    rows=c.fetchall()
 
     conn.close()
 
     buffer=io.BytesIO()
 
     doc=SimpleDocTemplate(buffer,pagesize=letter)
-
     table=Table(rows)
-
     doc.build([table])
 
     buffer.seek(0)
 
-    return send_file(buffer,
-    as_attachment=True,
+    return send_file(buffer,as_attachment=True,
     download_name="redshark_report.pdf")
 
-# ------------------------------------------------
-# MANUAL REFRESH
-# ------------------------------------------------
+@app.route("/export/ids")
+def export_ids():
+
+    conn=sqlite3.connect(DB_FILE)
+    c=conn.cursor()
+
+    c.execute("SELECT indicator FROM indicators WHERE type='IP'")
+    rows=c.fetchall()
+
+    conn.close()
+
+    rules=""
+    sid=100000
+
+    for r in rows:
+        rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\\n'
+        sid+=1
+
+    return send_file(io.BytesIO(rules.encode()),
+    as_attachment=True,
+    download_name="redshark.rules")
+
+@app.route("/export/zip")
+def export_zip():
+
+    conn=sqlite3.connect(DB_FILE)
+    c=conn.cursor()
+
+    c.execute("SELECT indicator FROM indicators")
+    rows=c.fetchall()
+
+    conn.close()
+
+    mem=io.BytesIO()
+
+    with zipfile.ZipFile(mem,'w',zipfile.ZIP_DEFLATED) as z:
+        z.writestr("ioc_list.txt","\\n".join([r[0] for r in rows]))
+
+    mem.seek(0)
+
+    return send_file(mem,as_attachment=True,
+    download_name="redshark_iocs.zip")
+
+# ---------------- REFRESH ---------------- #
 
 @app.route("/refresh")
 def refresh():
 
     save_iocs(generate_feed())
-
     return "Threat feed refreshed"
 
-# ------------------------------------------------
+# ---------------- RUN ---------------- #
 
 if __name__=="__main__":
-
     app.run(host="0.0.0.0",port=5000)
