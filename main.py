@@ -14,7 +14,7 @@ from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
 app = Flask(__name__)
-DB_FILE = "redshark_v9.db"
+DB_FILE = "redshark_soc.db"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -38,28 +38,27 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-
 init_db()
 
-# ---------------- GLOBAL LOCATIONS ---------------- #
+# ---------------- LOCATIONS ---------------- #
 locations = [
-("Malaysia",4.2,102.0),
-("Singapore",1.35,103.82),
-("China",35,103),
-("USA",37,-95),
-("Russia",61,105),
-("Germany",51,10),
-("Brazil",-10,-55)
+    ("Malaysia",4.2,102.0),
+    ("Singapore",1.35,103.82),
+    ("China",35,103),
+    ("USA",37,-95),
+    ("Russia",61,105),
+    ("Germany",51,10),
+    ("Brazil",-10,-55)
 ]
 
-# ---------------- MITRE ATT&CK ---------------- #
+# ---------------- MITRE ---------------- #
 mitre_map = [
-"T1046 Network Service Discovery",
-"T1059 Command Execution",
-"T1566 Phishing",
-"T1071 C2 Communication",
-"T1105 Exfiltration",
-"T1190 Exploit Public Application"
+    "T1046 Network Service Discovery",
+    "T1059 Command Execution",
+    "T1566 Phishing",
+    "T1071 C2 Communication",
+    "T1105 Exfiltration",
+    "T1190 Exploit Public Application"
 ]
 
 # ---------------- IOC GENERATOR ---------------- #
@@ -115,7 +114,6 @@ def threat_engine():
     while True:
         save_iocs(generate_feed())
         time.sleep(45)
-
 threading.Thread(target=threat_engine,daemon=True).start()
 
 # ---------------- DASHBOARD ---------------- #
@@ -145,11 +143,11 @@ def dashboard():
 
     ticker=[f"{r[3]} {r[0]} via {r[2]}" for r in rows[:15]]
 
-    html="""
+    html = """
 <!DOCTYPE html>
 <html>
 <head>
-<title>RedShark v9 SOC Platform</title>
+<title>RedShark SOC Platform</title>
 <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
@@ -171,7 +169,7 @@ h1{text-align:center;color:#38bdf8}
 </style>
 </head>
 <body>
-<h1>RedShark v9 SOC Platform</h1>
+<h1>RedShark SOC Platform</h1>
 <div class="highlight"><b>Latest Malaysia Security Highlight (GMT+8)</b><br>{{highlight}}</div>
 <form method="get" style="text-align:center">
 <input name="q" placeholder="Search IOC"><button type="submit">Search</button>
@@ -215,7 +213,6 @@ if(p[3]=="Critical")color="darkred"
 L.circleMarker([lat,lon],{radius:7,color:color,fillOpacity:0.7}).addTo(map)
 .bindPopup(p[0]+"<br>"+p[3])
 })
-// MITRE chart
 var mitre_labels = {{rows|map(attribute=4)|list|tojson}}
 var mitre_counts = {}
 mitre_labels.forEach(function(m){ mitre_counts[m]=(mitre_counts[m]||0)+1 })
