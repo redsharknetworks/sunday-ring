@@ -17,13 +17,15 @@ import ipaddress
 # Flask App
 # ================================
 app = Flask(__name__)
-DB_FILE = "soc_v3_expanded.db"
+DB_FILE = "soc_v3_malaysia.db"
 
 # ================================
-# Database Initialization
+# Initialize Database
 # ================================
 def init_db():
-    """Initialize SQLite database with threats table"""
+    """
+    Create SQLite database and threats table
+    """
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     c.execute("""
@@ -48,10 +50,30 @@ def init_db():
 init_db()
 
 # ================================
-# MITRE Mapping Function
+# Preload Demo IPs
+# ================================
+def populate_demo_data():
+    """
+    Populate demo IPs so the dashboard has immediate data
+    """
+    demo_ips = [
+        {"ip":"8.8.8.8","country":"United States","asn":"AS15169","category":"Recon","severity":"High","mitre":"Reconnaissance","source":"Demo","lat":37.386,"lon":-122.084},
+        {"ip":"1.1.1.1","country":"Australia","asn":"AS13335","category":"C2","severity":"Critical","mitre":"Command and Control","source":"Demo","lat":-33.494,"lon":143.210},
+        {"ip":"203.0.113.5","country":"Malaysia","asn":"AS4788","category":"Malware","severity":"Medium","mitre":"Execution","source":"Demo","lat":3.139,"lon":101.686},
+        {"ip":"198.51.100.23","country":"Netherlands","asn":"AS1239","category":"Botnet","severity":"Critical","mitre":"Persistence","source":"Demo","lat":52.3676,"lon":4.9041}
+    ]
+    for d in demo_ips:
+        store_threat(d["ip"], d["source"])
+
+populate_demo_data()
+
+# ================================
+# MITRE Mapping
 # ================================
 def mitre_map(category):
-    """Map threat category to MITRE tactic"""
+    """
+    Map threat category to MITRE tactic
+    """
     mapping = {
         "C2": "Command and Control",
         "Recon": "Reconnaissance",
@@ -80,7 +102,9 @@ latest_threats = deque(maxlen=200)
 # Geo-IP Enrichment
 # ================================
 def geo_ip(ip):
-    """Query ip-api.com for country, ASN, latitude, longitude"""
+    """
+    Query ip-api.com to get country, ASN, latitude, longitude
+    """
     try:
         r = requests.get(f"http://ip-api.com/json/{ip}", timeout=5).json()
         return r.get("country", "Unknown"), r.get("as", "Unknown"), r.get("lat", 0), r.get("lon", 0)
@@ -88,10 +112,12 @@ def geo_ip(ip):
         return "Unknown", "Unknown", 0, 0
 
 # ================================
-# Parse Feed
+# Feed Parsing
 # ================================
 def parse_feed(feed_text):
-    """Parse IP addresses (including CIDR) from feed text"""
+    """
+    Extract IP addresses (including CIDR) from feed text
+    """
     ips = set()
     for line in feed_text.splitlines():
         line = line.strip()
@@ -114,13 +140,15 @@ def parse_feed(feed_text):
 # Store Threat Function
 # ================================
 def store_threat(ip, source):
-    """Store threat into database and cache"""
+    """
+    Store threat in SQLite and in-memory cache
+    """
     categories = ["C2", "Recon", "Botnet", "Malware", "Phishing"]
-    severity = random.choice(["Low", "Medium", "High", "Critical"])
+    severity = random.choice(["Low","Medium","High","Critical"])
     category = random.choice(categories)
     mitre = mitre_map(category)
     country, asn, lat, lon = geo_ip(ip)
-    cluster_id = random.randint(1, 5)
+    cluster_id = random.randint(1,5)
 
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
@@ -150,10 +178,12 @@ def store_threat(ip, source):
         return False
 
 # ================================
-# Ingestion Loop
+# Threat Ingestion
 # ================================
 def ingest_once():
-    """Run ingestion once for all feeds"""
+    """
+    Run ingestion once for all feeds
+    """
     inserted = 0
     for name, url in FEEDS.items():
         try:
@@ -168,7 +198,9 @@ def ingest_once():
     return inserted
 
 def ingest_loop():
-    """Threaded ingestion: run immediately, then every hour"""
+    """
+    Run ingestion in background thread every hour
+    """
     ingest_once()
     while True:
         time.sleep(3600)
@@ -177,10 +209,12 @@ def ingest_loop():
 threading.Thread(target=ingest_loop, daemon=True).start()
 
 # ================================
-# Threat Index
+# Threat Index Calculation
 # ================================
 def threat_index():
-    """Compute threat index from severity counts"""
+    """
+    Compute threat index based on severity
+    """
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     c.execute("SELECT severity, count(*) FROM threats GROUP BY severity")
@@ -189,14 +223,11 @@ def threat_index():
     score = 0
     total = 0
     for sev, count in rows:
-        if sev == "Critical":
-            score += count * 3
-        elif sev == "High":
-            score += count * 2
-        elif sev == "Medium":
-            score += count * 1
+        if sev=="Critical": score += count*3
+        elif sev=="High": score += count*2
+        elif sev=="Medium": score += count*1
         total += count
-    return round(score / total, 2) if total > 0 else 0
+    return round(score/total,2) if total>0 else 0
 
 # ================================
 # API Endpoint
@@ -206,7 +237,7 @@ def api_threats():
     return jsonify(list(latest_threats))
 
 # ================================
-# Download CSV
+# CSV Download
 # ================================
 @app.route("/download/csv")
 def download_csv():
@@ -215,7 +246,6 @@ def download_csv():
     c.execute("SELECT * FROM threats")
     rows = c.fetchall()
     conn.close()
-
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["ID","IP","Country","ASN","Category","Severity","MITRE","Source","Cluster","Lat","Lon","FetchedAt"])
@@ -224,10 +254,10 @@ def download_csv():
     mem = io.BytesIO()
     mem.write(output.getvalue().encode())
     mem.seek(0)
-    return send_file(mem, download_name="soc_v3_real.csv", as_attachment=True)
+    return send_file(mem, download_name="soc_v3_malaysia.csv", as_attachment=True)
 
 # ================================
-# Download JSON
+# JSON Download
 # ================================
 @app.route("/download/json")
 def download_json():
@@ -239,10 +269,10 @@ def download_json():
     mem = io.BytesIO()
     mem.write(json.dumps(rows, indent=2).encode())
     mem.seek(0)
-    return send_file(mem, download_name="soc_v3_real.json", as_attachment=True)
+    return send_file(mem, download_name="soc_v3_malaysia.json", as_attachment=True)
 
 # ================================
-# Download IDS Rules
+# IDS Rules Download
 # ================================
 @app.route("/download/rules")
 def download_rules():
@@ -261,7 +291,7 @@ def download_rules():
     return send_file(mem, download_name="soc_v3_rules.zip", as_attachment=True)
 
 # ================================
-# Dashboard UI
+# Dashboard HTML
 # ================================
 @app.route("/")
 def dashboard():
@@ -314,6 +344,7 @@ button:hover {{ background:#334155; }}
 
 <script>
 let threats = []
+const MALAYSIA = {{latMin:1.0, latMax:7.5, lonMin:99.5, lonMax:119.0}}
 
 async function loadData() {{
     let r = await fetch("/api/threats")
@@ -335,9 +366,15 @@ function drawMap() {{
     ctx.clearRect(0,0,canvas.width,canvas.height)
     ctx.fillStyle="#0e1a2b"; ctx.fillRect(0,0,canvas.width,canvas.height)
     ctx.strokeStyle="#a1c4fd"; ctx.lineWidth=1.2
+
+    let latRange = MALAYSIA.latMax-MALAYSIA.latMin
+    let lonRange = MALAYSIA.lonMax-MALAYSIA.lonMin
+    let latScale = canvas.height/latRange
+    let lonScale = canvas.width/lonRange
+
     threats.forEach(t => {{
-        let x = canvas.width*(180+t.lon)/360
-        let y = canvas.height*(90-t.lat)/180
+        let x = (t.lon-MALAYSIA.lonMin)*lonScale
+        let y = canvas.height-(t.lat-MALAYSIA.latMin)*latScale
         ctx.beginPath()
         ctx.arc(x,y,4,0,2*Math.PI)
         ctx.fillStyle = (t.severity=="Critical")?"#ff4c4c":"#00ffae"
@@ -346,16 +383,14 @@ function drawMap() {{
     setTimeout(drawMap,5000)
 }}
 
-loadData(); setInterval(loadData,30000); drawMap()
+loadData()
+setInterval(loadData,30000)
+drawMap()
 </script>
-
 </body>
 </html>
 """
     return html
 
-# ================================
-# Main
-# ================================
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
