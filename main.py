@@ -6,18 +6,22 @@ import random
 import sqlite3
 import threading
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from flask import Flask, render_template_string, send_file, jsonify, request
-from flask_socketio import SocketIO, emit
+from flask import Flask, render_template_string, send_file, jsonify
+from flask_socketio import SocketIO
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter, landscape
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'redshark_v15'
-socketio = SocketIO(app)
+# ---------------- EVENTLET PATCH ---------------- #
+import eventlet
+eventlet.monkey_patch()  # Must patch before socketio.run()
 
-DB_FILE = "redshark_v15.db"
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'redshark_v15.1'
+socketio = SocketIO(app, async_mode='eventlet')  # use eventlet
+
+DB_FILE = "redshark_v15.1.db"
 DISCLAIMER = "Developed and analysed by darkgrid@redshark.my using publicly available sources"
 
 # ---------------- DATABASE ---------------- #
@@ -48,18 +52,7 @@ def init_db():
 
 init_db()
 
-# ---------------- GLOBAL LOCATIONS ---------------- #
-locations = [
-    ("Malaysia",4.2,102.0),
-    ("Singapore",1.35,103.82),
-    ("China",35,103),
-    ("USA",37,-95),
-    ("Russia",61,105),
-    ("Germany",51,10),
-    ("Brazil",-10,-55)
-]
-
-# ---------------- MITRE ATT&CK ---------------- #
+# ---------------- MITRE & THREAT TYPES ---------------- #
 mitre_map = [
 "T1046 Network Service Discovery",
 "T1059 Command Execution",
@@ -68,8 +61,6 @@ mitre_map = [
 "T1105 Exfiltration",
 "T1190 Exploit Public Application"
 ]
-
-# ---------------- THREAT TYPES ---------------- #
 threat_categories = ["Malware","Phishing","Botnet","C2","Recon"]
 
 # ---------------- IOC GENERATOR ---------------- #
@@ -82,9 +73,12 @@ def threat_score(sev):
             "High": random.randint(70,85),
             "Critical": random.randint(90,100)}[sev]
 
-# ---------------- THREAT ENRICHMENT PLACEHOLDER ---------------- #
+# ---------------- GLOBAL RANDOM LOCATION ---------------- #
+def random_location():
+    return (random.uniform(-90, 90), random.uniform(-180, 180))  # lat, lon
+
+# ---------------- THREAT ENRICHMENT ---------------- #
 def enrich_ioc(indicator_type):
-    # Placeholder enrichment data
     asn = f"AS{random.randint(1000,99999)}"
     reputation = random.choice(["malicious","suspicious","clean"])
     return asn, reputation
@@ -96,7 +90,7 @@ def generate_feed():
     for _ in range(random.randint(12,25)):
         typ = random.choice(["IP","Domain","Hash"])
         indicator = random_ip() if typ=="IP" else random_domain() if typ=="Domain" else random_hash()
-        loc = random.choice(locations)
+        lat, lon = random_location()
         sev = random.choice(["Low","Medium","High","Critical"])
         category = random.choice(threat_categories)
         asn, reputation = enrich_ioc(typ)
@@ -108,9 +102,9 @@ def generate_feed():
             "mitre": random.choice(mitre_map),
             "score": threat_score(sev),
             "category": category,
-            "country": loc[0],
-            "lat": loc[1],
-            "lon": loc[2],
+            "country": "Unknown",  # optional placeholder
+            "lat": lat,
+            "lon": lon,
             "asn": asn,
             "reputation": reputation,
             "first_seen": datetime.utcnow().isoformat(),
@@ -131,23 +125,21 @@ def save_iocs(feed, emit_update=True):
              f["asn"], f["reputation"], f["first_seen"], f["last_seen"]))
     conn.commit()
     conn.close()
-    # Emit to WebSocket clients
     if emit_update:
         socketio.emit('new_iocs', {'iocs': feed}, broadcast=True)
 
-# ---------------- BACKGROUND FEED ENGINE ---------------- #
+# ---------------- BACKGROUND ENGINE ---------------- #
 def threat_engine():
     while True:
         save_iocs(generate_feed())
-        socketio.sleep(60)  # use socketio.sleep for compatibility with WebSocket
+        socketio.sleep(60)
 
-threading.Thread(target=threat_engine,daemon=True).start()
+threading.Thread(target=threat_engine, daemon=True).start()
 
 # ---------------- DASHBOARD ---------------- #
 @app.route("/")
 def dashboard():
-    html="""
-<!DOCTYPE html>
+    html = """<!DOCTYPE html>
 <html>
 <head>
 <title>RedShark Threat Intelligence Platform</title>
@@ -175,7 +167,7 @@ h1{text-align:center;color:#38bdf8}
 </head>
 <body>
 <h1>RedShark Threat Intelligence Platform</h1>
-<div class="highlight" id="highlight"><b>Latest Malaysia Security Highlight (GMT+8)</b><br>No major threat detected</div>
+<div class="highlight" id="highlight"><b>Latest Security Highlight (GMT+8)</b><br>No major threat detected</div>
 <div class="ticker" id="ticker"></div>
 <div id="map"></div>
 <canvas id="mitre"></canvas>
@@ -183,17 +175,8 @@ h1{text-align:center;color:#38bdf8}
 <table id="cti" class="display">
 <thead>
 <tr>
-<th>Indicator</th>
-<th>Type</th>
-<th>Source</th>
-<th>Severity</th>
-<th>Category</th>
-<th>MITRE</th>
-<th>Score</th>
-<th>Country</th>
-<th>ASN</th>
-<th>Reputation</th>
-<th>Last Seen</th>
+<th>Indicator</th><th>Type</th><th>Source</th><th>Severity</th><th>Category</th>
+<th>MITRE</th><th>Score</th><th>Country</th><th>ASN</th><th>Reputation</th><th>Last Seen</th>
 </tr>
 </thead>
 <tbody id="table-body"></tbody>
@@ -222,7 +205,6 @@ options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}
 })
 
 function update_dashboard(iocs){
-    // update table
     var tbody = $('#table-body'); tbody.empty();
     var ticker_html = ''; var highlight_text = 'No major threat detected';
     iocs.forEach(function(i,idx){
@@ -242,9 +224,8 @@ function update_dashboard(iocs){
         if(idx<10){ ticker_html+=`🚨 ${i.severity} ${i.category} ${i.indicator} via ${i.source} &nbsp;&nbsp;` }
         if(idx===0) highlight_text=`${i.severity} ${i.category} threat ${i.indicator} via ${i.source} at ${(new Date()).toLocaleString('en-US',{timeZone:'Asia/Kuala_Lumpur'})}`
     });
-    $('#ticker').html(ticker_html); $('#highlight').html('<b>Latest Malaysia Security Highlight (GMT+8)</b><br>'+highlight_text);
+    $('#ticker').html(ticker_html); $('#highlight').html('<b>Latest Security Highlight (GMT+8)</b><br>'+highlight_text);
 
-    // update map
     markers.forEach(m=>map.removeLayer(m)); markers=[];
     iocs.forEach(function(i){
         var color="blue"; if(i.severity=="Low") color="green"; if(i.severity=="Medium") color="orange";
@@ -254,7 +235,6 @@ function update_dashboard(iocs){
         markers.push(marker);
     });
 
-    // update charts
     var mitre_counts = {}; var severity_counts={};
     iocs.forEach(function(i){ mitre_counts[i.mitre]=(mitre_counts[i.mitre]||0)+1; severity_counts[i.severity]=(severity_counts[i.severity]||0)+1; });
     mitre_chart.data.labels=Object.keys(mitre_counts); mitre_chart.data.datasets[0].data=Object.values(mitre_counts);
@@ -265,8 +245,7 @@ function update_dashboard(iocs){
 socket.on('new_iocs', function(data){ update_dashboard(data.iocs); });
 </script>
 </body>
-</html>
-"""
+</html>"""
     return render_template_string(html,disclaimer=DISCLAIMER)
 
 # ---------------- EXPORTS ---------------- #
@@ -311,13 +290,7 @@ def export_zip():
     mem.seek(0)
     return send_file(mem,as_attachment=True,download_name="redshark_iocs.zip")
 
-# ---------------- REFRESH ---------------- #
-@app.route("/refresh")
-def refresh():
-    save_iocs(generate_feed())
-    return "Threat feed refreshed"
-
 # ---------------- RUN ---------------- #
 if __name__=="__main__":
     port=int(os.environ.get("PORT",5000))
-    socketio.run(app,host="0.0.0.0",port=port,debug=True)
+    socketio.run(app, host="0.0.0.0", port=port, debug=True)
