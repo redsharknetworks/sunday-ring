@@ -8,16 +8,15 @@ import sqlite3
 import threading
 import zipfile
 from datetime import datetime, timedelta
-
 from flask import Flask, render_template_string, send_file, jsonify, request
+
 from reportlab.platypus import SimpleDocTemplate, Table
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, landscape
 
 app = Flask(__name__)
-DB_FILE = "redshark_v8.db"
+DB_FILE = "redshark_v13.db"
 
 # ---------------- DATABASE ---------------- #
-
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -30,6 +29,7 @@ def init_db():
         severity TEXT,
         mitre TEXT,
         score INTEGER,
+        category TEXT,
         country TEXT,
         lat REAL,
         lon REAL,
@@ -44,13 +44,13 @@ init_db()
 
 # ---------------- GLOBAL LOCATIONS ---------------- #
 locations = [
-("Malaysia",4.2,102.0),
-("Singapore",1.35,103.82),
-("China",35,103),
-("USA",37,-95),
-("Russia",61,105),
-("Germany",51,10),
-("Brazil",-10,-55)
+    ("Malaysia",4.2,102.0),
+    ("Singapore",1.35,103.82),
+    ("China",35,103),
+    ("USA",37,-95),
+    ("Russia",61,105),
+    ("Germany",51,10),
+    ("Brazil",-10,-55)
 ]
 
 # ---------------- MITRE ATT&CK ---------------- #
@@ -63,17 +63,14 @@ mitre_map = [
 "T1190 Exploit Public Application"
 ]
 
+# ---------------- THREAT TYPES ---------------- #
+threat_categories = ["Malware","Phishing","Botnet","C2","Recon"]
+
 # ---------------- IOC GENERATOR ---------------- #
-def random_ip():
-    return f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
+def random_ip(): return f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
+def random_domain(): return f"malicious{random.randint(1,999)}.net"
+def random_hash(): return os.urandom(16).hex()
 
-def random_domain():
-    return f"malicious{random.randint(1,999)}.net"
-
-def random_hash():
-    return os.urandom(16).hex()
-
-# ---------------- AI THREAT SCORE ---------------- #
 def threat_score(sev):
     return {"Low": random.randint(10,30),
             "Medium": random.randint(40,60),
@@ -84,13 +81,12 @@ def threat_score(sev):
 def generate_feed():
     feeds = ["OTX","Talos","AbuseIPDB"]
     data = []
-    for i in range(random.randint(12,25)):
+    for _ in range(random.randint(12,25)):
         typ = random.choice(["IP","Domain","Hash"])
-        if typ=="IP": indicator=random_ip()
-        elif typ=="Domain": indicator=random_domain()
-        else: indicator=random_hash()
+        indicator = random_ip() if typ=="IP" else random_domain() if typ=="Domain" else random_hash()
         loc = random.choice(locations)
         sev = random.choice(["Low","Medium","High","Critical"])
+        category = random.choice(threat_categories)
         data.append({
             "indicator": indicator,
             "type": typ,
@@ -98,6 +94,7 @@ def generate_feed():
             "severity": sev,
             "mitre": random.choice(mitre_map),
             "score": threat_score(sev),
+            "category": category,
             "country": loc[0],
             "lat": loc[1],
             "lon": loc[2],
@@ -112,17 +109,18 @@ def save_iocs(feed):
     for f in feed:
         c.execute("""
         INSERT INTO indicators
-        (indicator,type,source,severity,mitre,score,country,lat,lon,first_seen,last_seen)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        (indicator,type,source,severity,mitre,score,category,country,lat,lon,first_seen,last_seen)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         """,(f["indicator"],f["type"],f["source"],f["severity"],f["mitre"],
-             f["score"],f["country"],f["lat"],f["lon"],f["first_seen"],f["last_seen"]))
+             f["score"],f["category"],f["country"],f["lat"],f["lon"],f["first_seen"],f["last_seen"]))
     conn.commit()
     conn.close()
 
+# ---------------- BACKGROUND FEED ENGINE ---------------- #
 def threat_engine():
     while True:
         save_iocs(generate_feed())
-        time.sleep(60)
+        time.sleep(60)  # every 1 min
 
 threading.Thread(target=threat_engine,daemon=True).start()
 
@@ -134,42 +132,42 @@ def dashboard():
     c = conn.cursor()
     if search:
         c.execute("""
-        SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen
+        SELECT indicator,type,source,severity,mitre,score,category,country,lat,lon,last_seen
         FROM indicators WHERE indicator LIKE ? ORDER BY last_seen DESC
         """,(f"%{search}%",))
     else:
         c.execute("""
-        SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen
+        SELECT indicator,type,source,severity,mitre,score,category,country,lat,lon,last_seen
         FROM indicators ORDER BY last_seen DESC
         """)
     rows = c.fetchall()
     conn.close()
+
     malaysia_time=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     highlight="No major threat detected"
     if rows:
         latest=rows[0]
-        highlight=f"{latest[3]} threat {latest[0]} via {latest[2]} at {malaysia_time}"
-    ticker=[f"{r[3]} {r[0]} via {r[2]}" for r in rows[:10]]
+        highlight=f"{latest[3]} {latest[6]} threat {latest[0]} via {latest[2]} at {malaysia_time}"
+    ticker=[f"{r[3]} {r[6]} {r[0]} via {r[2]}" for r in rows[:10]]
+
     html="""
 <!DOCTYPE html>
 <html>
 <head>
-<title>RedShark v8 SOC Platform</title>
-<link rel="stylesheet"
-href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+<title>RedShark v13 SOC Platform</title>
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
-<link rel="stylesheet"
-href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 body{background:#020617;color:white;font-family:Arial}
 h1{text-align:center;color:#38bdf8}
 .highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red}
-.ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155}
+.ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;overflow-x:auto;white-space:nowrap}
 #map{height:450px;margin:20px}
-#mitre{height:250px;margin:20px}
+#mitre,#severity{height:250px;margin:20px}
 .low{color:green}
 .medium{color:orange}
 .high{color:red}
@@ -178,7 +176,7 @@ h1{text-align:center;color:#38bdf8}
 </style>
 </head>
 <body>
-<h1>RedShark v8 SOC Platform</h1>
+<h1>RedShark v13 SOC Platform</h1>
 <div class="highlight"><b>Latest Malaysia Security Highlight (GMT+8)</b><br>{{highlight}}</div>
 <form method="get" style="text-align:center">
 <input name="q" placeholder="Search IOC">
@@ -187,6 +185,7 @@ h1{text-align:center;color:#38bdf8}
 <div class="ticker">{% for t in ticker %}🚨 {{t}} &nbsp;&nbsp;{% endfor %}</div>
 <div id="map"></div>
 <canvas id="mitre"></canvas>
+<canvas id="severity"></canvas>
 <table id="cti" class="display">
 <thead>
 <tr>
@@ -194,6 +193,7 @@ h1{text-align:center;color:#38bdf8}
 <th>Type</th>
 <th>Source</th>
 <th>Severity</th>
+<th>Category</th>
 <th>MITRE</th>
 <th>Score</th>
 <th>Country</th>
@@ -207,10 +207,11 @@ h1{text-align:center;color:#38bdf8}
 <td>{{r[1]}}</td>
 <td>{{r[2]}}</td>
 <td class="{{r[3]|lower}}">{{r[3]}}</td>
+<td>{{r[6]}}</td>
 <td>{{r[4]}}</td>
 <td>{{r[5]}}</td>
-<td>{{r[6]}}</td>
-<td>{{r[9]}}</td>
+<td>{{r[7]}}</td>
+<td>{{r[10]}}</td>
 </tr>
 {% endfor %}
 </tbody>
@@ -229,19 +230,28 @@ var map=L.map('map').setView([20,0],2)
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
 var points={{rows|tojson}}
 points.forEach(function(p){
-var lat=p[7],lon=p[8],color="blue"
+var lat=p[8],lon=p[9],color="blue"
 if(p[3]=="Low")color="green"
 if(p[3]=="Medium")color="orange"
 if(p[3]=="High")color="red"
 if(p[3]=="Critical")color="darkred"
 L.circleMarker([lat,lon],{radius:7,color:color,fillOpacity:0.7}).addTo(map)
-.bindPopup(p[0]+"<br>"+p[3])
+.bindPopup(p[0]+"<br>"+p[3]+" "+p[6])
 })
 var mitre_labels = {{rows|map(attribute=4)|list|tojson}}
 var mitre_counts = {}
 mitre_labels.forEach(function(m){ mitre_counts[m]=(mitre_counts[m]||0)+1 })
 var ctx = document.getElementById('mitre').getContext('2d')
 new Chart(ctx,{type:'bar',data:{labels:Object.keys(mitre_counts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitre_counts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}})
+
+var severity_labels={{rows|map(attribute=3)|list|tojson}}
+var severity_counts={}
+severity_labels.forEach(function(s){ severity_counts[s]=(severity_counts[s]||0)+1 })
+var ctx2 = document.getElementById('severity').getContext('2d')
+new Chart(ctx2,{type:'bar',data:{labels:Object.keys(severity_counts),datasets:[{label:'Severity Count',data:Object.values(severity_counts),backgroundColor:['green','orange','red','darkred']}]},options:{plugins:{legend:{display:false}}}})
+</script>
+<script>
+setTimeout(function(){location.reload();},20000)
 </script>
 </body>
 </html>
@@ -265,9 +275,9 @@ def export_csv():
 @app.route("/export/pdf")
 def export_pdf():
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
-    c.execute("SELECT indicator,type,source,severity,mitre FROM indicators LIMIT 100")
+    c.execute("SELECT indicator,type,source,severity,mitre,score,category FROM indicators LIMIT 100")
     rows=c.fetchall(); conn.close()
-    buffer=io.BytesIO(); doc=SimpleDocTemplate(buffer,pagesize=letter)
+    buffer=io.BytesIO(); doc=SimpleDocTemplate(buffer,pagesize=landscape(letter))
     table=Table(rows); doc.build([table]); buffer.seek(0)
     return send_file(buffer,as_attachment=True,download_name="redshark_report.pdf")
 
@@ -277,7 +287,7 @@ def export_ids():
     c.execute("SELECT indicator FROM indicators WHERE type='IP'"); rows=c.fetchall(); conn.close()
     rules=""; sid=100000
     for r in rows:
-        rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\\n'; sid+=1
+        rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\n'; sid+=1
     return send_file(io.BytesIO(rules.encode()),as_attachment=True,download_name="redshark.rules")
 
 @app.route("/export/zip")
@@ -286,7 +296,7 @@ def export_zip():
     c.execute("SELECT indicator FROM indicators"); rows=c.fetchall(); conn.close()
     mem=io.BytesIO()
     with zipfile.ZipFile(mem,'w',zipfile.ZIP_DEFLATED) as z:
-        z.writestr("ioc_list.txt","\\n".join([r[0] for r in rows]))
+        z.writestr("ioc_list.txt","\n".join([r[0] for r in rows]))
     mem.seek(0)
     return send_file(mem,as_attachment=True,download_name="redshark_iocs.zip")
 
@@ -298,4 +308,5 @@ def refresh():
 
 # ---------------- RUN ---------------- #
 if __name__=="__main__":
-    app.run(host="0.0.0.0",port=5000)
+    port=int(os.environ.get("PORT",5000))
+    app.run(host="0.0.0.0",port=port,debug=True)
