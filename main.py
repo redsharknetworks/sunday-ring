@@ -2,10 +2,8 @@ import os
 import io
 import csv
 import json
-import time
 import random
 import sqlite3
-import threading
 import zipfile
 from datetime import datetime, timedelta
 
@@ -13,8 +11,10 @@ from flask import Flask, render_template_string, send_file, jsonify, request
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
+from apscheduler.schedulers.background import BackgroundScheduler
+
 app = Flask(__name__)
-DB_FILE = "redshark_v11_4.db"
+DB_FILE = "redshark_v11_5.db"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -92,16 +92,15 @@ def save_iocs(feed):
              f["score"],f["country"],f["lat"],f["lon"],f["first_seen"],f["last_seen"]))
     conn.commit(); conn.close()
 
-# ---------------- INITIAL POPULATION ---------------- #
-save_iocs(generate_feed(50))
+# ---------------- SCHEDULED INGESTION ---------------- #
+def scheduled_ingest():
+    feed = generate_feed(25)  # Replace with real API fetch in production
+    save_iocs(feed)
+    print(f"[{datetime.utcnow().isoformat()}] Saved {len(feed)} IOCs.")
 
-# ---------------- THREAT ENGINE ---------------- #
-def threat_engine():
-    while True:
-        save_iocs(generate_feed())
-        time.sleep(45)
-
-threading.Thread(target=threat_engine,daemon=True).start()
+scheduler = BackgroundScheduler()
+scheduler.add_job(scheduled_ingest, 'interval', minutes=1)
+scheduler.start()
 
 # ---------------- DASHBOARD ---------------- #
 @app.route("/")
@@ -130,7 +129,8 @@ def dashboard():
         highlight=f"{latest[3]} threat {latest[0]} via {latest[2]} at {malaysia_time}"
     ticker=[f"{r[3]} {r[0]} via {r[2]}" for r in rows[:15]]
     
-    html="""<!DOCTYPE html>
+    html = """
+<!DOCTYPE html>
 <html>
 <head>
 <title>RedShark Threat Intelligence Dashboard</title>
@@ -275,8 +275,9 @@ function animate(){
 animate()
 </script>
 </body>
-</html>"""
-    return render_template_string(html,rows=rows,highlight=highlight,ticker=ticker)
+</html>
+"""
+    return render_template_string(html, rows=rows, highlight=highlight, ticker=ticker)
 
 # ---------------- EXPORTS ---------------- #
 @app.route("/export/json")
@@ -313,8 +314,9 @@ def export_zip():
 
 @app.route("/refresh")
 def refresh():
-    save_iocs(generate_feed())
-    return "Threat feed refreshed"
+    feed = generate_feed(25)
+    save_iocs(feed)
+    return f"Threat feed refreshed ({len(feed)} new entries)"
 
 # ---------------- RUN ---------------- #
 if __name__=="__main__":
