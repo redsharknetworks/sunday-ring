@@ -128,8 +128,6 @@ def fetch_hashes():
     except: pass
 
 def fetch_feeds():
-    global last_fetch_time
-    last_fetch_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     fetch_threatfox()
     fetch_feodo()
     fetch_hashes()
@@ -146,7 +144,7 @@ def start_scheduler():
 # ---------------- SECURENATION INDEX ----------------
 def securenation():
     rows = db().execute("SELECT severity FROM threats ORDER BY id DESC LIMIT 100").fetchall()
-    if not rows: return 0,"#00FF99"
+    if not rows: return 0
     val = round(sum([r["severity"] for r in rows])/len(rows),1)
     if val>=85: color="#FF3C3C"
     elif val>=70: color="#FFA500"
@@ -161,15 +159,12 @@ def cti_highlight():
     """).fetchall()
     highlights=[]
     for r in rows:
-        sev_text = "Medium"
-        if r["severity"]>=85: sev_text="Critical"
-        elif r["severity"]>=70: sev_text="High"
-        statement = f"{sev_text} {r['type']} indicator targeting {r['sector']} sector leveraging {r['mitre']} detected."
+        statement = f"A new {r['type']} indicator targeting {r['sector']} sector leveraging {r['mitre']} detected."
         highlights.append({"statement": statement, "created": r["created"]})
     latest_time = rows[0]["created"] if rows else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     return latest_time, highlights
 
-# ---------------- PLOTS ----------------
+# ---------------- NIKKEI STYLE CHART ----------------
 def nikkei_chart(x,y,title):
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -190,7 +185,7 @@ def malaysia_map():
     lat, lon = [r["lat"] for r in rows], [r["lon"] for r in rows]
     sev = [r["severity"] for r in rows]
     colors = ["#FF3C3C" if s>=85 else "#FF9900" if s>=70 else "#FFFF00" for s in sev]
-    sizes = [25 if s>=85 else 14 if s>=70 else 10 for s in sev]
+    sizes = [20 if s>=85 else 14 if s>=70 else 10 for s in sev]
     fig = go.Figure()
     fig.add_trace(go.Scattermapbox(
         lat=lat, lon=lon, mode="markers",
@@ -224,17 +219,115 @@ def mitre_chart():
     rows=db().execute("SELECT mitre, COUNT(*) c FROM threats GROUP BY mitre").fetchall()
     return nikkei_chart([r["mitre"] for r in rows],[r["c"] for r in rows],"MITRE Techniques Trend")
 
-# ---------------- DISCLAIMER ----------------
-DISCLAIMER = """Developed and analyzed by darkgrid@redshark.my using publicly available sources.
-The indicators provided are for informational purposes only. Use in accordance with your organization's policies and cybersecurity best practices.
-RedShark is not responsible for any damage or misuse resulting from these indicators."""
-
-@app.context_processor
-def inject_disclaimer():
-    return dict(disclaimer=DISCLAIMER)
-
 # ---------------- DASHBOARD HTML ----------------
-# Use the full HTML template from previous step with blinking/highlight, manual refresh, last fetch, disclaimer
+HTML = """<html>
+<head>
+<title>RedShark Threat Intelligence Dashboard</title>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.4/css/jquery.dataTables.min.css">
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
+<style>
+body{background:#0b1b2a;color:#A3B8CC;font-family:Arial;}
+.card{background:#13263b;padding:20px;margin:15px;border-radius:8px;}
+table{width:100%;border-collapse:collapse;}
+td,th{padding:8px;border-bottom:1px solid #1f3d5c;text-align:center;}
+.center{text-align:center;margin-top:15px;}
+button.download-btn{
+    background:#2A3A4B;color:#A3B8CC;font-weight:bold;padding:10px 18px;
+    border:none;border-radius:5px;margin-right:8px;cursor:pointer;
+}
+button.download-btn:hover{background:#3A4A5C;}
+.secure-index{font-weight:bold;font-size:1.5em;}
+</style>
+</head>
+<body>
+<h2>RedShark Threat Intelligence Dashboard</h2>
+
+<div class="card">
+SecureNation Index: <span class="secure-index" style="color:{{index_color}}">{{index}}</span>
+</div>
+
+<div class="card">
+<h3>CTI Highlight at {{highlight_time}}</h3>
+<ul>
+{% for b in highlights %}
+<li>{{b.statement}}</li>
+{% endfor %}
+</ul>
+</div>
+
+<div class="card">
+<h3>Malaysia Cyber Attack Map</h3>
+<div id="map" style="height:400px;"></div>
+</div>
+
+<div class="card">
+<h3>Threat Timeline</h3>
+<div id="timeline" style="height:300px;"></div>
+</div>
+
+<div class="card">
+<h3>MITRE ATT&CK Techniques</h3>
+<div id="mitre" style="height:300px;"></div>
+</div>
+
+<div class="card">
+<h3>Sector Targeting</h3>
+<div id="sector" style="height:300px;"></div>
+</div>
+
+<div class="card">
+<h3>Indicator Type Distribution</h3>
+<div id="indicator_type" style="height:300px;"></div>
+</div>
+
+<div class="card">
+<h3>Latest Threat Indicators</h3>
+<table id="threat_table">
+<thead>
+<tr><th>ID</th><th>Indicator</th><th>Type</th><th>Sector</th><th>Severity</th><th>MITRE</th><th>Timestamp</th></tr>
+</thead>
+<tbody>
+{% for r in rows %}
+<tr>
+<td>{{r.id}}</td>
+<td>{{r.indicator}}</td>
+<td>{{r.type}}</td>
+<td>{{r.sector}}</td>
+<td>{{r.severity}}</td>
+<td>{{r.mitre}}</td>
+<td>{{r.created}}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+
+<div class="center">
+<button class="download-btn" onclick="window.location='/csv'">CSV</button>
+<button class="download-btn" onclick="window.location='/json'">JSON</button>
+<button class="download-btn" onclick="window.location='/pdf'">PDF</button>
+<button class="download-btn" onclick="window.location='/download_ips'">IPS RULE</button>
+</div>
+
+<script>
+var timeline={{timeline|safe}};
+var mitre={{mitre|safe}};
+var sector={{sector|safe}};
+var indicator_type={{indicator_type|safe}};
+var map={{map|safe}};
+Plotly.newPlot("timeline",timeline.data,timeline.layout);
+Plotly.newPlot("mitre",mitre.data,mitre.layout);
+Plotly.newPlot("sector",sector.data,sector.layout);
+Plotly.newPlot("indicator_type",indicator_type.data,indicator_type.layout);
+Plotly.newPlot("map",map.data,map.layout);
+
+$(document).ready(function(){ $('#threat_table').DataTable(); });
+</script>
+</body>
+</html>
+"""
 
 # ---------------- DASHBOARD ROUTE ----------------
 @app.route("/")
@@ -242,7 +335,6 @@ def dashboard():
     index, index_color = securenation()
     highlight_time, highlights = cti_highlight()
     rows=db().execute("SELECT * FROM threats ORDER BY id DESC LIMIT 50").fetchall()
-    total_indicators = db().execute("SELECT COUNT(*) as c FROM threats").fetchone()["c"]
     return render_template_string(
         HTML,
         rows=rows,
@@ -254,12 +346,10 @@ def dashboard():
         mitre=mitre_chart(),
         sector=sector_chart(),
         indicator_type=indicator_type_chart(),
-        map=malaysia_map(),
-        last_fetch_time=last_fetch_time,
-        total_indicators=total_indicators
+        map=malaysia_map()
     )
 
-# ---------------- EXPORT ROUTES ----------------
+# ---------------- EXPORT ----------------
 @app.route("/csv")
 def csv_export():
     rows=db().execute("SELECT * FROM threats").fetchall()
@@ -279,12 +369,12 @@ def json_export():
 
 @app.route("/pdf")
 def pdf_export():
-    rows=db().execute("SELECT indicator,type,sector,severity,mitre,created FROM threats ORDER BY id DESC LIMIT 50").fetchall()
+    rows=db().execute("SELECT indicator,type,sector,severity,mitre,created FROM threats LIMIT 50").fetchall()
     buffer=io.BytesIO()
     data=[["Indicator","Type","Sector","Severity","MITRE","Timestamp"]]
     for r in rows:
         data.append([r["indicator"],r["type"],r["sector"],r["severity"],r["mitre"],r["created"]])
-    pdf=SimpleDocTemplate(buffer,pagesize=landscape(A4), rightMargin=20,leftMargin=20,topMargin=20,bottomMargin=20)
+    pdf=SimpleDocTemplate(buffer,pagesize=landscape(A4))
     table=Table(data)
     pdf.build([table])
     buffer.seek(0)
@@ -292,21 +382,14 @@ def pdf_export():
 
 @app.route("/download_ips")
 def download_ips():
-    if not os.path.exists(RULE_FILE): open(RULE_FILE,"w").close()
+    if not os.path.exists(RULE_FILE):
+        open(RULE_FILE,"w").close()
     return send_file(RULE_FILE, download_name="redshark-ips-signatures.rules", as_attachment=True)
 
-# ---------------- MANUAL REFRESH ----------------
-@app.route("/refresh")
-def manual_refresh():
-    try:
-        fetch_feeds()
-        return f"Feeds refreshed successfully at {last_fetch_time}"
-    except Exception as e:
-        return f"Failed to refresh feeds: {e}"
-
 # ---------------- STARTUP ----------------
-if __name__=="__main__":
-    try: fetch_feeds()  # initial fetch
-    except Exception as e: print("Initial fetch failed:", e)
-    start_scheduler()   # start background scheduler
-    app.run(host="0.0.0.0", port=5000, debug=False)
+try:
+    fetch_feeds()  # initial fetch
+except Exception as e:
+    print("Initial fetch failed:", e)
+
+start_scheduler()
