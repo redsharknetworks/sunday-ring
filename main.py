@@ -14,7 +14,7 @@ from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
 app = Flask(__name__)
-DB_FILE = "redshark_soc.db"
+DB_FILE = "redshark_soc_v10_0_1.db"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -154,12 +154,13 @@ def dashboard():
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.10.0/d3.min.js"></script>
 <style>
 body{background:#020617;color:white;font-family:Arial}
 h1{text-align:center;color:#38bdf8}
 .highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red}
 .ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;white-space:nowrap;overflow-x:auto}
-#map{height:450px;margin:20px}
+#map{height:500px;margin:20px}
 #mitre{height:250px;margin:20px}
 .low{color:green}
 .medium{color:orange}
@@ -201,6 +202,8 @@ h1{text-align:center;color:#38bdf8}
 </div>
 <script>
 $(document).ready(function(){ $('#cti').DataTable({pageLength:50})})
+
+// Global attack map
 var map=L.map('map').setView([20,0],2)
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
 var points={{rows|tojson}}
@@ -213,6 +216,8 @@ if(p[3]=="Critical")color="darkred"
 L.circleMarker([lat,lon],{radius:7,color:color,fillOpacity:0.7}).addTo(map)
 .bindPopup(p[0]+"<br>"+p[3])
 })
+
+// MITRE heatmap
 var mitre_labels = {{rows|map(attribute=4)|list|tojson}}
 var mitre_counts = {}
 mitre_labels.forEach(function(m){ mitre_counts[m]=(mitre_counts[m]||0)+1 })
