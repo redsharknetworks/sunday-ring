@@ -3,18 +3,20 @@ import io
 import csv
 import json
 import time
-import random
 import sqlite3
 import threading
-from datetime import datetime, timedelta
 import requests
+from datetime import datetime, timedelta
 from flask import Flask, render_template_string, jsonify, send_file
 
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
+# ---------------- CONFIG ---------------- #
 app = Flask(__name__)
 DB_FILE = "redshark.db"
+OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
+ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb8674d52aaf14544a100"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -38,7 +40,6 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-
 init_db()
 
 def cleanup_db():
@@ -55,7 +56,7 @@ def cleanup_db():
     conn.commit()
     conn.close()
 
-# ---------------- GLOBAL LOCATIONS ---------------- #
+# ---------------- LOCATIONS ---------------- #
 locations = [
     ("Kangar",6.4414,100.1986),
     ("Alor Setar",6.1248,100.3678),
@@ -74,7 +75,6 @@ locations = [
     ("Putrajaya",2.9264,101.6964)
 ]
 
-# ---------------- MITRE ATT&CK ---------------- #
 mitre_map = [
     "T1046 Network Discovery",
     "T1059 Command Execution",
@@ -84,111 +84,7 @@ mitre_map = [
     "T1190 Exploit Public Facing App"
 ]
 
-# ---------------- THREAT SCORE ---------------- #
-def threat_score(sev):
-    return {"Low": random.randint(10,30),
-            "Medium": random.randint(40,60),
-            "High": random.randint(70,85),
-            "Critical": random.randint(90,100)}[sev]
-
-# ---------------- DUMMY GENERATOR ---------------- #
-def random_ip():
-    return f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
-
-def random_domain():
-    return f"malicious{random.randint(100,999)}.net"
-
-def random_hash():
-    return os.urandom(16).hex()
-
-def dummy_feed(n=10):
-    data = []
-    for _ in range(n):
-        typ = random.choice(["IP","Domain","Hash"])
-        if typ=="IP": indicator=random_ip()
-        elif typ=="Domain": indicator=random_domain()
-        else: indicator=random_hash()
-        loc = random.choice(locations)
-        sev = random.choices(["Low","Medium","High","Critical"], weights=[40,30,20,10])[0]
-        data.append({
-            "indicator": indicator,
-            "type": typ,
-            "source": "Dummy Feed",
-            "severity": sev,
-            "mitre": random.choice(mitre_map),
-            "score": threat_score(sev),
-            "country": loc[0],
-            "lat": loc[1],
-            "lon": loc[2],
-            "first_seen": datetime.utcnow().isoformat(),
-            "last_seen": datetime.utcnow().isoformat()
-        })
-    return data
-
-# ---------------- REAL-TIME FEED ---------------- #
-OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
-ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb8674d52aaf14544a100"
-
-def fetch_otx_iocs():
-    url = "https://otx.alienvault.com/api/v1/indicators/pulses/recent"
-    headers = {"X-OTX-API-KEY": OTX_KEY}
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        iocs = []
-        if r.status_code == 200:
-            data = r.json()
-            pulses = data.get("results", [])
-            for pulse in pulses:
-                for ind in pulse.get("indicators", []):
-                    if ind.get("type")=="IPv4":
-                        loc = random.choice(locations)
-                        iocs.append({
-                            "indicator": ind["indicator"],
-                            "type": "IP",
-                            "source": "OTX",
-                            "severity": "Critical",
-                            "mitre": random.choice(mitre_map),
-                            "score": 95,
-                            "country": loc[0],
-                            "lat": loc[1],
-                            "lon": loc[2],
-                            "first_seen": datetime.utcnow().isoformat(),
-                            "last_seen": datetime.utcnow().isoformat()
-                        })
-        return iocs
-    except Exception as e:
-        print("OTX fetch error:", e)
-        return []
-
-def fetch_abuseipdb():
-    url = "https://api.abuseipdb.com/api/v2/blacklist?confidenceMinimum=85&limit=50"
-    headers = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        iocs = []
-        if r.status_code == 200:
-            data = r.json()
-            for item in data.get("data", []):
-                loc = random.choice(locations)
-                iocs.append({
-                    "indicator": item["ipAddress"],
-                    "type": "IP",
-                    "source": "AbuseIPDB",
-                    "severity": "High",
-                    "mitre": random.choice(mitre_map),
-                    "score": 85,
-                    "country": loc[0],
-                    "lat": loc[1],
-                    "lon": loc[2],
-                    "first_seen": datetime.utcnow().isoformat(),
-                    "last_seen": datetime.utcnow().isoformat()
-                })
-        return iocs
-    except Exception as e:
-        print("AbuseIPDB fetch error:", e)
-        return []
-
-# ---------------- SAVE TO DB ---------------- #
+# ---------------- HELPER FUNCTIONS ---------------- #
 def save_iocs(feed):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -198,27 +94,89 @@ def save_iocs(feed):
             INSERT OR IGNORE INTO indicators
             (indicator,type,source,severity,mitre,score,country,lat,lon,first_seen,last_seen)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)
-            """,(f["indicator"],f["type"],f["source"],f["severity"],f["mitre"],
-                 f["score"],f["country"],f["lat"],f["lon"],f["first_seen"],f["last_seen"]))
+            """,(
+                f["indicator"],f["type"],f["source"],f["severity"],f["mitre"],
+                f["score"],f["country"],f["lat"],f["lon"],f["first_seen"],f["last_seen"]
+            ))
         except Exception as e:
             print("DB insert error:", e)
     conn.commit()
     conn.close()
 
-# ---------------- THREAT ENGINE ---------------- #
+# ---------------- REAL-TIME FEEDS ---------------- #
+def fetch_otx_iocs():
+    url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
+    headers = {"X-OTX-API-KEY": OTX_KEY}
+    iocs = []
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code==200:
+            data = r.json()
+            pulses = data.get("results",[])
+            for pulse in pulses:
+                for ind in pulse.get("indicators",[]):
+                    loc = locations[int(datetime.utcnow().timestamp()) % len(locations)]
+                    iocs.append({
+                        "indicator": ind["indicator"],
+                        "type": ind.get("type","IP"),
+                        "source": "OTX",
+                        "severity": "Critical" if ind.get("type","IP")=="IPv4" else "High",
+                        "mitre": mitre_map[int(datetime.utcnow().timestamp()) % len(mitre_map)],
+                        "score": 95,
+                        "country": loc[0],
+                        "lat": loc[1],
+                        "lon": loc[2],
+                        "first_seen": datetime.utcnow().isoformat(),
+                        "last_seen": datetime.utcnow().isoformat()
+                    })
+    except Exception as e:
+        print("OTX fetch error:", e)
+    return iocs
+
+def fetch_abuseipdb():
+    url = "https://api.abuseipdb.com/api/v2/blacklist?confidenceMinimum=70&limit=100"
+    headers = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
+    iocs = []
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code==200:
+            data = r.json()
+            for item in data.get("data",[]):
+                loc = locations[int(datetime.utcnow().timestamp()) % len(locations)]
+                iocs.append({
+                    "indicator": item["ipAddress"],
+                    "type": "IP",
+                    "source": "AbuseIPDB",
+                    "severity": "Critical",
+                    "mitre": mitre_map[int(datetime.utcnow().timestamp()) % len(mitre_map)],
+                    "score": 90,
+                    "country": loc[0],
+                    "lat": loc[1],
+                    "lon": loc[2],
+                    "first_seen": datetime.utcnow().isoformat(),
+                    "last_seen": datetime.utcnow().isoformat()
+                })
+    except Exception as e:
+        print("AbuseIPDB fetch error:", e)
+    return iocs
+
 def threat_engine():
     while True:
-        feed = fetch_otx_iocs() + fetch_abuseipdb()
+        otx_iocs = fetch_otx_iocs()
+        abuse_iocs = fetch_abuseipdb()
+        feed = otx_iocs + abuse_iocs
         if not feed:
-            feed = dummy_feed(15)
-        save_iocs(feed)
+            print("No real feed fetched!")
+        else:
+            save_iocs(feed)
         cleanup_db()
-        time.sleep(120)  # 2 mins
+        time.sleep(60)
 
-threading.Thread(target=threat_engine, daemon=True).start()
+threading.Thread(target=threat_engine,daemon=True).start()
 
 # ---------------- DASHBOARD ---------------- #
-DASHBOARD_HTML = """<!DOCTYPE html>
+DASHBOARD_HTML = """
+<!DOCTYPE html>
 <html>
 <head>
 <title>RedShark Cyber Threat Intelligence Platform</title>
@@ -246,15 +204,21 @@ canvas{margin:20px}
 <body>
 <h1>RedShark Cyber Threat Intelligence Platform</h1>
 <div class="highlight"><b>Latest Malaysia Security Highlight (GMT+8)</b><br>{{time}}</div>
-<div class="ticker">{% for r in rows[:10] %}🚨 {{r[3]}} {{r[0]}} via {{r[2]}} &nbsp;&nbsp;{% endfor %}</div>
+<div class="ticker">
+{% for r in rows[:10] %}
+🚨 {{r[3]}} {{r[0]}} via {{r[2]}} &nbsp;&nbsp;
+{% endfor %}
+</div>
 <div id="map"></div>
 <canvas id="mitre" height="250"></canvas>
 <canvas id="severity" height="250"></canvas>
 <canvas id="timeline" height="250"></canvas>
 <table id="cti" class="display">
 <thead>
-<tr><th>Indicator</th><th>Type</th><th>Source</th><th>Severity</th>
-<th>MITRE</th><th>Score</th><th>Country</th><th>Last Seen</th></tr>
+<tr>
+<th>Indicator</th><th>Type</th><th>Source</th><th>Severity</th>
+<th>MITRE</th><th>Score</th><th>Country</th><th>Last Seen</th>
+</tr>
 </thead>
 <tbody>
 {% for r in rows %}
@@ -282,43 +246,11 @@ var map=L.map('map').setView([4.5,102],6)
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map)
 var points={{rows|tojson}}
 var heat=[]
-points.forEach(function(p){
-    var lat=p[7], lon=p[8], severity=p[3]
-    var intensity = severity=="Critical"?1:0.6
-    heat.push([lat, lon, intensity])
-    var circle=L.circle([lat,lon],{radius:20000,color:severity=="Critical"?"red":"blue",fillOpacity:0.7})
-    circle.addTo(map)
-    if(severity=="Critical"){
-        circle.bindPopup(p[0]+"<br>"+p[3])
-        setInterval(function(){circle.setStyle({fillOpacity:Math.random()})},800)
-    } else {
-        circle.bindPopup(p[0]+"<br>"+p[3])
-    }
+points.forEach(function(p){ 
+    var intensity=(p[3]=="Critical")?1:0.5;
+    heat.push([p[7],p[8],intensity]) 
 })
-L.heatLayer(heat,{radius:25,blur:15}).addTo(map)
-
-var mitre_labels = points.map(p=>p[4])
-var mitre_counts = {}
-mitre_labels.forEach(m=>mitre_counts[m]=(mitre_counts[m]||0)+1)
-new Chart(document.getElementById('mitre'),{
-type:'bar',
-data:{labels:Object.keys(mitre_counts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitre_counts),backgroundColor:'rgba(56,189,248,0.7)'}]},
-options:{plugins:{legend:{display:false}}}
-})
-
-var sev={"Low":0,"Medium":0,"High":0,"Critical":0}
-points.forEach(p=>sev[p[3]]++)
-new Chart(document.getElementById('severity'),{
-type:'doughnut',
-data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","red","darkred"]}]}
-})
-
-var timeline={}
-points.forEach(p=>{ var t=p[9].substring(0,13); timeline[t]=(timeline[t]||0)+1 })
-new Chart(document.getElementById('timeline'),{
-type:'line',
-data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}
-})
+var heatLayer = L.heatLayer(heat,{radius:25,blur:15}).addTo(map)
 </script>
 </body>
 </html>
@@ -326,55 +258,51 @@ data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.
 
 @app.route("/")
 def dashboard():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
-    rows = c.fetchall()
-    conn.close()
-    malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    rows=c.fetchall(); conn.close()
+    malaysia_time=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     return render_template_string(DASHBOARD_HTML, rows=rows, time=malaysia_time)
 
 # ---------------- EXPORTS ---------------- #
 @app.route("/export/json")
 def export_json():
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute("SELECT * FROM indicators"); rows = c.fetchall(); conn.close()
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("SELECT * FROM indicators"); rows=c.fetchall(); conn.close()
     return jsonify(rows)
 
 @app.route("/export/csv")
 def export_csv():
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute("SELECT * FROM indicators"); rows = c.fetchall(); conn.close()
-    output = io.StringIO(); writer = csv.writer(output)
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("SELECT * FROM indicators"); rows=c.fetchall(); conn.close()
+    output=io.StringIO(); writer=csv.writer(output)
     writer.writerow(["id","indicator","type","source","severity","mitre","score","country","lat","lon","first_seen","last_seen"])
     writer.writerows(rows)
-    return send_file(io.BytesIO(output.getvalue().encode()), as_attachment=True, download_name="redshark_cti.csv")
+    return send_file(io.BytesIO(output.getvalue().encode()),as_attachment=True,download_name="redshark_cti.csv")
 
 @app.route("/export/pdf")
 def export_pdf():
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("SELECT indicator,type,source,severity,mitre FROM indicators LIMIT 100")
-    rows = c.fetchall(); conn.close()
-    buffer = io.BytesIO(); doc = SimpleDocTemplate(buffer,pagesize=letter)
-    table = Table(rows); doc.build([table]); buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="redshark_report.pdf")
+    rows=c.fetchall(); conn.close()
+    buffer=io.BytesIO(); doc=SimpleDocTemplate(buffer,pagesize=letter)
+    table=Table(rows); doc.build([table]); buffer.seek(0)
+    return send_file(buffer,as_attachment=True,download_name="redshark_report.pdf")
 
 @app.route("/export/ids")
 def export_ids():
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute("SELECT indicator FROM indicators WHERE type='IP'"); rows = c.fetchall(); conn.close()
-    sid = 100000; rules = ""
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("SELECT indicator FROM indicators WHERE type='IP'"); rows=c.fetchall(); conn.close()
+    sid=100000; rules=""
     for r in rows:
-        rules += f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\n'; sid += 1
-    return send_file(io.BytesIO(rules.encode()), as_attachment=True, download_name="redshark.rules")
+        rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\\n'; sid+=1
+    return send_file(io.BytesIO(rules.encode()),as_attachment=True,download_name="redshark.rules")
 
-# ---------------- REFRESH ---------------- #
 @app.route("/refresh")
 def refresh():
     feed = fetch_otx_iocs() + fetch_abuseipdb()
-    if not feed:
-        feed = dummy_feed(10)
     save_iocs(feed)
+    cleanup_db()
     return "Threat feed refreshed"
 
 # ---------------- RUN ---------------- #
