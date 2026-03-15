@@ -6,6 +6,7 @@ import time
 import sqlite3
 import threading
 import zipfile
+import random
 import requests
 from datetime import datetime, timedelta
 from flask import Flask, render_template_string, jsonify, send_file
@@ -14,7 +15,7 @@ from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
 app = Flask(__name__)
-DB_FILE = "redshark_real.db"
+DB_FILE = "redshark_safe.db"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -55,8 +56,7 @@ def cleanup_db():
     conn.commit()
     conn.close()
 
-# ---------------- GLOBAL LOCATIONS ---------------- #
-# Malaysia ibu negeri only
+# ---------------- MALAYSIA LOCATIONS ---------------- #
 locations = [
     ("Kangar",6.4414,100.1986),
     ("Alor Setar",6.1248,100.3678),
@@ -87,30 +87,60 @@ mitre_map = [
 
 # ---------------- THREAT SCORE ---------------- #
 def threat_score(sev):
-    return {"Low": 10, "Medium": 50, "High": 75, "Critical": 95}[sev]
+    return {"Low": 10, "Medium": 50, "High": 75, "Critical": 95}.get(sev, 50)
 
-# ---------------- REAL FEED FUNCTIONS ---------------- #
+# ---------------- DUMMY IOC ---------------- #
+def random_ip(): return f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
+def random_domain(): return f"malicious{random.randint(100,999)}.net"
+def random_hash(): return os.urandom(16).hex()
+
+def generate_dummy_feed():
+    data = []
+    for _ in range(random.randint(15,30)):
+        typ = random.choice(["IP","Domain","Hash"])
+        indicator = random_ip() if typ=="IP" else (random_domain() if typ=="Domain" else random_hash())
+        loc = random.choice(locations)
+        sev = random.choices(["Low","Medium","High","Critical"], weights=[40,30,20,10])[0]
+        data.append({
+            "indicator": indicator,
+            "type": typ,
+            "source": "Dummy",
+            "severity": sev,
+            "mitre": random.choice(mitre_map),
+            "score": threat_score(sev),
+            "country": loc[0],
+            "lat": loc[1],
+            "lon": loc[2],
+            "first_seen": datetime.utcnow().isoformat(),
+            "last_seen": datetime.utcnow().isoformat()
+        })
+    return data
+
+# ---------------- REAL FEEDS ---------------- #
 def fetch_otx():
-    """Fetch recent AlienVault OTX pulses (public)"""
-    url = "https://otx.alienvault.com/api/v1/indicators/pulses/subscribed"
+    """Safe OTX fetch"""
+    key = os.environ.get("OTX_KEY")
+    if not key:
+        return []
     try:
-        r = requests.get(url, timeout=10)
+        headers = {"X-OTX-API-KEY": key}
+        r = requests.get("https://otx.alienvault.com/api/v1/indicators/pulses/subscribed", headers=headers, timeout=10)
         r.raise_for_status()
-        data = r.json().get("results", [])[:20]
-        iocs = []
-        for pulse in data:
+        results = r.json().get("results", [])[:20]
+        iocs=[]
+        for pulse in results:
             for ind in pulse.get("indicators", []):
-                if ind["type"] not in ["IPv4", "domain", "hash"]:
-                    continue
-                typ = "IP" if ind["type"]=="IPv4" else ("Domain" if ind["type"]=="domain" else "Hash")
-                loc = locations[0]  # assign Malaysia ibu negeri randomly later
+                typ_map = {"IPv4":"IP","domain":"Domain","hash":"Hash"}
+                if ind["type"] not in typ_map: continue
+                typ = typ_map[ind["type"]]
+                loc = random.choice(locations)
                 sev = "High" if typ=="IP" else "Medium"
                 iocs.append({
                     "indicator": ind["indicator"],
                     "type": typ,
                     "source": "OTX",
                     "severity": sev,
-                    "mitre": mitre_map[0],
+                    "mitre": random.choice(mitre_map),
                     "score": threat_score(sev),
                     "country": loc[0],
                     "lat": loc[1],
@@ -120,26 +150,28 @@ def fetch_otx():
                 })
         return iocs
     except Exception as e:
-        print("OTX fetch error:", e)
+        print("OTX fetch failed:", e)
         return []
 
 def fetch_abuseipdb():
-    """Fetch AbuseIPDB recent IPs (free, public)"""
-    url = "https://api.abuseipdb.com/api/v2/blacklist"
-    headers = {"Key": os.environ.get("ABUSEIPDB_KEY",""), "Accept": "application/json"}
+    """Safe AbuseIPDB fetch"""
+    key = os.environ.get("ABUSEIPDB_KEY")
+    if not key:
+        return []
     try:
-        r = requests.get(url, headers=headers, timeout=10)
+        headers = {"Key": key, "Accept": "application/json"}
+        r = requests.get("https://api.abuseipdb.com/api/v2/blacklist", headers=headers, timeout=10)
         r.raise_for_status()
         data = r.json().get("data", [])[:20]
         iocs=[]
         for ip in data:
-            loc = locations[0]
+            loc = random.choice(locations)
             iocs.append({
                 "indicator": ip["ipAddress"],
                 "type": "IP",
                 "source": "AbuseIPDB",
                 "severity": "Critical",
-                "mitre": mitre_map[0],
+                "mitre": random.choice(mitre_map),
                 "score": threat_score("Critical"),
                 "country": loc[0],
                 "lat": loc[1],
@@ -151,9 +183,13 @@ def fetch_abuseipdb():
     except:
         return []
 
-def fetch_feeds():
-    return fetch_otx() + fetch_abuseipdb()
+def fetch_feeds_safe():
+    iocs = fetch_otx() + fetch_abuseipdb()
+    if not iocs:  # fallback to dummy
+        iocs = generate_dummy_feed()
+    return iocs
 
+# ---------------- SAVE ---------------- #
 def save_iocs(feed):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -165,35 +201,35 @@ def save_iocs(feed):
             VALUES (?,?,?,?,?,?,?,?,?,?,?)
             """,(f["indicator"],f["type"],f["source"],f["severity"],f["mitre"],
                  f["score"],f["country"],f["lat"],f["lon"],f["first_seen"],f["last_seen"]))
-        except:
-            pass
+        except Exception as e:
+            print("DB insert error:", e)
     conn.commit()
     conn.close()
 
+# ---------------- BACKGROUND FEED ENGINE ---------------- #
 def threat_engine():
     while True:
-        feed = fetch_feeds()
+        feed = fetch_feeds_safe()
         save_iocs(feed)
         cleanup_db()
         time.sleep(300)  # fetch every 5 minutes
 
 threading.Thread(target=threat_engine,daemon=True).start()
 
-# ---------------- DASHBOARD ---------------- #
-# Keep your existing DASHBOARD_HTML template (heatmap, charts, tables)
-# ... (reuse DASHBOARD_HTML from your previous code) ...
+# ---------------- DASHBOARD HTML ---------------- #
+DASHBOARD_HTML = """<your existing DASHBOARD_HTML here>"""
+# (reuse your heatmap, charts, table, export buttons)
 
 @app.route("/")
 def dashboard():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
-    rows=c.fetchall()
-    conn.close()
-    malaysia_time=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = c.fetchall(); conn.close()
+    malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     return render_template_string(DASHBOARD_HTML, rows=rows, time=malaysia_time)
 
-# ---------------- EXPORTS ---------------- #
+# ---------------- EXPORT ROUTES ---------------- #
 @app.route("/export/json")
 def export_json():
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
@@ -209,7 +245,8 @@ def export_csv():
     writer.writerows(rows)
     return send_file(io.BytesIO(output.getvalue().encode()),as_attachment=True,download_name="redshark_cti.csv")
 
-# ... keep PDF, IDS, ZIP exports and /refresh routes as before ...
+# Keep /export/pdf, /export/ids, /export/zip, /refresh same as before
 
+# ---------------- RUN ---------------- #
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
