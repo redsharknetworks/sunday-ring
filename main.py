@@ -4,6 +4,7 @@ import random
 import requests
 import threading
 import time
+import ipaddress
 from datetime import datetime
 from flask import Flask, render_template_string
 
@@ -38,10 +39,10 @@ MALAYSIA_LOCATIONS = [
 SEVERITY_WEIGHT = {"High": 3, "Medium": 2, "Low": 1}
 
 # -------------------------------
-# Database Init
+# Database Initialization
 # -------------------------------
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     c = conn.cursor()
     c.execute("""
     CREATE TABLE IF NOT EXISTS events(
@@ -69,7 +70,7 @@ def init_db():
     conn.close()
 
 def get_events(limit=500):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     c = conn.cursor()
     rows = c.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     conn.close()
@@ -79,7 +80,7 @@ def get_events(limit=500):
 # Geolocation
 # -------------------------------
 def get_country_from_ip(ip):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     c = conn.cursor()
     cached = c.execute("SELECT country,lat,lon FROM geo_cache WHERE ip=?", (ip,)).fetchone()
     if cached:
@@ -115,24 +116,31 @@ def fetch_cti_combined():
         headers_abuse = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
         feeds = []
 
+        # Fetch feeds safely
         try:
             r = requests.get(OTX_EXPORT_URL, headers=headers_otx, timeout=30)
-            feeds += r.text.splitlines()[:100]
-        except: pass
+            if r.status_code==200:
+                feeds += r.text.splitlines()[:100]
+        except Exception as e: print("OTX fetch failed:", e)
         try:
             r = requests.get(SPAMHAUS_DROP_URL, timeout=15)
-            feeds += [line.split()[0] for line in r.text.splitlines() if line and not line.startswith(";")][:100]
-        except: pass
+            if r.status_code==200:
+                feeds += [line.split()[0] for line in r.text.splitlines() if line and not line.startswith(";")][:100]
+        except Exception as e: print("Spamhaus fetch failed:", e)
         try:
             r = requests.get(EMERGINGTHREATS_URL, timeout=15)
-            feeds += [line.strip() for line in r.text.splitlines() if line and not line.startswith("#")][:100]
-        except: pass
+            if r.status_code==200:
+                feeds += [line.strip() for line in r.text.splitlines() if line and not line.startswith("#")][:100]
+        except Exception as e: print("EmergingThreats fetch failed:", e)
 
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
         c = conn.cursor()
         for ip in feeds:
             ip = ip.strip()
-            if not ip: continue
+            try:
+                ipaddress.ip_address(ip)
+            except ValueError:
+                continue  # skip invalid IP
             exist = c.execute("SELECT id FROM events WHERE ip=?", (ip,)).fetchone()
             if exist: continue
 
@@ -152,10 +160,13 @@ def fetch_cti_combined():
             else:
                 lat, lon = src_lat, src_lon
 
-            c.execute("""
-            INSERT INTO events(ip,source,severity,country,rule,description,lat,lon,timestamp)
-            VALUES(?,?,?,?,?,?,?,?,?)
-            """,(ip,"CTI Combined",severity,country,f"RSK-{random.randint(1000,9999)}","Threat IOC detected",lat,lon,datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            try:
+                c.execute("""
+                INSERT INTO events(ip,source,severity,country,rule,description,lat,lon,timestamp)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                """,(ip,"CTI Combined",severity,country,f"RSK-{random.randint(1000,9999)}","Threat IOC detected",lat,lon,datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            except Exception as e:
+                print("DB insert failed:", e)
         conn.commit()
         conn.close()
         time.sleep(600)
@@ -173,17 +184,7 @@ threading.Thread(target=fetch_cti_combined, daemon=True).start()
 def dashboard():
     events = get_events()
     if not events:
-        # fallback dummy events
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        for i in range(5):
-            loc = random.choice(MALAYSIA_LOCATIONS)
-            c.execute("""
-            INSERT INTO events(ip,source,severity,country,rule,description,lat,lon,timestamp)
-            VALUES(?,?,?,?,?,?,?,?,?)
-            """,(f"192.168.1.{i+1}","Test Feed",random.choice(["High","Medium","Low"]),"Malaysia",f"RSK-{1000+i}","Test IOC",loc[1],loc[2],datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit(); conn.close()
-        events = get_events()
+        return "No CTI events available yet. Please wait a few minutes."
 
     heat_data = []
     lines = []
@@ -209,7 +210,6 @@ def dashboard():
         })
 
         heat_data.append([e[7], e[8], weight])
-
         markers.append({
             "lat": e[7],
             "lon": e[8],
@@ -314,4 +314,4 @@ Plotly.newPlot('timeline_chart',[{x:Object.keys(timeline),y:Object.values(timeli
 """, heat_data=heat_data, lines=lines, markers=markers, severity_counts=severity_counts, timeline=timeline, table_rows=table_rows, time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 if __name__=="__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=True)
