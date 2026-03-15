@@ -89,14 +89,16 @@ def cleanup_db(limit=5000):
 
 # ---------------- FEED FETCHERS ---------------- #
 def detect_type(indicator, original_type="IPv4"):
-    ip_pattern = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+    ip_pattern = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
     hash_pattern = re.compile(r"^[a-fA-F0-9]{32,128}$")
-    domain_pattern = re.compile(r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
+    domain_pattern = re.compile(r"^(?!\d+$)(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
     url_pattern = re.compile(r"^https?://")
 
     if ip_pattern.match(indicator):
         return "IP"
-    elif url_pattern.match(indicator) or domain_pattern.match(indicator):
+    elif url_pattern.match(indicator):
+        return "Domain"
+    elif domain_pattern.match(indicator):
         return "Domain"
     elif hash_pattern.match(indicator):
         return "Hash"
@@ -202,6 +204,10 @@ canvas{width:100% !important;height:100% !important;background:#111827;padding:1
 .medium{color:#facc15;}
 .high{color:crimson;}
 .critical-marker{color:red;font-weight:bold;animation:pulse 1s infinite;}
+.severity-cell.Low{color:#22c55e;font-weight:bold;}
+.severity-cell.Medium{color:#facc15;font-weight:bold;}
+.severity-cell.High{color:crimson;font-weight:bold;}
+.severity-cell.Critical{color:red;font-weight:bold;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
@@ -233,8 +239,8 @@ button:hover{background:#0ea5e9;color:#fff;}
 <div style="text-align:center;margin:10px;font-size:12px;color:#888;">
 Developed and analysed by darkgrid@redshark.my using publicly available sources
 </div>
-
 <script>
+// ---------- MAP & CHARTS ----------
 var map=L.map('map').setView([4.5,102],6);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
 var markers=[],mitreChart,severityChart,timelineChart;
@@ -262,7 +268,8 @@ function renderTable(points){
     points.forEach(p=>{
         table.row.add([
             p.indicator,p.type,p.source,
-            p.severity,p.mitre,p.score,p.country,p.last_seen
+            `<span class="severity-cell ${p.severity}">${p.severity}</span>`,
+            p.mitre,p.score,p.country,p.last_seen
         ]);
     });
     table.draw();
@@ -285,20 +292,24 @@ function renderMap(points){
 }
 
 function renderCharts(points){
-    // MITRE chart
-    var mitreLabels=points.map(p=>p.mitre);
-    var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
+    // Gradient MITRE chart
+    var mitreLabels = points.map(p => p.mitre);
+    var mitreCounts = {}; mitreLabels.forEach(m => mitreCounts[m]=(mitreCounts[m]||0)+1);
     if(mitreChart) mitreChart.destroy();
-    mitreChart=new Chart(document.getElementById('mitre'),{
+    var ctxMitre = document.getElementById('mitre').getContext('2d');
+    var mitreColors = Object.keys(mitreCounts).map((_, i)=>{
+        var grad = ctxMitre.createLinearGradient(0,0,0,300);
+        grad.addColorStop(0,'rgba(56,189,248,0.9)');
+        grad.addColorStop(1,'rgba(0,0,0,0.2)');
+        return grad;
+    });
+    mitreChart=new Chart(ctxMitre,{
         type:'bar',
-        data:{
-            labels:Object.keys(mitreCounts),
-            datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:'rgba(56,189,248,0.7)'}]
-        },
-        options:{plugins:{legend:{display:false}}}
+        data:{labels:Object.keys(mitreCounts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:mitreColors,borderColor:'rgba(56,189,248,1)',borderWidth:1}]},
+        options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},responsive:true,maintainAspectRatio:false}
     });
 
-    // Gradient Nikkei-style severity chart
+    // Gradient Severity chart
     var sevCounts={"Low":0,"Medium":0,"High":0,"Critical":0};
     points.forEach(p=>sevCounts[p.severity]++);
     var ctx = document.getElementById('severity').getContext('2d');
@@ -307,28 +318,14 @@ function renderCharts(points){
     var gradients=[];
     Object.keys(sevCounts).forEach((sev,i)=>{
         var grad = ctx.createLinearGradient(0,0,0,300);
-        grad.addColorStop(0, colors[sev]);
-        grad.addColorStop(1, "rgba(0,0,0,0.2)");
+        grad.addColorStop(0,colors[sev]);
+        grad.addColorStop(1,"rgba(0,0,0,0.2)");
         gradients.push(grad);
     });
-    severityChart = new Chart(ctx,{
+    severityChart=new Chart(ctx,{
         type:'bar',
-        data:{
-            labels:Object.keys(sevCounts),
-            datasets:[{
-                label:'Severity Count',
-                data:Object.values(sevCounts),
-                backgroundColor:gradients,
-                borderColor:Object.values(colors),
-                borderWidth:1
-            }]
-        },
-        options:{
-            plugins:{legend:{display:false}},
-            scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},
-            responsive:true,
-            maintainAspectRatio:false
-        }
+        data:{labels:Object.keys(sevCounts),datasets:[{label:'Severity Count',data:Object.values(sevCounts),backgroundColor:gradients,borderColor:Object.values(colors),borderWidth:1}]},
+        options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},responsive:true,maintainAspectRatio:false}
     });
 
     // Timeline chart
@@ -395,8 +392,8 @@ def export_pdf():
         rows = c.fetchall()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
-    table_data=[["Indicator","Type","Source","Severity","MITRE","Score","Country","Lat","Lon","Last Seen"]]+list(rows)
-    table=Table(table_data)
+    table_data = [["Indicator","Type","Source","Severity","MITRE","Score","Country","Lat","Lon","Last Seen"]] + list(rows)
+    table = Table(table_data)
     doc.build([table])
     buffer.seek(0)
     return send_file(buffer, as_attachment=True, download_name="redshark_cti.pdf")
@@ -409,9 +406,13 @@ def export_ids():
         rows = c.fetchall()
     rules = []
     for ip, typ in rows:
-        # Simple Snort/Suricata alert rule template
         rules.append(f'alert ip any any -> {ip} any (msg:"RedShark Threat Intelligence - IP"; sid:{100000+hash(ip)%90000}; rev:1;)')
-    return send_file(io.BytesIO("\n".join(rules).encode()), as_attachment=True, download_name="redshark_ids.rules")
+    # Create ZIP in-memory
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("redshark_ids.rules", "\n".join(rules))
+    buffer.seek(0)
+    return send_file(buffer, as_attachment=True, download_name="redshark_ids.zip")
 
 # ---------------- RUN APP ---------------- #
 if __name__ == "__main__":
