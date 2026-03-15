@@ -9,9 +9,9 @@ from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
-# ===============================
+# -------------------------------
 # Database Setup
-# ===============================
+# -------------------------------
 DB_DIR = "data"
 DB_PATH = os.path.join(DB_DIR, "cti.db")
 if not os.path.exists(DB_DIR):
@@ -37,9 +37,9 @@ MALAYSIA_LOCATIONS = [
 
 SEVERITY_WEIGHT = {"High": 3, "Medium": 2, "Low": 1}
 
-# ===============================
-# Database Initialization
-# ===============================
+# -------------------------------
+# Database Init
+# -------------------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -75,9 +75,9 @@ def get_events(limit=500):
     conn.close()
     return rows
 
-# ===============================
-# Geolocation Caching
-# ===============================
+# -------------------------------
+# Geolocation
+# -------------------------------
 def get_country_from_ip(ip):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -99,9 +99,9 @@ def get_country_from_ip(ip):
     conn.close()
     return country, lat, lon
 
-# ===============================
-# Background CTI Fetching
-# ===============================
+# -------------------------------
+# CTI Feeds Fetcher
+# -------------------------------
 def fetch_cti_combined():
     OTX_API_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
     ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb8674d52aaf14544a100"
@@ -160,21 +160,20 @@ def fetch_cti_combined():
         conn.close()
         time.sleep(600)
 
-# ===============================
+# -------------------------------
 # Start Background Fetch
-# ===============================
+# -------------------------------
 init_db()
 threading.Thread(target=fetch_cti_combined, daemon=True).start()
 
-# ===============================
+# -------------------------------
 # Flask Dashboard
-# ===============================
+# -------------------------------
 @app.route("/")
 def dashboard():
     events = get_events()
-
-    # If no events, insert 5 dummy test events
     if not events:
+        # fallback dummy events
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         for i in range(5):
@@ -182,19 +181,8 @@ def dashboard():
             c.execute("""
             INSERT INTO events(ip,source,severity,country,rule,description,lat,lon,timestamp)
             VALUES(?,?,?,?,?,?,?,?,?)
-            """,(
-                f"192.168.1.{i+1}",
-                "Test Feed",
-                random.choice(["High","Medium","Low"]),
-                "Malaysia",
-                f"RSK-{1000+i}",
-                "Test IOC",
-                loc[1],
-                loc[2],
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            ))
-        conn.commit()
-        conn.close()
+            """,(f"192.168.1.{i+1}","Test Feed",random.choice(["High","Medium","Low"]),"Malaysia",f"RSK-{1000+i}","Test IOC",loc[1],loc[2],datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit(); conn.close()
         events = get_events()
 
     heat_data = []
@@ -220,15 +208,15 @@ def dashboard():
             "timestamp": e[9]
         })
 
-        if e[4]=="Malaysia":
-            heat_data.append([e[7], e[8], weight])
-            if e[3]=="High":
-                markers.append({
-                    "lat": e[7],
-                    "lon": e[8],
-                    "popup": f"IP: {e[1]}<br>Source: {e[2]}<br>Severity: {e[3]}<br>Country: {e[4]}<br>Time: {e[9]}"
-                })
-        else:
+        heat_data.append([e[7], e[8], weight])
+
+        markers.append({
+            "lat": e[7],
+            "lon": e[8],
+            "popup": f"IP: {e[1]}<br>Source: {e[2]}<br>Severity: {e[3]}<br>Country: {e[4]}<br>Time: {e[9]}"
+        })
+
+        if e[4]!="Malaysia":
             loc = random.choice(MALAYSIA_LOCATIONS)
             lines.append({"from_lat": e[7],"from_lon": e[8],"to_lat": loc[1],"to_lon": loc[2],"severity": e[3]})
 
@@ -289,50 +277,37 @@ Map tiles © OpenStreetMap contributors | Developed by darkgrid@redshark.my usin
 </div>
 
 <script>
-// Neutral map tile
 var map = L.map('map').setView([4.2105,101.9758],6);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '',
-    subdomains: 'abcd',
-    maxZoom: 19
-}).addTo(map);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution:'', subdomains:'abcd', maxZoom:19 }).addTo(map);
 
 // Heatmap
 var heat = L.heatLayer({{heat_data|tojson}}, {radius:25, blur:15, maxZoom:10, max:9}).addTo(map);
 
-// Attack lines
+// Curved lines
 var lines = {{lines|tojson}};
 lines.forEach(function(l){
-    var latlngs = [[l.from_lat,l.from_lon],[l.to_lat,l.to_lon]];
-    var color = l.severity=="High"?"red":"orange";
-    L.polyline(latlngs,{color:color,weight:l.severity=="High"?3:1,opacity:0.7}).addTo(map);
+    L.polyline([[l.from_lat,l.from_lon],[l.to_lat,l.to_lon]],{color:l.severity=="High"?"red":"orange",weight:l.severity=="High"?3:1,opacity:0.7}).addTo(map);
 });
 
-// Marker cluster for high severity
+// Markers cluster with severity color
 var markers = L.markerClusterGroup();
 var mdata = {{markers|tojson}};
 mdata.forEach(function(m){
-    var marker = L.marker([m.lat,m.lon]).bindPopup(m.popup);
-    markers.addLayer(marker);
+    var color="cyan";
+    if(m.popup.includes("High")) color="red";
+    else if(m.popup.includes("Medium")) color="orange";
+
+    var icon = L.circleMarker([m.lat,m.lon], {radius:6,fillColor:color,color:color,weight:1,opacity:1,fillOpacity:0.8});
+    icon.bindPopup(m.popup);
+    markers.addLayer(icon);
 });
 map.addLayer(markers);
 
 // Charts
 var severity = {{severity_counts|tojson}};
-Plotly.newPlot('severity_chart',[{
-    x:Object.keys(severity),
-    y:Object.values(severity),
-    type:'bar',
-    marker:{color:['red','orange','cyan']}
-}], {title:'Severity Distribution',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
-
+Plotly.newPlot('severity_chart',[{x:Object.keys(severity),y:Object.values(severity),type:'bar',marker:{color:['red','orange','cyan']}}], {title:'Severity Distribution',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
 var timeline = {{timeline|tojson}};
-Plotly.newPlot('timeline_chart',[{
-    x:Object.keys(timeline),
-    y:Object.values(timeline),
-    type:'scatter'
-}], {title:'Threat Timeline',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
-
+Plotly.newPlot('timeline_chart',[{x:Object.keys(timeline),y:Object.values(timeline),type:'scatter'}], {title:'Threat Timeline',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
 </script>
 </body>
 </html>
