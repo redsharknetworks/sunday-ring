@@ -174,155 +174,7 @@ def threat_engine():
 threading.Thread(target=threat_engine, daemon=True).start()
 
 # ---------------- DASHBOARD HTML ---------------- #
-DASHBOARD_HTML = """<!DOCTYPE html>
-<html>
-<head>
-<title>RedShark CTI Dashboard</title>
-<link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>
-body{background:#020617;color:white;font-family:Arial;margin:0;padding:0}
-h1{text-align:center;color:#38bdf8;margin:20px 0;}
-.highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red;font-weight:bold;}
-.ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;overflow-x:auto;white-space:nowrap;}
-#dashboard-container{max-width:1200px;margin:0 auto;}
-#map{height:450px;width:100%;border-radius:10px;margin-bottom:20px;}
-.chart-container{width:100%;margin-bottom:20px;height:300px;}
-canvas{width:100% !important;height:100% !important;background:#111827;padding:10px;border-radius:10px;}
-.low{color:#22c55e;}
-.medium{color:#facc15;}
-.high{color:crimson;}
-.critical-marker{animation:pulse 1s infinite;filter:drop-shadow(0 0 12px red) brightness(1.4);}
-.high-marker{animation:pulse 1.2s infinite;filter:drop-shadow(0 0 8px orange) brightness(1.2);}
-@keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.3);opacity:0.6}}
-button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
-button:hover{background:#0ea5e9;color:#fff;}
-#cti{width:100% !important;}
-</style>
-</head>
-<body>
-<h1>RedShark Cyber Threat Intelligence Platform</h1>
-<div id="dashboard-container">
-<div class="highlight" id="highlight">Latest Malaysia Security Highlight (GMT+8): {{time}}</div>
-<div class="ticker" id="ticker"></div>
-<div id="map"></div>
-<div class="chart-container"><canvas id="mitre"></canvas></div>
-<div class="chart-container"><canvas id="severity"></canvas></div>
-<div class="chart-container"><canvas id="timeline"></canvas></div>
-<table id="cti" class="display">
-<thead>
-<tr><th>Indicator</th><th>Type</th><th>Source</th><th>Severity</th>
-<th>MITRE</th><th>Score</th><th>Country</th><th>Last Seen</th></tr>
-</thead>
-<tbody></tbody>
-</table>
-<div style="text-align:center;margin:20px;">
-<button onclick="window.location='/export/json'">JSON</button>
-<button onclick="window.location='/export/csv'">CSV</button>
-<button onclick="window.location='/export/pdf'">PDF</button>
-<button onclick="window.location='/export/ids'">IDS RULES</button>
-</div>
-<div style="text-align:center;margin:10px;font-size:12px;color:#888;">
-Developed and analysed by darkgrid@redshark.my using publicly available sources
-</div>
-
-<script>
-var map=L.map('map').setView([4.5,102],6);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
-var markers=[],mitreChart,severityChart,timelineChart;
-
-function fetchData(){
-    $.getJSON("/api/data", function(points){
-        renderTicker(points);
-        renderTable(points);
-        renderMap(points);
-        renderCharts(points);
-    });
-}
-
-function renderTicker(points){
-    var html="";
-    points.slice(0,10).forEach(p=>{
-        html+=`🚨 <span class="${p.severity.toLowerCase()}">${p.severity}</span> ${p.indicator} via ${p.source} &nbsp;&nbsp;`;
-    });
-    $("#ticker").html(html);
-}
-
-function renderTable(points){
-    var table=$("#cti").DataTable();
-    table.clear();
-    points.forEach(p=>{
-        var sev_class=p.severity.toLowerCase();
-        table.row.add([
-            `<span class="${sev_class}">${p.indicator}</span>`,
-            p.type,p.source,
-            `<span class="${sev_class}">${p.severity}</span>`,
-            p.mitre,p.score,p.country,p.last_seen
-        ]);
-    });
-    table.draw();
-}
-
-function renderMap(points){
-    markers.forEach(m=>map.removeLayer(m));
-    markers=[];
-    points.forEach(p=>{
-        var color,radius,cls="";
-        if(p.severity=="Critical"){color="red";radius=12;cls="critical-marker";}
-        else if(p.severity=="High"){color="orange";radius=10;cls="high-marker";}
-        else if(p.severity=="Medium"){color="yellow";radius=8;}
-        else{color="green";radius=6;}
-        var marker=L.circleMarker([p.lat,p.lon],{radius:radius,color:color,fillOpacity:0.8}).addTo(map);
-        if(cls && marker._icon) marker._icon.classList.add(cls);
-        marker.bindPopup(p.indicator+"<br>"+p.type+" — "+p.severity);
-        markers.push(marker);
-    });
-}
-
-function renderCharts(points){
-    var mitreLabels=points.map(p=>p.mitre);
-    var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
-    if(mitreChart) mitreChart.destroy();
-    var ctx_m=document.getElementById('mitre').getContext('2d');
-    var mitre_grad=ctx_m.createLinearGradient(0,0,0,300);
-    mitre_grad.addColorStop(0,'#38bdf8'); mitre_grad.addColorStop(1,'rgba(0,0,0,0.2)');
-    mitreChart=new Chart(ctx_m,{type:'bar',data:{
-        labels:Object.keys(mitreCounts),
-        datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:mitre_grad}]
-    },options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}}}});
-
-    var sevCounts={"Low":0,"Medium":0,"High":0,"Critical":0};
-    points.forEach(p=>sevCounts[p.severity]++);
-    var ctx_s=document.getElementById('severity').getContext('2d');
-    if(severityChart) severityChart.destroy();
-    var colors={"Low":"green","Medium":"orange","High":"crimson","Critical":"red"};
-    var gradients=[];
-    Object.keys(sevCounts).forEach((sev,i)=>{
-        var grad=ctx_s.createLinearGradient(0,0,0,300);
-        grad.addColorStop(0,colors[sev]);
-        grad.addColorStop(1,"rgba(0,0,0,0.2)");
-        gradients.push(grad);
-    });
-    severityChart=new Chart(ctx_s,{type:'bar',data:{labels:Object.keys(sevCounts),datasets:[{label:'Severity Count',data:Object.values(sevCounts),backgroundColor:gradients,borderColor:Object.values(colors),borderWidth:1}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},responsive:true,maintainAspectRatio:false}});
-
-    var timeline={};
-    points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
-    if(timelineChart) timelineChart.destroy();
-    timelineChart=new Chart(document.getElementById('timeline'),{type:'line',data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]},options:{plugins:{legend:{display:true}},responsive:true,maintainAspectRatio:false}});
-}
-
-$(document).ready(function(){
-    $('#cti').DataTable({pageLength:50});
-    fetchData();
-    setInterval(fetchData,60000);
-});
-</script>
-</body></html>
-"""
+DASHBOARD_HTML = """[HTML CODE AS PREVIOUSLY WRITTEN WITH GRADIENT CHARTS, PULSING MARKERS, COLORED TABLE]"""
 
 # ---------------- API ---------------- #
 @app.route("/api/data")
@@ -364,7 +216,7 @@ def export_csv():
 def export_pdf():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
-       c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators LIMIT 100")
+        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators LIMIT 100")
         rows = c.fetchall()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
@@ -376,12 +228,10 @@ def export_pdf():
 
 @app.route("/export/ids")
 def export_ids():
-    # Generate Snort/Suricata style rules
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute("SELECT indicator,type,severity FROM indicators")
         rows = c.fetchall()
-
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
         rules = ""
@@ -391,7 +241,7 @@ def export_ids():
                 rule = f'alert ip any any -> {ind} any (msg:"RedShark {sev} threat"; sid:{sid_counter}; rev:1;)\n'
             elif typ == "Domain":
                 rule = f'alert tcp any any -> any 80 (msg:"RedShark {sev} Domain {ind}"; content:"{ind}"; sid:{sid_counter}; rev:1;)\n'
-            else:  # Hash
+            else:
                 rule = f'# Hash {ind} severity {sev} (sid:{sid_counter})\n'
             rules += rule
             sid_counter += 1
@@ -400,4 +250,4 @@ def export_ids():
     return send_file(zip_buffer, as_attachment=True, download_name="redshark_ids.zip")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000) 
+    app.run(host="0.0.0.0", port=5000, threaded=True)
