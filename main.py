@@ -11,6 +11,7 @@ from flask import Flask, render_template_string, jsonify, send_file
 
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
+import zipfile
 
 # ---------------- CONFIG ---------------- #
 app = Flask(__name__)
@@ -84,7 +85,7 @@ mitre_map = [
     "T1190 Exploit Public Facing App"
 ]
 
-# ---------------- HELPER FUNCTIONS ---------------- #
+# ---------------- HELPER ---------------- #
 def save_iocs(feed):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -103,24 +104,25 @@ def save_iocs(feed):
     conn.commit()
     conn.close()
 
-# ---------------- REAL-TIME FEEDS ---------------- #
+# ---------------- FEED FETCH ---------------- #
 def fetch_otx_iocs():
     url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
     headers = {"X-OTX-API-KEY": OTX_KEY}
     iocs = []
     try:
         r = requests.get(url, headers=headers, timeout=15)
-        if r.status_code==200:
+        if r.status_code == 200:
             data = r.json()
             pulses = data.get("results",[])
             for pulse in pulses:
                 for ind in pulse.get("indicators",[]):
+                    typ = "IP" if ind.get("type","IPv4")=="IPv4" else "Domain"
                     loc = locations[int(datetime.utcnow().timestamp()) % len(locations)]
                     iocs.append({
                         "indicator": ind["indicator"],
-                        "type": "IP" if ind.get("type","IP")=="IPv4" else ind.get("type","Domain"),
+                        "type": typ,
                         "source": "OTX",
-                        "severity": "Critical" if ind.get("type","IP")=="IPv4" else "High",
+                        "severity": "Critical" if typ=="IP" else "High",
                         "mitre": mitre_map[int(datetime.utcnow().timestamp()) % len(mitre_map)],
                         "score": 95,
                         "country": loc[0],
@@ -139,7 +141,7 @@ def fetch_abuseipdb():
     iocs = []
     try:
         r = requests.get(url, headers=headers, timeout=15)
-        if r.status_code==200:
+        if r.status_code == 200:
             data = r.json()
             for item in data.get("data",[]):
                 loc = locations[int(datetime.utcnow().timestamp()) % len(locations)]
@@ -230,7 +232,7 @@ canvas{margin:20px}
 <button onclick="window.location='/export/json'">JSON</button>
 <button onclick="window.location='/export/csv'">CSV</button>
 <button onclick="window.location='/export/pdf'">PDF</button>
-<button onclick="window.location='/export/ids'">IDS</button>
+<button onclick="window.location='/export/idszip'">IDS ZIP</button>
 <button onclick="window.location='/refresh'">Refresh</button>
 </div>
 <div style="text-align:center;margin:10px;font-size:12px;color:#888">
@@ -311,14 +313,20 @@ def export_pdf():
     table=Table(rows); doc.build([table]); buffer.seek(0)
     return send_file(buffer,as_attachment=True,download_name="redshark_report.pdf")
 
-@app.route("/export/ids")
-def export_ids():
+@app.route("/export/idszip")
+def export_idszip():
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("SELECT indicator FROM indicators WHERE type='IP'"); rows=c.fetchall(); conn.close()
-    sid=100000; rules=""
-    for r in rows:
-        rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\\n'; sid+=1
-    return send_file(io.BytesIO(rules.encode()),as_attachment=True,download_name="redshark.rules")
+    mem=io.BytesIO()
+    with zipfile.ZipFile(mem,'w',zipfile.ZIP_DEFLATED) as z:
+        sid = 100000
+        rules=""
+        for r in rows:
+            rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\n'
+            sid+=1
+        z.writestr("redshark.rules", rules)
+    mem.seek(0)
+    return send_file(mem,as_attachment=True,download_name="redshark_ids.zip")
 
 @app.route("/refresh")
 def refresh():
@@ -327,5 +335,6 @@ def refresh():
     cleanup_db()
     return "Threat feed refreshed"
 
+# ---------------- RUN ---------------- #
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
