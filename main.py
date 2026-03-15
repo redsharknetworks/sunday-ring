@@ -1,6 +1,15 @@
-import io, csv, json, zipfile, time, threading, logging, re
+import io
+import csv
+import json
+import zipfile
+import time
+import threading
+import logging
+import re
 from datetime import datetime, timedelta
-import sqlite3, requests
+
+import sqlite3
+import requests
 from flask import Flask, render_template_string, jsonify, send_file
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
@@ -84,7 +93,6 @@ def detect_type(indicator):
     hash_pattern = re.compile(r"^[a-fA-F0-9]{32,128}$")
     domain_pattern = re.compile(r"^(?!\d+$)([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
     url_pattern = re.compile(r"^https?://")
-
     if ip_pattern.match(indicator):
         return "IP"
     if hash_pattern.match(indicator):
@@ -106,7 +114,7 @@ def fetch_otx_iocs():
                 for ind in pulse.get("indicators", []):
                     typ = detect_type(ind["indicator"])
                     loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
-                    severity = "High" if typ!="IP" else "Critical"
+                    severity = "Critical" if typ=="IP" else "High"
                     iocs.append({
                         "indicator": ind["indicator"],
                         "type": typ,
@@ -153,13 +161,16 @@ def fetch_abuseipdb():
 def threat_engine():
     while True:
         logging.info("Fetching threat feeds...")
-        all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
-        if all_iocs:
-            save_iocs(all_iocs)
-            cleanup_db()
-            logging.info(f"Saved {len(all_iocs)} IOCs")
-        else:
-            logging.info("No IOCs fetched")
+        try:
+            all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
+            if all_iocs:
+                save_iocs(all_iocs)
+                cleanup_db()
+                logging.info(f"Saved {len(all_iocs)} IOCs")
+            else:
+                logging.info("No IOCs fetched")
+        except Exception as e:
+            logging.error(f"Threat engine error: {e}")
         time.sleep(600)
 
 threading.Thread(target=threat_engine, daemon=True).start()
@@ -362,10 +373,10 @@ def export_pdf():
         c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators LIMIT 100")
         rows = c.fetchall()
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter)
-    table_data = [["Indicator","Type","Source","Severity","MITRE","Score","Country","Lat","Lon","Last Seen"]] + list(rows)
+    doc = SimpleDocTemplate(buffer, pagesize=letter
+table_data = [["Indicator","Type","Source","Severity","MITRE","Score","Country","Lat","Lon","Last Seen"]] + list(rows)
     table = Table(table_data)
-   doc.build([table])
+    doc.build([table])
     buffer.seek(0)
     return send_file(buffer, as_attachment=True, download_name="redshark_cti.pdf")
 
@@ -395,4 +406,4 @@ def export_ids():
     return send_file(zip_buffer, as_attachment=True, download_name="redshark_ids.zip")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False) 
+    app.run(host="0.0.0.0", port=5000)
