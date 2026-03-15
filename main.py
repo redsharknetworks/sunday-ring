@@ -1,11 +1,14 @@
 import io
 import csv
 import json
+import zipfile
+import time
+import threading
 import logging
 from datetime import datetime, timedelta
 
-import requests
 import sqlite3
+import requests
 from flask import Flask, render_template_string, jsonify, send_file
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
@@ -14,7 +17,7 @@ from reportlab.lib.pagesizes import letter
 app = Flask(__name__)
 DB_FILE = "redshark.db"
 OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
-ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a6eb14544a100"
+ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb14544a100"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -51,45 +54,39 @@ def init_db():
             last_seen TEXT
         )""")
         conn.commit()
-
 init_db()
-
-def cleanup_db(limit=5000):
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        c = conn.cursor()
-        c.execute("""
-        DELETE FROM indicators
-        WHERE id NOT IN (
-            SELECT id FROM indicators
-            ORDER BY last_seen DESC
-            LIMIT ?
-        )""", (limit,))
-        conn.commit()
 
 def save_iocs(iocs):
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
-        for f in iocs:
+        for i in iocs:
             try:
                 c.execute("""
                 INSERT OR IGNORE INTO indicators
                 (indicator,type,source,severity,mitre,score,country,lat,lon,first_seen,last_seen)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (f["indicator"],f["type"],f["source"],f["severity"],f["mitre"],
-                 f["score"],f["country"],f["lat"],f["lon"],f["first_seen"],f["last_seen"]))
-            except sqlite3.Error as e:
-                logging.warning(f"DB insert error: {e}")
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """,(
+                    i["indicator"],i["type"],i["source"],i["severity"],i["mitre"],
+                    i["score"],i["country"],i["lat"],i["lon"],i["first_seen"],i["last_seen"]
+                ))
+            except Exception as e:
+                logging.error(f"DB insert error: {e}")
         conn.commit()
 
-# ---------------- FETCH FEEDS ---------------- #
-def get_random_location():
-    ts = int(datetime.utcnow().timestamp())
-    return LOCATIONS[ts % len(LOCATIONS)]
+def cleanup_db(limit=5000):
+    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+        c = conn.cursor()
+        c.execute(f"""
+        DELETE FROM indicators
+        WHERE id NOT IN (
+            SELECT id FROM indicators
+            ORDER BY last_seen DESC
+            LIMIT {limit}
+        )
+        """)
+        conn.commit()
 
-def get_random_mitre():
-    ts = int(datetime.utcnow().timestamp())
-    return MITRE_MAP[ts % len(MITRE_MAP)]
-
+# ---------------- FEED FETCHERS ---------------- #
 def fetch_otx_iocs():
     url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
     headers = {"X-OTX-API-KEY": OTX_KEY}
@@ -98,18 +95,19 @@ def fetch_otx_iocs():
         r = requests.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
             data = r.json()
-            for pulse in data.get("results", []):
-                for ind in pulse.get("indicators", []):
-                    typ_raw = ind.get("type", "IPv4")
-                    typ = "IP" if typ_raw=="IPv4" else "Domain" if "domain" in typ_raw.lower() else "Hash"
-                    loc = get_random_location()
+            pulses = data.get("results",[])
+            for pulse in pulses:
+                for ind in pulse.get("indicators",[]):
+                    itype = ind.get("type","IPv4")
+                    typ = "IP" if itype=="IPv4" else "Domain" if "domain" in itype.lower() else "Hash"
+                    loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
                     severity = "Critical" if typ=="IP" else "High"
                     iocs.append({
                         "indicator": ind["indicator"],
                         "type": typ,
                         "source": "OTX",
                         "severity": severity,
-                        "mitre": get_random_mitre(),
+                        "mitre": MITRE_MAP[int(datetime.utcnow().timestamp()) % len(MITRE_MAP)],
                         "score": 95 if severity=="Critical" else 80,
                         "country": loc[0],
                         "lat": loc[1],
@@ -128,14 +126,15 @@ def fetch_abuseipdb():
     try:
         r = requests.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
-            for item in r.json().get("data", []):
-                loc = get_random_location()
+            data = r.json()
+            for item in data.get("data",[]):
+                loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
                 iocs.append({
                     "indicator": item["ipAddress"],
                     "type": "IP",
                     "source": "AbuseIPDB",
                     "severity": "Critical",
-                    "mitre": get_random_mitre(),
+                    "mitre": MITRE_MAP[int(datetime.utcnow().timestamp()) % len(MITRE_MAP)],
                     "score": 95,
                     "country": loc[0],
                     "lat": loc[1],
@@ -147,12 +146,26 @@ def fetch_abuseipdb():
         logging.error(f"AbuseIPDB fetch error: {e}")
     return iocs
 
+def threat_engine():
+    while True:
+        logging.info("Fetching threat feeds...")
+        all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
+        if all_iocs:
+            save_iocs(all_iocs)
+            cleanup_db()
+            logging.info(f"Saved {len(all_iocs)} IOCs")
+        else:
+            logging.info("No IOCs fetched")
+        time.sleep(600)  # fetch every 10 minutes
+
+# ---------------- START BACKGROUND THREAD ---------------- #
+threading.Thread(target=threat_engine, daemon=True).start()
+
 # ---------------- DASHBOARD HTML ---------------- #
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html>
 <head>
 <title>RedShark CTI Dashboard</title>
-<!-- CSS & JS for DataTables, Leaflet, Chart.js -->
 <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
@@ -211,7 +224,6 @@ button:hover{background:#0ea5e9;color:#fff;}
 <button onclick="window.location='/export/csv'">CSV</button>
 <button onclick="window.location='/export/pdf'">PDF</button>
 <button onclick="window.location='/export/ids'">IDS RULES</button>
-<button onclick="window.location='/refresh'">Refresh</button>
 </div>
 <div style="text-align:center;margin:10px;font-size:12px;color:#888;">
 Developed and analysed by darkgrid@redshark.my using publicly available sources
@@ -220,10 +232,12 @@ Developed and analysed by darkgrid@redshark.my using publicly available sources
 var map = L.map('map').setView([4.5,102],6);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
 var markers=[],mitreChart,severityChart,timelineChart;
+
 function initCharts(points){
     var mitreLabels=points.map(p=>p.mitre);
     var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
     mitreChart=new Chart(document.getElementById('mitre'),{type:'bar',data:{labels:Object.keys(mitreCounts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}});
+    
     var sev={"Low":0,"Medium":0,"High":0,"Critical":0}; points.forEach(p=>sev[p.severity]++);
     severityChart=new Chart(document.getElementById('severity'),{type:'doughnut',data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","red","darkred"]}]}});
 
@@ -241,24 +255,10 @@ function renderMap(points){
     });
 }
 
-function updateDashboard(){
-    $.getJSON("/api/latest", function(points){
-        var tickerHtml=""; points.slice(0,10).forEach(function(r){ tickerHtml += `🚨 <span class="${r.severity.toLowerCase()}">${r.severity}</span> ${r.indicator} via ${r.source} &nbsp;&nbsp;`; });
-        $("#ticker").html(tickerHtml);
-        var table=$('#cti').DataTable(); table.clear();
-        points.forEach(function(r){ table.row.add([r.indicator,r.type,r.source,`<span class="${r.severity.toLowerCase()}">${r.severity}</span>`,r.mitre,r.score,r.country,r.last_seen]); });
-        table.draw();
-        renderMap(points);
-        if(mitreChart) mitreChart.destroy(); if(severityChart) severityChart.destroy(); if(timelineChart) timelineChart.destroy();
-        initCharts(points);
-    });
-}
-
 $(document).ready(function(){
     $('#cti').DataTable({pageLength:50});
     var initialPoints = {{rows|tojson}};
     renderMap(initialPoints); initCharts(initialPoints);
-    setInterval(updateDashboard,30000);
 });
 </script>
 </body></html>
@@ -279,21 +279,7 @@ def dashboard():
         logging.error(f"Dashboard error: {e}")
         return f"Error loading dashboard: {e}",500
 
-# ---------------- LIVE API ---------------- #
-@app.route("/api/latest")
-def api_latest():
-    try:
-        with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-            c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
-            rows = [dict(r) for r in c.fetchall()]
-        return jsonify(rows)
-    except Exception as e:
-        logging.error(f"API latest error: {e}")
-        return jsonify([])
-
-# ---------------- EXPORTS ---------------- #
+# ---------------- EXPORT ROUTES ---------------- #
 @app.route("/export/json")
 def export_json():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
@@ -345,11 +331,11 @@ def export_ids():
     mem.seek(0)
     return send_file(mem, as_attachment=True, download_name="redshark_ids_rules.zip")
 
-# ---------------- REFRESH ---------------- #
+# ---------------- REFRESH ROUTE ---------------- #
 @app.route("/refresh")
 def refresh():
-    try:
-        all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
-        save_iocs(all_iocs)
-        cleanup_db()
-        logging.info(f"Ref
+    return "Feed fetching is handled in background thread. Refresh automatically every 10 minutes."
+
+# ---------------- RUN ---------------- #
+if __name__=="__main__":
+    app.run(host="0.0.0.0", port=5000)
