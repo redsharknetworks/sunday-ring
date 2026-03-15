@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import requests
 import sqlite3
 from flask import Flask, render_template_string, jsonify, send_file
+
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
@@ -17,7 +18,7 @@ DB_FILE = "redshark.db"
 
 # ---------------- API KEYS ---------------- #
 OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
-ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb8674d52aaf14544a100"
+ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb14544a100"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -58,36 +59,21 @@ def cleanup_db():
     conn.commit()
     conn.close()
 
-# ---------------- GLOBAL LOCATIONS ---------------- #
+# ---------------- LOCATIONS ---------------- #
 locations = [
-("Kangar",6.4414,100.1986),
-("Alor Setar",6.1248,100.3678),
-("George Town",5.4141,100.3288),
-("Ipoh",4.5975,101.0901),
-("Shah Alam",3.0738,101.5183),
-("Kuala Lumpur",3.1390,101.6869),
-("Seremban",2.7297,101.9381),
-("Melaka",2.1896,102.2501),
-("Johor Bahru",1.4927,103.7414),
-("Kuantan",3.8168,103.3317),
-("Kuala Terengganu",5.3302,103.1408),
-("Kota Bharu",6.1254,102.2386),
-("Kuching",1.5533,110.3592),
-("Kota Kinabalu",5.9804,116.0735),
-("Putrajaya",2.9264,101.6964)
+("Kangar",6.4414,100.1986),("Alor Setar",6.1248,100.3678),("George Town",5.4141,100.3288),
+("Ipoh",4.5975,101.0901),("Shah Alam",3.0738,101.5183),("Kuala Lumpur",3.1390,101.6869),
+("Seremban",2.7297,101.9381),("Melaka",2.1896,102.2501),("Johor Bahru",1.4927,103.7414),
+("Kuantan",3.8168,103.3317),("Kuala Terengganu",5.3302,103.1408),("Kota Bharu",6.1254,102.2386),
+("Kuching",1.5533,110.3592),("Kota Kinabalu",5.9804,116.0735),("Putrajaya",2.9264,101.6964)
 ]
 
-# ---------------- MITRE ATT&CK ---------------- #
 mitre_map = [
-"T1046 Network Discovery",
-"T1059 Command Execution",
-"T1566 Phishing",
-"T1071 C2 Communication",
-"T1105 Data Exfiltration",
-"T1190 Exploit Public Facing App"
+"T1046 Network Discovery","T1059 Command Execution","T1566 Phishing",
+"T1071 C2 Communication","T1105 Data Exfiltration","T1190 Exploit Public Facing App"
 ]
 
-# ---------------- FEED FETCHERS ---------------- #
+# ---------------- FETCH FEEDS ---------------- #
 def fetch_otx_iocs():
     url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
     headers = {"X-OTX-API-KEY": OTX_KEY}
@@ -147,6 +133,7 @@ def fetch_abuseipdb():
         print("AbuseIPDB fetch error:", e)
     return iocs
 
+# ---------------- SAVE ---------------- #
 def save_iocs(iocs):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -170,9 +157,9 @@ def threat_engine():
         cleanup_db()
         time.sleep(60)
 
-threading.Thread(target=threat_engine,daemon=True).start()
+threading.Thread(target=threat_engine, daemon=True).start()
 
-# ---------------- DASHBOARD HTML ---------------- #
+# ---------------- DASHBOARD ---------------- #
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html>
 <head>
@@ -182,7 +169,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 body{background:#020617;color:white;font-family:Arial}
@@ -194,38 +180,25 @@ canvas{margin:20px}
 .low{color:green}
 .medium{color:orange}
 .high{color:red}
-.critical{color:red;font-weight:bold;animation:pulse 1s infinite}
+.critical-marker{color:red;font-weight:bold;animation:pulse 1s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0}}
 </style>
 </head>
 <body>
 <h1>RedShark Cyber Threat Intelligence Platform</h1>
 <div class="highlight"><b>Latest Malaysia Security Highlight (GMT+8)</b><br>{{time}}</div>
-<div class="ticker">
-{% for r in rows[:10] %}
-🚨 {{r[3]}} {{r[0]}} via {{r[2]}} &nbsp;&nbsp;
-{% endfor %}
-</div>
+<div class="ticker">{% for r in rows[:10] %}🚨 {{r[3]}} {{r[0]}} via {{r[2]}} &nbsp;&nbsp;{% endfor %}</div>
 <div id="map"></div>
 <canvas id="mitre" height="250"></canvas>
 <canvas id="severity" height="250"></canvas>
 <canvas id="timeline" height="250"></canvas>
 <table id="cti" class="display">
-<thead>
-<tr>
-<th>Indicator</th><th>Type</th><th>Source</th><th>Severity</th>
-<th>MITRE</th><th>Score</th><th>Country</th><th>Last Seen</th>
-</tr>
-</thead>
-<tbody>
-{% for r in rows %}
-<tr>
-<td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td>
-<td class="{{r[3]|lower}}">{{r[3]}}</td>
-<td>{{r[4]}}</td><td>{{r[5]}}</td><td>{{r[6]}}</td><td>{{r[9]}}</td>
-</tr>
-{% endfor %}
-</tbody>
+<thead><tr><th>Indicator</th><th>Type</th><th>Source</th><th>Severity</th>
+<th>MITRE</th><th>Score</th><th>Country</th><th>Last Seen</th></tr></thead>
+<tbody>{% for r in rows %}
+<tr><td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td>
+<td class="{{r[3]|lower}}">{{r[3]}}</td><td>{{r[4]}}</td><td>{{r[5]}}</td>
+<td>{{r[6]}}</td><td>{{r[9]}}</td></tr>{% endfor %}</tbody>
 </table>
 <div style="text-align:center;margin:20px">
 <button onclick="window.location='/export/json'">JSON</button>
@@ -242,38 +215,32 @@ $(document).ready(function(){ $('#cti').DataTable({pageLength:50}) })
 var map=L.map('map').setView([4.5,102],6)
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map)
 var points={{rows|tojson}}
-var heat=[]
-points.forEach(function(p){ 
-  if(p[3]=="Critical") heat.push([p[7],p[8],1]) 
-  else heat.push([p[7],p[8],0.3])
+points.forEach(function(p){
+    if(p[3]=="Critical"){
+        var marker=L.circleMarker([p[7],p[8]],{radius:10,color:"red",fillOpacity:0.8}).addTo(map)
+        marker.bindPopup(p[0]+"<br>"+p[3])
+        marker._icon.classList.add("critical-marker")
+    } else {
+        L.circleMarker([p[7],p[8]],{radius:7,color:"blue",fillOpacity:0.5}).addTo(map)
+            .bindPopup(p[0]+"<br>"+p[3])
+    }
 })
-L.heatLayer(heat,{radius:25,blur:15}).addTo(map)
 
 // MITRE chart
 var mitre_labels = points.map(p=>p[4])
 var mitre_counts = {}
 mitre_labels.forEach(m=>mitre_counts[m]=(mitre_counts[m]||0)+1)
-new Chart(document.getElementById('mitre'),{
-type:'bar',
-data:{labels:Object.keys(mitre_counts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitre_counts),backgroundColor:'rgba(56,189,248,0.7)'}]},
-options:{plugins:{legend:{display:false}}}
-})
+new Chart(document.getElementById('mitre'),{type:'bar',data:{labels:Object.keys(mitre_counts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitre_counts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}})
 
 // Severity chart
 var sev={"Low":0,"Medium":0,"High":0,"Critical":0}
 points.forEach(p=>sev[p[3]]++)
-new Chart(document.getElementById('severity'),{
-type:'doughnut',
-data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","red","darkred"]}]}
-})
+new Chart(document.getElementById('severity'),{type:'doughnut',data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","red","darkred"]}]}})
 
 // Timeline chart
 var timeline={}
 points.forEach(p=>{ var t=p[9].substring(0,13); timeline[t]=(timeline[t]||0)+1 })
-new Chart(document.getElementById('timeline'),{
-type:'line',
-data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}
-})
+new Chart(document.getElementById('timeline'),{type:'line',data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}})
 </script>
 </body>
 </html>
