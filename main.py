@@ -5,6 +5,7 @@ import zipfile
 import time
 import threading
 import logging
+import re
 from datetime import datetime, timedelta
 
 import sqlite3
@@ -87,6 +88,27 @@ def cleanup_db(limit=5000):
         conn.commit()
 
 # ---------------- FEED FETCHERS ---------------- #
+def detect_type(indicator, original_type="IPv4"):
+    ip_pattern = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+    hash_pattern = re.compile(r"^[a-fA-F0-9]{32,128}$")
+    domain_pattern = re.compile(r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
+    url_pattern = re.compile(r"^https?://")
+
+    if ip_pattern.match(indicator):
+        return "IP"
+    elif url_pattern.match(indicator) or domain_pattern.match(indicator):
+        return "Domain"
+    elif hash_pattern.match(indicator):
+        return "Hash"
+    else:
+        typ = original_type.lower()
+        if "ipv4" in typ or "ip" in typ:
+            return "IP"
+        elif "domain" in typ or "url" in typ:
+            return "Domain"
+        else:
+            return "Hash"
+
 def fetch_otx_iocs():
     url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
     headers = {"X-OTX-API-KEY": OTX_KEY}
@@ -94,12 +116,9 @@ def fetch_otx_iocs():
     try:
         r = requests.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
-            data = r.json()
-            pulses = data.get("results",[])
-            for pulse in pulses:
-                for ind in pulse.get("indicators",[]):
-                    itype = ind.get("type","IPv4")
-                    typ = "IP" if "ipv4" in itype.lower() or "ip" in itype.lower() else "Domain" if "domain" in itype.lower() else "Hash"
+            for pulse in r.json().get("results", []):
+                for ind in pulse.get("indicators", []):
+                    typ = detect_type(ind["indicator"], ind.get("type","IPv4"))
                     loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
                     severity = "Critical" if typ=="IP" else "High"
                     iocs.append({
@@ -126,8 +145,7 @@ def fetch_abuseipdb():
     try:
         r = requests.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
-            data = r.json()
-            for item in data.get("data",[]):
+            for item in r.json().get("data", []):
                 loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
                 iocs.append({
                     "indicator": item["ipAddress"],
@@ -156,12 +174,11 @@ def threat_engine():
             logging.info(f"Saved {len(all_iocs)} IOCs")
         else:
             logging.info("No IOCs fetched")
-        time.sleep(600)  # every 10 minutes
+        time.sleep(600)
 
 threading.Thread(target=threat_engine, daemon=True).start()
 
 # ---------------- DASHBOARD HTML ---------------- #
-# v18 enhanced: cleaner ticker, blinking critical, responsive charts
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html>
 <head>
@@ -178,9 +195,8 @@ h1{text-align:center;color:#38bdf8;margin:20px 0;}
 .highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red;font-weight:bold;}
 .ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;overflow-x:auto;white-space:nowrap;}
 #dashboard-container{max-width:1200px;margin:0 auto;}
-#map{height:450px;width:100%;border-radius:10px;}
-#charts{display:flex;justify-content:space-around;flex-wrap:wrap;margin:20px 0;width:100%;}
-.chart-container{flex:1;margin:10px;height:300px;}
+#map{height:450px;width:100%;border-radius:10px;margin-bottom:20px;}
+.chart-container{width:100%;margin-bottom:20px;height:300px;}
 canvas{width:100% !important;height:100% !important;background:#111827;padding:10px;border-radius:10px;}
 .low{color:#22c55e;}
 .medium{color:#facc15;}
@@ -198,11 +214,9 @@ button:hover{background:#0ea5e9;color:#fff;}
 <div class="highlight" id="highlight">Latest Malaysia Security Highlight (GMT+8): {{time}}</div>
 <div class="ticker" id="ticker"></div>
 <div id="map"></div>
-<div id="charts">
-  <div class="chart-container"><canvas id="mitre"></canvas></div>
-  <div class="chart-container"><canvas id="severity"></canvas></div>
-  <div class="chart-container"><canvas id="timeline"></canvas></div>
-</div>
+<div class="chart-container"><canvas id="mitre"></canvas></div>
+<div class="chart-container"><canvas id="severity"></canvas></div>
+<div class="chart-container"><canvas id="timeline"></canvas></div>
 <table id="cti" class="display">
 <thead>
 <tr><th>Indicator</th><th>Type</th><th>Source</th><th>Severity</th>
