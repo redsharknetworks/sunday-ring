@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 import requests
 import sqlite3
 from flask import Flask, render_template_string, jsonify, send_file
+from reportlab.platypus import SimpleDocTemplate, Table
+from reportlab.lib.pagesizes import letter
 
 app = Flask(__name__)
 DB_FILE = "redshark.db"
@@ -98,10 +100,7 @@ def fetch_otx_iocs():
             for pulse in pulses:
                 for ind in pulse.get("indicators",[]):
                     itype = ind.get("type","IPv4")
-                    if itype=="IPv4": typ="IP"
-                    elif itype.lower().startswith("domain"): typ="Domain"
-                    elif itype.lower().startswith("filehash"): typ="Hash"
-                    else: typ="Other"
+                    typ = "IP" if itype=="IPv4" else "Domain" if "domain" in itype.lower() else "Hash"
                     loc = locations[int(datetime.utcnow().timestamp()) % len(locations)]
                     severity = "Critical" if typ=="IP" else "High"
                     iocs.append({
@@ -137,7 +136,7 @@ def fetch_abuseipdb():
                     "source": "AbuseIPDB",
                     "severity": "Critical",
                     "mitre": mitre_map[int(datetime.utcnow().timestamp()) % len(mitre_map)],
-                    "score": 90,
+                    "score": 95,
                     "country": loc[0],
                     "lat": loc[1],
                     "lon": loc[2],
@@ -249,6 +248,7 @@ points.forEach(function(p){
   else heat.push([p[7],p[8],0.3])
 })
 L.heatLayer(heat,{radius:25,blur:15}).addTo(map)
+
 // MITRE chart
 var mitre_labels = points.map(p=>p[4])
 var mitre_counts = {}
@@ -258,6 +258,7 @@ type:'bar',
 data:{labels:Object.keys(mitre_counts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitre_counts),backgroundColor:'rgba(56,189,248,0.7)'}]},
 options:{plugins:{legend:{display:false}}}
 })
+
 // Severity chart
 var sev={"Low":0,"Medium":0,"High":0,"Critical":0}
 points.forEach(p=>sev[p[3]]++)
@@ -265,6 +266,7 @@ new Chart(document.getElementById('severity'),{
 type:'doughnut',
 data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","red","darkred"]}]}
 })
+
 // Timeline chart
 var timeline={}
 points.forEach(p=>{ var t=p[9].substring(0,13); timeline[t]=(timeline[t]||0)+1 })
@@ -305,10 +307,12 @@ def export_csv():
 @app.route("/export/pdf")
 def export_pdf():
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
-    c.execute("SELECT indicator,type,source,severity,mitre FROM indicators LIMIT 100")
+    c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators LIMIT 100")
     rows=c.fetchall(); conn.close()
     buffer=io.BytesIO(); doc=SimpleDocTemplate(buffer,pagesize=letter)
-    table=Table(rows); doc.build([table]); buffer.seek(0)
+    table_data=[["Indicator","Type","Source","Severity","MITRE","Score","Country","Lat","Lon","Last Seen"]]+list(rows)
+    table=Table(table_data)
+    doc.build([table]); buffer.seek(0)
     return send_file(buffer,as_attachment=True,download_name="redshark_report.pdf")
 
 @app.route("/export/ids")
