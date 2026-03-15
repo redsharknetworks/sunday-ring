@@ -118,7 +118,7 @@ def fetch_otx_iocs():
                     loc = locations[int(datetime.utcnow().timestamp()) % len(locations)]
                     iocs.append({
                         "indicator": ind["indicator"],
-                        "type": ind.get("type","IP"),
+                        "type": "IP" if ind.get("type","IP")=="IPv4" else ind.get("type","Domain"),
                         "source": "OTX",
                         "severity": "Critical" if ind.get("type","IP")=="IPv4" else "High",
                         "mitre": mitre_map[int(datetime.utcnow().timestamp()) % len(mitre_map)],
@@ -162,12 +162,8 @@ def fetch_abuseipdb():
 
 def threat_engine():
     while True:
-        otx_iocs = fetch_otx_iocs()
-        abuse_iocs = fetch_abuseipdb()
-        feed = otx_iocs + abuse_iocs
-        if not feed:
-            print("No real feed fetched!")
-        else:
+        feed = fetch_otx_iocs() + fetch_abuseipdb()
+        if feed:
             save_iocs(feed)
         cleanup_db()
         time.sleep(60)
@@ -197,8 +193,8 @@ canvas{margin:20px}
 .low{color:green}
 .medium{color:orange}
 .high{color:red}
-.critical{color:red;font-weight:bold;animation:blink 1s infinite}
-@keyframes blink{50%{opacity:0}}
+.critical{color:red;font-weight:bold;animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0}}
 </style>
 </head>
 <body>
@@ -250,7 +246,33 @@ points.forEach(function(p){
     var intensity=(p[3]=="Critical")?1:0.5;
     heat.push([p[7],p[8],intensity]) 
 })
-var heatLayer = L.heatLayer(heat,{radius:25,blur:15}).addTo(map)
+L.heatLayer(heat,{radius:25,blur:15}).addTo(map)
+
+// MITRE chart
+var mitre_labels = points.map(p=>p[4])
+var mitre_counts = {}
+mitre_labels.forEach(m=>mitre_counts[m]=(mitre_counts[m]||0)+1)
+new Chart(document.getElementById('mitre'),{
+type:'bar',
+data:{labels:Object.keys(mitre_counts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitre_counts),backgroundColor:'rgba(56,189,248,0.7)'}]},
+options:{plugins:{legend:{display:false}}}
+})
+
+// Severity chart
+var sev={"Low":0,"Medium":0,"High":0,"Critical":0}
+points.forEach(p=>sev[p[3]]++)
+new Chart(document.getElementById('severity'),{
+type:'doughnut',
+data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","red","darkred"]}]}
+})
+
+// Timeline chart
+var timeline={}
+points.forEach(p=>{ var t=p[9].substring(0,13); timeline[t]=(timeline[t]||0)+1 })
+new Chart(document.getElementById('timeline'),{
+type:'line',
+data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}
+})
 </script>
 </body>
 </html>
@@ -305,6 +327,5 @@ def refresh():
     cleanup_db()
     return "Threat feed refreshed"
 
-# ---------------- RUN ---------------- #
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
