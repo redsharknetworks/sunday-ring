@@ -89,27 +89,20 @@ def cleanup_db(limit=5000):
 
 # ---------------- FEED FETCHERS ---------------- #
 def detect_type(indicator, original_type="IPv4"):
-    ip_pattern = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+    ip_pattern = re.compile(r"^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$")
     hash_pattern = re.compile(r"^[a-fA-F0-9]{32,128}$")
-    domain_pattern = re.compile(r"^(?!\d+$)(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
+    domain_pattern = re.compile(r"^(?!\d+$)([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
     url_pattern = re.compile(r"^https?://")
 
     if ip_pattern.match(indicator):
         return "IP"
-    elif url_pattern.match(indicator):
-        return "Domain"
-    elif domain_pattern.match(indicator):
-        return "Domain"
-    elif hash_pattern.match(indicator):
+    if hash_pattern.match(indicator):
         return "Hash"
-    else:
-        typ = original_type.lower()
-        if "ipv4" in typ or "ip" in typ:
-            return "IP"
-        elif "domain" in typ or "url" in typ:
-            return "Domain"
-        else:
-            return "Hash"
+    if url_pattern.match(indicator):
+        return "Domain"
+    if domain_pattern.match(indicator):
+        return "Domain"
+    return "Unknown"
 
 def fetch_otx_iocs():
     url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
@@ -203,12 +196,9 @@ canvas{width:100% !important;height:100% !important;background:#111827;padding:1
 .low{color:#22c55e;}
 .medium{color:#facc15;}
 .high{color:crimson;}
-.critical-marker{color:red;font-weight:bold;animation:pulse 1s infinite;}
-.severity-cell.Low{color:#22c55e;font-weight:bold;}
-.severity-cell.Medium{color:#facc15;font-weight:bold;}
-.severity-cell.High{color:crimson;font-weight:bold;}
-.severity-cell.Critical{color:red;font-weight:bold;}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0}}
+.critical-marker{animation:pulse 1s infinite;filter:drop-shadow(0 0 12px red) brightness(1.4);}
+.high-marker{animation:pulse 1.2s infinite;filter:drop-shadow(0 0 8px orange) brightness(1.2);}
+@keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.3);opacity:0.6}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
 #cti{width:100% !important;}
@@ -239,8 +229,8 @@ button:hover{background:#0ea5e9;color:#fff;}
 <div style="text-align:center;margin:10px;font-size:12px;color:#888;">
 Developed and analysed by darkgrid@redshark.my using publicly available sources
 </div>
+
 <script>
-// ---------- MAP & CHARTS ----------
 var map=L.map('map').setView([4.5,102],6);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
 var markers=[],mitreChart,severityChart,timelineChart;
@@ -266,9 +256,11 @@ function renderTable(points){
     var table=$("#cti").DataTable();
     table.clear();
     points.forEach(p=>{
+        var sev_class=p.severity.toLowerCase();
         table.row.add([
-            p.indicator,p.type,p.source,
-            `<span class="severity-cell ${p.severity}">${p.severity}</span>`,
+            `<span class="${sev_class}">${p.indicator}</span>`,
+            p.type,p.source,
+            `<span class="${sev_class}">${p.severity}</span>`,
             p.mitre,p.score,p.country,p.last_seen
         ]);
     });
@@ -279,64 +271,48 @@ function renderMap(points){
     markers.forEach(m=>map.removeLayer(m));
     markers=[];
     points.forEach(p=>{
-        var color,radius,pulse=false;
-        if(p.severity=="Critical"){color="red";radius=10;pulse=true;}
-        else if(p.severity=="High"){color="crimson";radius=8;pulse=true;}
-        else if(p.severity=="Medium"){color="orange";radius=6;}
-        else{color="green";radius=5;}
+        var color,radius,cls="";
+        if(p.severity=="Critical"){color="red";radius=12;cls="critical-marker";}
+        else if(p.severity=="High"){color="orange";radius=10;cls="high-marker";}
+        else if(p.severity=="Medium"){color="yellow";radius=8;}
+        else{color="green";radius=6;}
         var marker=L.circleMarker([p.lat,p.lon],{radius:radius,color:color,fillOpacity:0.8}).addTo(map);
-        marker.bindPopup(p.indicator+"<br>"+p.severity);
-        if(pulse && marker._icon) marker._icon.classList.add("critical-marker");
+        if(cls && marker._icon) marker._icon.classList.add(cls);
+        marker.bindPopup(p.indicator+"<br>"+p.type+" — "+p.severity);
         markers.push(marker);
     });
 }
 
 function renderCharts(points){
-    // Gradient MITRE chart
-    var mitreLabels = points.map(p => p.mitre);
-    var mitreCounts = {}; mitreLabels.forEach(m => mitreCounts[m]=(mitreCounts[m]||0)+1);
+    var mitreLabels=points.map(p=>p.mitre);
+    var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
     if(mitreChart) mitreChart.destroy();
-    var ctxMitre = document.getElementById('mitre').getContext('2d');
-    var mitreColors = Object.keys(mitreCounts).map((_, i)=>{
-        var grad = ctxMitre.createLinearGradient(0,0,0,300);
-        grad.addColorStop(0,'rgba(56,189,248,0.9)');
-        grad.addColorStop(1,'rgba(0,0,0,0.2)');
-        return grad;
-    });
-    mitreChart=new Chart(ctxMitre,{
-        type:'bar',
-        data:{labels:Object.keys(mitreCounts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:mitreColors,borderColor:'rgba(56,189,248,1)',borderWidth:1}]},
-        options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},responsive:true,maintainAspectRatio:false}
-    });
+    var ctx_m=document.getElementById('mitre').getContext('2d');
+    var mitre_grad=ctx_m.createLinearGradient(0,0,0,300);
+    mitre_grad.addColorStop(0,'#38bdf8'); mitre_grad.addColorStop(1,'rgba(0,0,0,0.2)');
+    mitreChart=new Chart(ctx_m,{type:'bar',data:{
+        labels:Object.keys(mitreCounts),
+        datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:mitre_grad}]
+    },options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}}}});
 
-    // Gradient Severity chart
     var sevCounts={"Low":0,"Medium":0,"High":0,"Critical":0};
     points.forEach(p=>sevCounts[p.severity]++);
-    var ctx = document.getElementById('severity').getContext('2d');
+    var ctx_s=document.getElementById('severity').getContext('2d');
     if(severityChart) severityChart.destroy();
-    var colors = {"Low":"green","Medium":"orange","High":"crimson","Critical":"red"};
+    var colors={"Low":"green","Medium":"orange","High":"crimson","Critical":"red"};
     var gradients=[];
     Object.keys(sevCounts).forEach((sev,i)=>{
-        var grad = ctx.createLinearGradient(0,0,0,300);
+        var grad=ctx_s.createLinearGradient(0,0,0,300);
         grad.addColorStop(0,colors[sev]);
         grad.addColorStop(1,"rgba(0,0,0,0.2)");
         gradients.push(grad);
     });
-    severityChart=new Chart(ctx,{
-        type:'bar',
-        data:{labels:Object.keys(sevCounts),datasets:[{label:'Severity Count',data:Object.values(sevCounts),backgroundColor:gradients,borderColor:Object.values(colors),borderWidth:1}]},
-        options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},responsive:true,maintainAspectRatio:false}
-    });
+    severityChart=new Chart(ctx_s,{type:'bar',data:{labels:Object.keys(sevCounts),datasets:[{label:'Severity Count',data:Object.values(sevCounts),backgroundColor:gradients,borderColor:Object.values(colors),borderWidth:1}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},responsive:true,maintainAspectRatio:false}});
 
-    // Timeline chart
     var timeline={};
     points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
     if(timelineChart) timelineChart.destroy();
-    timelineChart=new Chart(document.getElementById('timeline'),{
-        type:'line',
-        data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]},
-        options:{plugins:{legend:{display:true}},responsive:true,maintainAspectRatio:false}
-    });
+    timelineChart=new Chart(document.getElementById('timeline'),{type:'line',data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]},options:{plugins:{legend:{display:true}},responsive:true,maintainAspectRatio:false}});
 }
 
 $(document).ready(function(){
@@ -348,7 +324,7 @@ $(document).ready(function(){
 </body></html>
 """
 
-# ---------------- API DATA ---------------- #
+# ---------------- API ---------------- #
 @app.route("/api/data")
 def api_data():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
@@ -388,7 +364,7 @@ def export_csv():
 def export_pdf():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
-        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators LIMIT 100")
+       c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators LIMIT 100")
         rows = c.fetchall()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
@@ -400,20 +376,28 @@ def export_pdf():
 
 @app.route("/export/ids")
 def export_ids():
+    # Generate Snort/Suricata style rules
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
-        c.execute("SELECT indicator,type FROM indicators WHERE type='IP'")
+        c.execute("SELECT indicator,type,severity FROM indicators")
         rows = c.fetchall()
-    rules = []
-    for ip, typ in rows:
-        rules.append(f'alert ip any any -> {ip} any (msg:"RedShark Threat Intelligence - IP"; sid:{100000+hash(ip)%90000}; rev:1;)')
-    # Create ZIP in-memory
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("redshark_ids.rules", "\n".join(rules))
-    buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="redshark_ids.zip")
 
-# ---------------- RUN APP ---------------- #
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w') as zf:
+        rules = ""
+        sid_counter = 1000000
+        for ind, typ, sev in rows:
+            if typ == "IP":
+                rule = f'alert ip any any -> {ind} any (msg:"RedShark {sev} threat"; sid:{sid_counter}; rev:1;)\n'
+            elif typ == "Domain":
+                rule = f'alert tcp any any -> any 80 (msg:"RedShark {sev} Domain {ind}"; content:"{ind}"; sid:{sid_counter}; rev:1;)\n'
+            else:  # Hash
+                rule = f'# Hash {ind} severity {sev} (sid:{sid_counter})\n'
+            rules += rule
+            sid_counter += 1
+        zf.writestr("redshark_ids.rules", rules)
+    zip_buffer.seek(0)
+    return send_file(zip_buffer, as_attachment=True, download_name="redshark_ids.zip")
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000) 
