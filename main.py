@@ -6,12 +6,10 @@ import threading
 import time
 import ipaddress
 from datetime import datetime
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, jsonify
 
 app = Flask(__name__)
 
-# -------------------------------
-# Database Setup
 # -------------------------------
 DB_DIR = "data"
 DB_PATH = os.path.join(DB_DIR, "cti.db")
@@ -38,8 +36,16 @@ MALAYSIA_LOCATIONS = [
 
 SEVERITY_WEIGHT = {"High": 3, "Medium": 2, "Low": 1}
 
-# -------------------------------
-# Database Initialization
+IOC_TEST_IPS = [
+    "103.146.203.11",
+    "222.246.32.12",
+    "112.134.139.180",
+    "103.163.13.144",
+    "49.156.41.98",
+    "117.216.1.7",
+    "119.200.32.11"
+]
+
 # -------------------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH, timeout=30)
@@ -77,8 +83,6 @@ def get_events(limit=500):
     return rows
 
 # -------------------------------
-# Geolocation
-# -------------------------------
 def get_country_from_ip(ip):
     conn = sqlite3.connect(DB_PATH, timeout=30)
     c = conn.cursor()
@@ -100,8 +104,6 @@ def get_country_from_ip(ip):
     conn.close()
     return country, lat, lon
 
-# -------------------------------
-# CTI Feeds Fetcher
 # -------------------------------
 def fetch_cti_combined():
     OTX_API_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
@@ -140,7 +142,7 @@ def fetch_cti_combined():
             try:
                 ipaddress.ip_address(ip)
             except ValueError:
-                continue  # skip invalid IP
+                continue
             exist = c.execute("SELECT id FROM events WHERE ip=?", (ip,)).fetchone()
             if exist: continue
 
@@ -172,75 +174,81 @@ def fetch_cti_combined():
         time.sleep(600)
 
 # -------------------------------
-# Start Background Fetch
+def insert_real_ioc_dummy():
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    c = conn.cursor()
+    for ip in IOC_TEST_IPS:
+        exist = c.execute("SELECT id FROM events WHERE ip=?", (ip,)).fetchone()
+        if exist: continue
+        loc = random.choice(MALAYSIA_LOCATIONS)
+        c.execute("""
+        INSERT INTO events(ip,source,severity,country,rule,description,lat,lon,timestamp)
+        VALUES(?,?,?,?,?,?,?,?,?)
+        """,(ip,"Real IOC Test",random.choice(["High","Medium","Low"]),"Malaysia",f"RSK-{random.randint(1000,9999)}","Imported real IOC",loc[1],loc[2],datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+
 # -------------------------------
 init_db()
+insert_real_ioc_dummy()
 threading.Thread(target=fetch_cti_combined, daemon=True).start()
 
 # -------------------------------
-# Flask Dashboard
+@app.route("/data")
+def get_dashboard_data():
+    events = get_events()
+    heat_data=[]
+    lines=[]
+    markers=[]
+    severity_counts={"High":0,"Medium":0,"Low":0}
+    timeline={}
+    table_rows=[]
+    for e in events:
+        weight = SEVERITY_WEIGHT.get(e[3],1)
+        severity_counts[e[3]] +=1
+        hour = e[9][:13]
+        timeline[hour] = timeline.get(hour,0)+1
+        table_rows.append({
+            "ip": e[1],"source":e[2],"severity":e[3],
+            "country":e[4],"rule":e[5],"description":e[6],
+            "timestamp":e[9]
+        })
+        heat_data.append([e[7], e[8], weight])
+        markers.append({"lat":e[7],"lon":e[8],"popup":f"IP: {e[1]}<br>Source:{e[2]}<br>Severity:{e[3]}<br>Country:{e[4]}<br>Time:{e[9]}"})
+        if e[4]!="Malaysia":
+            loc = random.choice(MALAYSIA_LOCATIONS)
+            lines.append({"from_lat": e[7],"from_lon":e[8],"to_lat":loc[1],"to_lon":loc[2],"severity":e[3]})
+    return jsonify({
+        "heat_data":heat_data,
+        "lines":lines,
+        "markers":markers,
+        "severity_counts":severity_counts,
+        "timeline":timeline,
+        "table_rows":table_rows
+    })
+
 # -------------------------------
 @app.route("/")
 def dashboard():
-    events = get_events()
-    if not events:
-        return "No CTI events available yet. Please wait a few minutes."
-
-    heat_data = []
-    lines = []
-    markers = []
-    severity_counts = {"High":0,"Medium":0,"Low":0}
-    timeline = {}
-    table_rows = []
-
-    for e in events:
-        weight = SEVERITY_WEIGHT.get(e[3],1)
-        severity_counts[e[3]] += 1
-        hour = e[9][:13]
-        timeline[hour] = timeline.get(hour,0)+1
-
-        table_rows.append({
-            "ip": e[1],
-            "source": e[2],
-            "severity": e[3],
-            "country": e[4],
-            "rule": e[5],
-            "description": e[6],
-            "timestamp": e[9]
-        })
-
-        heat_data.append([e[7], e[8], weight])
-        markers.append({
-            "lat": e[7],
-            "lon": e[8],
-            "popup": f"IP: {e[1]}<br>Source: {e[2]}<br>Severity: {e[3]}<br>Country: {e[4]}<br>Time: {e[9]}"
-        })
-
-        if e[4]!="Malaysia":
-            loc = random.choice(MALAYSIA_LOCATIONS)
-            lines.append({"from_lat": e[7],"from_lon": e[8],"to_lat": loc[1],"to_lon": loc[2],"severity": e[3]})
-
     return render_template_string("""
 <html>
 <head>
 <title>RedShark Cyber Threat Intelligence Platform</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css"/>
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster/dist/leaflet.markercluster.js"></script>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{margin:0;padding:0;font-family:Arial;background:#0f1720;color:#e5e7eb;}
-#map{height:500px;}
-#charts{display:flex;flex-wrap:wrap;}
-.chart{flex:1 1 30%;margin:10px;background:#111827;padding:10px;border-radius:8px;}
+#map{height:500px;} .chart{flex:1 1 30%;margin:10px;background:#111827;padding:10px;border-radius:8px;}
 .header{font-size:28px;padding:15px;background:#111827;}
 .footer{text-align:center;font-size:12px;color:#9ca3af;margin-top:20px;}
+#charts{display:flex;flex-wrap:wrap;}
 table{width:100%; border-collapse: collapse; background:#111827; color:#e5e7eb;}
-th, td{padding:6px; border:1px solid #1f2937;}
-thead{background:#1f2937;}
+th, td{padding:6px; border:1px solid #1f2937;} thead{background:#1f2937;}
 #table_container{max-height:300px; overflow:auto; margin:10px;}
 </style>
 </head>
@@ -253,25 +261,9 @@ thead{background:#1f2937;}
     <div class="chart" id="severity_chart"></div>
     <div class="chart" id="timeline_chart"></div>
 </div>
-
-<div id="table_container">
-<table>
-<thead>
-<tr>
+<div id="table_container"><table><thead><tr>
 <th>IP</th><th>Source</th><th>Severity</th><th>Country</th><th>Rule</th><th>Description</th><th>Timestamp</th>
-</tr>
-</thead>
-<tbody>
-{% for row in table_rows %}
-<tr>
-<td>{{row.ip}}</td><td>{{row.source}}</td><td>{{row.severity}}</td>
-<td>{{row.country}}</td><td>{{row.rule}}</td><td>{{row.description}}</td><td>{{row.timestamp}}</td>
-</tr>
-{% endfor %}
-</tbody>
-</table>
-</div>
-
+</tr></thead><tbody id="table_body"></tbody></table></div>
 <div class="footer">
 Map tiles © OpenStreetMap contributors | Developed by darkgrid@redshark.my using publicly available sources
 </div>
@@ -279,39 +271,33 @@ Map tiles © OpenStreetMap contributors | Developed by darkgrid@redshark.my usin
 <script>
 var map = L.map('map').setView([4.2105,101.9758],6);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution:'', subdomains:'abcd', maxZoom:19 }).addTo(map);
+var heat = L.heatLayer([], {radius:25, blur:15, maxZoom:10, max:9}).addTo(map);
+var markers = L.markerClusterGroup(); map.addLayer(markers);
 
-// Heatmap
-var heat = L.heatLayer({{heat_data|tojson}}, {radius:25, blur:15, maxZoom:10, max:9}).addTo(map);
-
-// Curved lines
-var lines = {{lines|tojson}};
-lines.forEach(function(l){
-    L.polyline([[l.from_lat,l.from_lon],[l.to_lat,l.to_lon]],{color:l.severity=="High"?"red":"orange",weight:l.severity=="High"?3:1,opacity:0.7}).addTo(map);
-});
-
-// Markers cluster with severity color
-var markers = L.markerClusterGroup();
-var mdata = {{markers|tojson}};
-mdata.forEach(function(m){
-    var color="cyan";
-    if(m.popup.includes("High")) color="red";
-    else if(m.popup.includes("Medium")) color="orange";
-
-    var icon = L.circleMarker([m.lat,m.lon], {radius:6,fillColor:color,color:color,weight:1,opacity:1,fillOpacity:0.8});
-    icon.bindPopup(m.popup);
-    markers.addLayer(icon);
-});
-map.addLayer(markers);
-
-// Charts
-var severity = {{severity_counts|tojson}};
-Plotly.newPlot('severity_chart',[{x:Object.keys(severity),y:Object.values(severity),type:'bar',marker:{color:['red','orange','cyan']}}], {title:'Severity Distribution',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
-var timeline = {{timeline|tojson}};
-Plotly.newPlot('timeline_chart',[{x:Object.keys(timeline),y:Object.values(timeline),type:'scatter'}], {title:'Threat Timeline',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
+function fetchData(){
+    fetch("/data").then(r=>r.json()).then(d=>{
+        // Heatmap
+        heat.setLatLngs(d.heat_data);
+        // Remove old markers
+        markers.clearLayers();
+        d.markers.forEach(function(m){
+            var color="cyan"; if(m.popup.includes("High")) color="red"; else if(m.popup.includes("Medium")) color="orange";
+            var icon = L.circleMarker([m.lat,m.lon], {radius:6,fillColor:color,color:color,weight:1,opacity:1,fillOpacity:0.8});
+            icon.bindPopup(m.popup); markers.addLayer(icon);
+        });
+        // Charts
+        Plotly.newPlot('severity_chart',[{x:Object.keys(d.severity_counts),y:Object.values(d.severity_counts),type:'bar',marker:{color:['red','orange','cyan']}}], {title:'Severity Distribution',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
+        Plotly.newPlot('timeline_chart',[{x:Object.keys(d.timeline),y:Object.values(d.timeline),type:'scatter'}], {title:'Threat Timeline',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
+        // Table
+        var tbody = document.getElementById("table_body"); tbody.innerHTML="";
+        d.table_rows.forEach(function(r){tbody.innerHTML+=`<tr><td>${r.ip}</td><td>${r.source}</td><td>${r.severity}</td><td>${r.country}</td><td>${r.rule}</td><td>${r.description}</td><td>${r.timestamp}</td></tr>`;});
+    });
+}
+fetchData(); setInterval(fetchData,60000);
 </script>
 </body>
 </html>
-""", heat_data=heat_data, lines=lines, markers=markers, severity_counts=severity_counts, timeline=timeline, table_rows=table_rows, time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+""", time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
