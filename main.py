@@ -6,11 +6,9 @@ import io
 import csv
 import zipfile
 import random
+import re
 from datetime import datetime
-
 from flask import Flask, jsonify, render_template_string, send_file
-from reportlab.platypus import SimpleDocTemplate, Table
-from reportlab.lib.pagesizes import letter
 
 app = Flask(__name__)
 
@@ -19,6 +17,7 @@ DB="redshark_cti.db"
 OTX_KEY="aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
 ABUSE_KEY="08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb8674d52aaf14544a100"
 
+# Malaysia states coordinates
 STATES=[
 ("Perlis",6.4414,100.1986),
 ("Kedah",6.1248,100.3678),
@@ -41,11 +40,40 @@ MITRE=[
 "T1566 Phishing",
 "T1071 Command & Control",
 "T1046 Network Discovery",
-"T1105 Data Exfiltration",
+"T1105 Exfiltration",
 "T1059 Command Execution"
 ]
 
+# ---------------------------
+# IOC TYPE DETECTION
+# ---------------------------
+
+def detect_type(value):
+
+    if re.match(r'^https?://', value):
+        return "URL"
+
+    if re.match(r'^[a-fA-F0-9]{32}$', value):
+        return "MD5"
+
+    if re.match(r'^[a-fA-F0-9]{40}$', value):
+        return "SHA1"
+
+    if re.match(r'^[a-fA-F0-9]{64}$', value):
+        return "SHA256"
+
+    if re.match(r'^(\d{1,3}\.){3}\d{1,3}$', value):
+        return "IP"
+
+    return "Other"
+
+
+# ---------------------------
+# DATABASE
+# ---------------------------
+
 def init_db():
+
     conn=sqlite3.connect(DB)
     c=conn.cursor()
 
@@ -68,12 +96,16 @@ def init_db():
 
 init_db()
 
+
 def save_iocs(iocs):
+
     conn=sqlite3.connect(DB)
     c=conn.cursor()
 
     for i in iocs:
+
         try:
+
             c.execute("""
             INSERT OR IGNORE INTO indicators
             VALUES(?,?,?,?,?,?,?,?,?,?)
@@ -89,19 +121,27 @@ def save_iocs(iocs):
             i["lon"],
             i["last_seen"]
             ))
+
         except:
             pass
 
     conn.commit()
     conn.close()
 
+
+# ---------------------------
+# FEEDS
+# ---------------------------
+
 def fetch_otx():
+
     url="https://otx.alienvault.com/api/v1/pulses/subscribed"
     headers={"X-OTX-API-KEY":OTX_KEY}
 
     iocs=[]
 
     try:
+
         r=requests.get(url,headers=headers,timeout=15)
         data=r.json()
 
@@ -114,14 +154,12 @@ def fetch_otx():
                 if not indicator:
                     continue
 
-                typ="IP"
-
-                if "url" in ind.get("type","").lower():
-                    typ="URL"
+                typ=detect_type(indicator)
 
                 state=random.choice(STATES)
 
                 severity="High"
+
                 if typ=="IP":
                     severity="Critical"
 
@@ -143,7 +181,9 @@ def fetch_otx():
 
     return iocs
 
+
 def fetch_abuse():
+
     url="https://api.abuseipdb.com/api/v2/blacklist?confidenceMinimum=75&limit=100"
 
     headers={
@@ -162,11 +202,13 @@ def fetch_abuse():
 
             ip=item["ipAddress"]
 
+            typ=detect_type(ip)
+
             state=random.choice(STATES)
 
             iocs.append({
             "indicator":ip,
-            "type":"IP",
+            "type":typ,
             "source":"AbuseIPDB",
             "severity":"Critical",
             "mitre":random.choice(MITRE),
@@ -182,6 +224,7 @@ def fetch_abuse():
 
     return iocs
 
+
 def fetch_urlhaus():
 
     url="https://urlhaus-api.abuse.ch/v1/urls/recent/"
@@ -191,16 +234,19 @@ def fetch_urlhaus():
     try:
 
         r=requests.get(url,timeout=15)
-
         data=r.json()
 
         for item in data.get("urls",[])[:50]:
 
+            url=item["url"]
+
+            typ=detect_type(url)
+
             state=random.choice(STATES)
 
             iocs.append({
-            "indicator":item["url"],
-            "type":"URL",
+            "indicator":url,
+            "type":typ,
             "source":"URLHaus",
             "severity":"High",
             "mitre":random.choice(MITRE),
@@ -215,6 +261,11 @@ def fetch_urlhaus():
         pass
 
     return iocs
+
+
+# ---------------------------
+# FEED LOOP
+# ---------------------------
 
 def feed_loop():
 
@@ -233,6 +284,11 @@ def feed_loop():
 
 threading.Thread(target=feed_loop,daemon=True).start()
 
+
+# ---------------------------
+# API
+# ---------------------------
+
 @app.route("/api/data")
 def api_data():
 
@@ -240,13 +296,22 @@ def api_data():
     conn.row_factory=sqlite3.Row
     c=conn.cursor()
 
-    c.execute("SELECT * FROM indicators ORDER BY last_seen DESC LIMIT 500")
+    c.execute("""
+    SELECT * FROM indicators
+    ORDER BY last_seen DESC
+    LIMIT 500
+    """)
 
     rows=[dict(r) for r in c.fetchall()]
 
     conn.close()
 
     return jsonify(rows)
+
+
+# ---------------------------
+# EXPORT CSV
+# ---------------------------
 
 @app.route("/export/csv")
 def export_csv():
@@ -260,7 +325,11 @@ def export_csv():
     output=io.StringIO()
 
     writer=csv.writer(output)
-    writer.writerow(["indicator","type","source","severity","mitre","score","country","lat","lon","last_seen"])
+
+    writer.writerow([
+    "indicator","type","source","severity",
+    "mitre","score","country","lat","lon","last_seen"
+    ])
 
     writer.writerows(rows)
 
@@ -270,6 +339,11 @@ def export_csv():
 
     return send_file(mem,download_name="redshark_iocs.csv",as_attachment=True)
 
+
+# ---------------------------
+# IDS RULE EXPORT
+# ---------------------------
+
 @app.route("/export/ids")
 def export_ids():
 
@@ -277,15 +351,13 @@ def export_ids():
     c=conn.cursor()
 
     c.execute("SELECT indicator FROM indicators WHERE type='IP'")
-
     rows=c.fetchall()
 
     rules=""
     sid=100000
 
     for r in rows:
-
-        rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\n'
+        rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\\n'
         sid+=1
 
     mem=io.BytesIO()
@@ -297,14 +369,20 @@ def export_ids():
 
     return send_file(mem,download_name="ids_rules.zip",as_attachment=True)
 
+
+# ---------------------------
+# DASHBOARD
+# ---------------------------
+
 @app.route("/")
 def dashboard():
-
     return render_template_string(DASHBOARD_HTML)
+
 
 DASHBOARD_HTML="""
 <!DOCTYPE html>
 <html>
+
 <head>
 
 <title>RedShark Sunday Ring</title>
@@ -313,6 +391,7 @@ DASHBOARD_HTML="""
 href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 
 <link rel="stylesheet"
@@ -350,6 +429,7 @@ margin-bottom:20px;
 #charts{
 display:flex;
 gap:20px;
+margin-bottom:20px;
 }
 
 .chartbox{
@@ -364,6 +444,7 @@ padding:10px;
 .critical{background:red;font-weight:bold}
 
 </style>
+
 </head>
 
 <body>
@@ -385,6 +466,7 @@ padding:10px;
 <table id="cti" class="display">
 
 <thead>
+
 <tr>
 <th>Indicator</th>
 <th>Type</th>
@@ -395,6 +477,7 @@ padding:10px;
 <th>Country</th>
 <th>Last Seen</th>
 </tr>
+
 </thead>
 
 <tbody></tbody>
@@ -412,17 +495,23 @@ L.tileLayer(
 ).addTo(map)
 
 var markers=[]
+var mitreChart
+var severityChart
+var timelineChart
 
 function fetchData(){
 
 $.getJSON("/api/data",function(data){
 
 var table=$("#cti").DataTable()
-
 table.clear()
 
 markers.forEach(m=>map.removeLayer(m))
 markers=[]
+
+var mitreCount={}
+var severityCount={}
+var timelineCount={}
 
 data.forEach(p=>{
 
@@ -442,7 +531,7 @@ var radius=6
 
 if(p.severity=="High"){
 color="crimson"
-radius=9
+radius=10
 }
 
 if(p.severity=="Critical"){
@@ -455,14 +544,60 @@ var marker=L.circleMarker(
 {radius:radius,color:color,fillOpacity:0.8}
 ).addTo(map)
 
-marker.bindPopup(p.indicator+"<br>"+p.severity)
-
 markers.push(marker)
+
+mitreCount[p.mitre]=(mitreCount[p.mitre]||0)+1
+severityCount[p.severity]=(severityCount[p.severity]||0)+1
+
+var hour=p.last_seen.substring(0,13)
+timelineCount[hour]=(timelineCount[hour]||0)+1
 
 })
 
 table.draw()
 
+updateCharts(mitreCount,severityCount,timelineCount)
+
+})
+
+}
+
+function updateCharts(mitre,severity,timeline){
+
+if(mitreChart) mitreChart.destroy()
+
+mitreChart=new Chart(
+document.getElementById("mitre"),
+{
+type:"bar",
+data:{
+labels:Object.keys(mitre),
+datasets:[{label:"MITRE Techniques",data:Object.values(mitre)}]
+}
+})
+
+if(severityChart) severityChart.destroy()
+
+severityChart=new Chart(
+document.getElementById("severity"),
+{
+type:"doughnut",
+data:{
+labels:Object.keys(severity),
+datasets:[{data:Object.values(severity)}]
+}
+})
+
+if(timelineChart) timelineChart.destroy()
+
+timelineChart=new Chart(
+document.getElementById("timeline"),
+{
+type:"line",
+data:{
+labels:Object.keys(timeline),
+datasets:[{label:"IOC Timeline",data:Object.values(timeline)}]
+}
 })
 
 }
