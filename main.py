@@ -17,7 +17,7 @@ from reportlab.lib.pagesizes import letter
 app = Flask(__name__)
 DB_FILE = "redshark.db"
 OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
-ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33bceb9b93c22349a6eb14544a100"
+ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33b93c22349a6eb14544a100"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -159,7 +159,6 @@ def threat_engine():
             logging.info("No IOCs fetched")
         time.sleep(600)  # fetch every 10 minutes
 
-# ---------------- START BACKGROUND THREAD ---------------- #
 threading.Thread(target=threat_engine, daemon=True).start()
 
 # ---------------- DASHBOARD HTML ---------------- #
@@ -179,16 +178,16 @@ h1{text-align:center;color:#38bdf8;margin:20px 0;}
 .highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red;font-weight:bold;}
 .ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;overflow-x:auto;white-space:nowrap;}
 #map{height:450px;margin:20px;border-radius:10px;}
-canvas{margin:20px;border-radius:10px;background:#111827;padding:10px;}
+canvas{background:#111827;padding:10px;border-radius:10px;}
 .low{color:#22c55e;}
 .medium{color:#facc15;}
 .high{color:crimson;}
-.critical-marker{color:red;font-weight:bold;}
+.critical-marker{color:red;font-weight:bold;animation:pulse 1s infinite;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
+.chart-container{flex:1 1 400px; max-width:400px; height:300px; margin:10px;}
 #charts{display:flex;flex-wrap:wrap;justify-content:space-around;}
-.chart-container{flex:1 1 300px;max-width:500px;}
 </style>
 </head>
 <body>
@@ -201,9 +200,9 @@ button:hover{background:#0ea5e9;color:#fff;}
 </div>
 <div id="map"></div>
 <div id="charts">
-  <div class="chart-container"><canvas id="mitre" height="250"></canvas></div>
-  <div class="chart-container"><canvas id="severity" height="250"></canvas></div>
-  <div class="chart-container"><canvas id="timeline" height="250"></canvas></div>
+  <div class="chart-container"><canvas id="mitre"></canvas></div>
+  <div class="chart-container"><canvas id="severity"></canvas></div>
+  <div class="chart-container"><canvas id="timeline"></canvas></div>
 </div>
 <table id="cti" class="display" style="width:95%;margin:20px auto;">
 <thead>
@@ -230,7 +229,7 @@ button:hover{background:#0ea5e9;color:#fff;}
 Developed and analysed by darkgrid@redshark.my using publicly available sources
 </div>
 <script>
-var map = L.map('map').setView([4.5,102],6);
+var map=L.map('map').setView([4.5,102],6);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
 var markers=[],mitreChart,severityChart,timelineChart;
 
@@ -270,7 +269,6 @@ $(document).ready(function(){
 </body></html>
 """
 
-# ---------------- DASHBOARD ROUTE ---------------- #
 @app.route("/")
 def dashboard():
     try:
@@ -285,7 +283,6 @@ def dashboard():
         logging.error(f"Dashboard error: {e}")
         return f"Error loading dashboard: {e}",500
 
-# ---------------- EXPORT ROUTES ---------------- #
 @app.route("/export/json")
 def export_json():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
@@ -337,11 +334,9 @@ def export_ids():
     mem.seek(0)
     return send_file(mem, as_attachment=True, download_name="redshark_ids_rules.zip")
 
-# ---------------- REFRESH ROUTE ---------------- #
 @app.route("/refresh")
 def refresh():
     return "Feed fetching is handled in background thread. Refresh automatically every 10 minutes."
 
-# ---------------- RUN ---------------- #
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
