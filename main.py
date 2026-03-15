@@ -1,9 +1,6 @@
 import io
 import csv
 import json
-import time
-import threading
-import zipfile
 import logging
 from datetime import datetime, timedelta
 
@@ -54,6 +51,7 @@ def init_db():
             last_seen TEXT
         )""")
         conn.commit()
+
 init_db()
 
 def cleanup_db(limit=5000):
@@ -149,25 +147,12 @@ def fetch_abuseipdb():
         logging.error(f"AbuseIPDB fetch error: {e}")
     return iocs
 
-# ---------------- THREAT ENGINE ---------------- #
-def threat_engine():
-    while True:
-        try:
-            all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
-            save_iocs(all_iocs)
-            cleanup_db()
-            logging.info(f"Saved {len(all_iocs)} IOCs")
-        except Exception as e:
-            logging.error(f"Threat engine error: {e}")
-        time.sleep(60)
-
-threading.Thread(target=threat_engine, daemon=True).start()
-
 # ---------------- DASHBOARD HTML ---------------- #
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html>
 <head>
 <title>RedShark CTI Dashboard</title>
+<!-- CSS & JS for DataTables, Leaflet, Chart.js -->
 <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
@@ -175,11 +160,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-body{background:#020617;color:white;font-family:'Arial',sans-serif;margin:0;padding:0;}
+body{background:#020617;color:white;font-family:Arial;margin:0;padding:0}
 h1{text-align:center;color:#38bdf8;margin:20px 0;}
 .highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red;font-weight:bold;}
-.ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;font-size:14px;overflow-x:auto;white-space:nowrap;}
-#map{height:450px;margin:20px 20px 0 20px;border-radius:10px;}
+.ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;overflow-x:auto;white-space:nowrap;}
+#map{height:450px;margin:20px;border-radius:10px;}
 canvas{margin:20px;border-radius:10px;background:#111827;padding:10px;}
 .low{color:#22c55e;}
 .medium{color:#facc15;}
@@ -234,20 +219,16 @@ Developed and analysed by darkgrid@redshark.my using publicly available sources
 <script>
 var map = L.map('map').setView([4.5,102],6);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
-var markers = [], mitreChart, severityChart, timelineChart;
-
+var markers=[],mitreChart,severityChart,timelineChart;
 function initCharts(points){
-    var mitreLabels = points.map(p=>p.mitre);
-    var mitreCounts={};
-    mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
-    mitreChart = new Chart(document.getElementById('mitre'),{type:'bar',data:{labels:Object.keys(mitreCounts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}});
-    var sev={"Low":0,"Medium":0,"High":0,"Critical":0};
-    points.forEach(p=>sev[p.severity]++);
-    severityChart = new Chart(document.getElementById('severity'),{type:'doughnut',data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","red","darkred"]}]}});
+    var mitreLabels=points.map(p=>p.mitre);
+    var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
+    mitreChart=new Chart(document.getElementById('mitre'),{type:'bar',data:{labels:Object.keys(mitreCounts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}});
+    var sev={"Low":0,"Medium":0,"High":0,"Critical":0}; points.forEach(p=>sev[p.severity]++);
+    severityChart=new Chart(document.getElementById('severity'),{type:'doughnut',data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","red","darkred"]}]}});
 
-    var timeline={};
-    points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
-    timelineChart = new Chart(document.getElementById('timeline'),{type:'line',data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}})
+    var timeline={}; points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
+    timelineChart=new Chart(document.getElementById('timeline'),{type:'line',data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}})
 }
 
 function renderMap(points){
@@ -264,15 +245,11 @@ function updateDashboard(){
     $.getJSON("/api/latest", function(points){
         var tickerHtml=""; points.slice(0,10).forEach(function(r){ tickerHtml += `🚨 <span class="${r.severity.toLowerCase()}">${r.severity}</span> ${r.indicator} via ${r.source} &nbsp;&nbsp;`; });
         $("#ticker").html(tickerHtml);
-
         var table=$('#cti').DataTable(); table.clear();
         points.forEach(function(r){ table.row.add([r.indicator,r.type,r.source,`<span class="${r.severity.toLowerCase()}">${r.severity}</span>`,r.mitre,r.score,r.country,r.last_seen]); });
         table.draw();
-
         renderMap(points);
-        if(mitreChart) mitreChart.destroy();
-        if(severityChart) severityChart.destroy();
-        if(timelineChart) timelineChart.destroy();
+        if(mitreChart) mitreChart.destroy(); if(severityChart) severityChart.destroy(); if(timelineChart) timelineChart.destroy();
         initCharts(points);
     });
 }
@@ -294,16 +271,13 @@ def dashboard():
         with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
-            c.execute("""
-            SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen
-            FROM indicators ORDER BY last_seen DESC LIMIT 500
-            """)
+            c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
             rows = [dict(r) for r in c.fetchall()]
         malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
         return render_template_string(DASHBOARD_HTML, rows=rows, time=malaysia_time)
     except Exception as e:
         logging.error(f"Dashboard error: {e}")
-        return f"Error loading dashboard: {e}", 500
+        return f"Error loading dashboard: {e}",500
 
 # ---------------- LIVE API ---------------- #
 @app.route("/api/latest")
@@ -334,8 +308,8 @@ def export_csv():
         c = conn.cursor()
         c.execute("SELECT * FROM indicators")
         rows = c.fetchall()
-    output = io.StringIO()
-    writer = csv.writer(output)
+    output=io.StringIO()
+    writer=csv.writer(output)
     writer.writerow(["id","indicator","type","source","severity","mitre","score","country","lat","lon","first_seen","last_seen"])
     writer.writerows(rows)
     return send_file(io.BytesIO(output.getvalue().encode()), as_attachment=True, download_name="redshark_cti.csv")
@@ -348,8 +322,8 @@ def export_pdf():
         rows = c.fetchall()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
-    table_data = [["Indicator","Type","Source","Severity","MITRE","Score","Country","Lat","Lon","Last Seen"]] + list(rows)
-    table = Table(table_data)
+    table_data=[["Indicator","Type","Source","Severity","MITRE","Score","Country","Lat","Lon","Last Seen"]]+list(rows)
+    table=Table(table_data)
     doc.build([table])
     buffer.seek(0)
     return send_file(buffer, as_attachment=True, download_name="redshark_report.pdf")
@@ -360,4 +334,22 @@ def export_ids():
         c = conn.cursor()
         c.execute("SELECT indicator FROM indicators WHERE type='IP'")
         rows = c.fetchall()
-    sid =
+    sid=100000
+    mem=io.BytesIO()
+    with zipfile.ZipFile(mem,'w',zipfile.ZIP_DEFLATED) as z:
+        rules=""
+        for r in rows:
+            rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\n'
+            sid+=1
+        z.writestr("redshark_ids.rules",rules)
+    mem.seek(0)
+    return send_file(mem, as_attachment=True, download_name="redshark_ids_rules.zip")
+
+# ---------------- REFRESH ---------------- #
+@app.route("/refresh")
+def refresh():
+    try:
+        all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
+        save_iocs(all_iocs)
+        cleanup_db()
+        logging.info(f"Ref
