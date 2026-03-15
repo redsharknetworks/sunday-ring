@@ -196,8 +196,9 @@ canvas{width:100% !important;height:100% !important;background:#111827;padding:1
 .low{color:#22c55e;}
 .medium{color:#facc15;}
 .high{color:crimson;}
-.critical-marker{animation:pulse 1s infinite;filter:drop-shadow(0 0 12px red) brightness(1.4);}
-.high-marker{animation:pulse 1.2s infinite;filter:drop-shadow(0 0 8px orange) brightness(1.2);}
+.critical{color:red;}
+.critical-marker{animation:pulse 1.5s infinite;filter:drop-shadow(0 0 12px red);}
+.high-marker{animation:pulse 2s infinite;filter:drop-shadow(0 0 8px orange);}
 @keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.3);opacity:0.6}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
@@ -258,8 +259,9 @@ function renderTable(points){
     points.forEach(p=>{
         var sev_class=p.severity.toLowerCase();
         table.row.add([
-            `<span class="${sev_class}">${p.indicator}</span>`,
-            p.type,p.source,
+            p.indicator,
+            p.type,
+            p.source,
             `<span class="${sev_class}">${p.severity}</span>`,
             p.mitre,p.score,p.country,p.last_seen
         ]);
@@ -276,8 +278,9 @@ function renderMap(points){
         else if(p.severity=="High"){color="orange";radius=10;cls="high-marker";}
         else if(p.severity=="Medium"){color="yellow";radius=8;}
         else{color="green";radius=6;}
-        var marker=L.circleMarker([p.lat,p.lon],{radius:radius,color:color,fillOpacity:0.8}).addTo(map);
-        if(cls && marker._icon) marker._icon.classList.add(cls);
+        var marker=L.circleMarker([p.lat,p.lon],{radius:radius,color:color,fillOpacity:0.8});
+        marker.addTo(map);
+        if(cls && marker._path) marker._path.classList.add(cls);
         marker.bindPopup(p.indicator+"<br>"+p.type+" — "+p.severity);
         markers.push(marker);
     });
@@ -324,7 +327,7 @@ $(document).ready(function(){
 </body></html>
 """
 
-# ---------------- API & EXPORTS ---------------- #
+# ---------------- API ---------------- #
 @app.route("/api/data")
 def api_data():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
@@ -339,6 +342,7 @@ def dashboard():
     malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     return render_template_string(DASHBOARD_HTML, time=malaysia_time)
 
+# ---------------- EXPORTS ---------------- #
 @app.route("/export/json")
 def export_json():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
@@ -375,7 +379,7 @@ def export_pdf():
 
 @app.route("/export/ids")
 def export_ids():
-    # Generate Snort/Suricata style rules in ZIP
+    # Generate Snort/Suricata style rules
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute("SELECT indicator,type,severity FROM indicators")
