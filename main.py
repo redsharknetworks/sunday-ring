@@ -1,15 +1,6 @@
-import io
-import csv
-import json
-import zipfile
-import time
-import threading
-import logging
-import re
+import io, csv, json, zipfile, time, threading, logging, re
 from datetime import datetime, timedelta
-
-import sqlite3
-import requests
+import sqlite3, requests
 from flask import Flask, render_template_string, jsonify, send_file
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
@@ -115,7 +106,7 @@ def fetch_otx_iocs():
                 for ind in pulse.get("indicators", []):
                     typ = detect_type(ind["indicator"])
                     loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
-                    severity = "Critical" if typ=="IP" else "High"
+                    severity = "High" if typ!="IP" else "Critical"
                     iocs.append({
                         "indicator": ind["indicator"],
                         "type": typ,
@@ -374,8 +365,7 @@ def export_pdf():
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     table_data = [["Indicator","Type","Source","Severity","MITRE","Score","Country","Lat","Lon","Last Seen"]] + list(rows)
     table = Table(table_data)
-    doc.build([table])
-    buffer.seek(doc.build([table])
+   doc.build([table])
     buffer.seek(0)
     return send_file(buffer, as_attachment=True, download_name="redshark_cti.pdf")
 
@@ -405,4 +395,4 @@ def export_ids():
     return send_file(zip_buffer, as_attachment=True, download_name="redshark_ids.zip")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=False) 
