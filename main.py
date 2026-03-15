@@ -99,7 +99,7 @@ def fetch_otx_iocs():
             for pulse in pulses:
                 for ind in pulse.get("indicators",[]):
                     itype = ind.get("type","IPv4")
-                    typ = "IP" if "ipv4" in itype.lower() or "ip" in itype.lower() else "Domain" if "domain" in itype.lower() else "Hash"
+                    typ = "IP" if "ipv4" in itype.lower() or "ip" in itype.lower() else "URL" if "url" in itype.lower() else "Hash"
                     loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
                     severity = "Critical" if typ=="IP" else "High"
                     iocs.append({
@@ -181,10 +181,12 @@ h1{text-align:center;color:#38bdf8;margin:20px 0;}
 #charts{display:flex;justify-content:space-around;flex-wrap:nowrap;margin:20px 0;width:100%;}
 .chart-container{flex:1;margin:0 10px;height:300px;}
 canvas{width:100% !important;height:100% !important;background:#111827;padding:10px;border-radius:10px;}
-.low{color:#22c55e;}
-.medium{color:#facc15;}
-.high{color:crimson;}
-.critical-marker{color:red;font-weight:bold;animation:pulse 1s infinite;}
+.low{background-color:#22c55e;color:white;}
+.medium{background-color:#facc15;color:black;}
+.high{background-color:crimson;color:white;}
+.critical{background-color:red;color:white;font-weight:bold;}
+.critical-marker{color:red;font-weight:bold;}
+.high-marker{color:crimson;animation:pulse 1s infinite;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
@@ -246,8 +248,14 @@ function renderTable(points){
     table.clear();
     points.forEach(p=>{
         table.row.add([
-            p.indicator,p.type,p.source,
-            p.severity,p.mitre,p.score,p.country,p.last_seen
+            p.indicator,
+            p.type,
+            p.source,
+            `<span class="${p.severity.toLowerCase()}">${p.severity}</span>`, // only severity colored
+            p.mitre,
+            p.score,
+            p.country,
+            p.last_seen
         ]);
     });
     table.draw();
@@ -257,14 +265,14 @@ function renderMap(points){
     markers.forEach(m=>map.removeLayer(m));
     markers=[];
     points.forEach(p=>{
-        var color,radius,pulse=false;
-        if(p.severity=="Critical"){color="red";radius=10;}
-        else if(p.severity=="High"){color="crimson";radius=8;pulse=true;}
+        var color,radius,cls="";
+        if(p.severity=="Critical"){color="red";radius=10;cls="critical-marker";}
+        else if(p.severity=="High"){color="crimson";radius=8;cls="high-marker";}
         else if(p.severity=="Medium"){color="orange";radius=6;}
         else{color="green";radius=5;}
         var marker=L.circleMarker([p.lat,p.lon],{radius:radius,color:color,fillOpacity:0.8}).addTo(map);
         marker.bindPopup(p.indicator+"<br>"+p.severity);
-        if(pulse && marker._icon) marker._icon.classList.add("critical-marker");
+        if(cls && marker._icon) marker._icon.classList.add(cls);
         markers.push(marker);
     });
 }
