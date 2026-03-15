@@ -285,19 +285,61 @@ function renderMap(points){
 }
 
 function renderCharts(points){
+    // MITRE chart
     var mitreLabels=points.map(p=>p.mitre);
     var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
     if(mitreChart) mitreChart.destroy();
-    mitreChart=new Chart(document.getElementById('mitre'),{type:'bar',data:{labels:Object.keys(mitreCounts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}});
-    
-    var sev={"Low":0,"Medium":0,"High":0,"Critical":0};
-    points.forEach(p=>sev[p.severity]++);
-    if(severityChart) severityChart.destroy();
-    severityChart=new Chart(document.getElementById('severity'),{type:'doughnut',data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","crimson","red"]}]}});
+    mitreChart=new Chart(document.getElementById('mitre'),{
+        type:'bar',
+        data:{
+            labels:Object.keys(mitreCounts),
+            datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:'rgba(56,189,248,0.7)'}]
+        },
+        options:{plugins:{legend:{display:false}}}
+    });
 
-    var timeline={}; points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
+    // Gradient Nikkei-style severity chart
+    var sevCounts={"Low":0,"Medium":0,"High":0,"Critical":0};
+    points.forEach(p=>sevCounts[p.severity]++);
+    var ctx = document.getElementById('severity').getContext('2d');
+    if(severityChart) severityChart.destroy();
+    var colors = {"Low":"green","Medium":"orange","High":"crimson","Critical":"red"};
+    var gradients=[];
+    Object.keys(sevCounts).forEach((sev,i)=>{
+        var grad = ctx.createLinearGradient(0,0,0,300);
+        grad.addColorStop(0, colors[sev]);
+        grad.addColorStop(1, "rgba(0,0,0,0.2)");
+        gradients.push(grad);
+    });
+    severityChart = new Chart(ctx,{
+        type:'bar',
+        data:{
+            labels:Object.keys(sevCounts),
+            datasets:[{
+                label:'Severity Count',
+                data:Object.values(sevCounts),
+                backgroundColor:gradients,
+                borderColor:Object.values(colors),
+                borderWidth:1
+            }]
+        },
+        options:{
+            plugins:{legend:{display:false}},
+            scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},
+            responsive:true,
+            maintainAspectRatio:false
+        }
+    });
+
+    // Timeline chart
+    var timeline={};
+    points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
     if(timelineChart) timelineChart.destroy();
-    timelineChart=new Chart(document.getElementById('timeline'),{type:'line',data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}})
+    timelineChart=new Chart(document.getElementById('timeline'),{
+        type:'line',
+        data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]},
+        options:{plugins:{legend:{display:true}},responsive:true,maintainAspectRatio:false}
+    });
 }
 
 $(document).ready(function(){
@@ -357,29 +399,20 @@ def export_pdf():
     table=Table(table_data)
     doc.build([table])
     buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="redshark_report.pdf")
+    return send_file(buffer, as_attachment=True, download_name="redshark_cti.pdf")
 
 @app.route("/export/ids")
 def export_ids():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
-        c.execute("SELECT indicator FROM indicators WHERE type='IP'")
+        c.execute("SELECT indicator,type FROM indicators WHERE type='IP'")
         rows = c.fetchall()
-    sid=100000
-    mem=io.BytesIO()
-    with zipfile.ZipFile(mem,'w',zipfile.ZIP_DEFLATED) as z:
-        rules=""
-        for r in rows:
-            rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\n'
-            sid+=1
-        z.writestr("redshark_ids.rules",rules)
-    mem.seek(0)
-    return send_file(mem, as_attachment=True, download_name="redshark_ids_rules.zip")
+    rules = []
+    for ip, typ in rows:
+        # Simple Snort/Suricata alert rule template
+        rules.append(f'alert ip any any -> {ip} any (msg:"RedShark Threat Intelligence - IP"; sid:{100000+hash(ip)%90000}; rev:1;)')
+    return send_file(io.BytesIO("\n".join(rules).encode()), as_attachment=True, download_name="redshark_ids.rules")
 
-@app.route("/refresh")
-def refresh():
-    return "Feed fetching is handled in background thread. Refresh automatically every 10 minutes."
-
-# ---------------- RUN ---------------- #
-if __name__=="__main__":
-    app.run(host="0.0.0.0", port=5000)
+# ---------------- RUN APP ---------------- #
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
