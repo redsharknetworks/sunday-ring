@@ -17,7 +17,7 @@ from reportlab.lib.pagesizes import letter
 app = Flask(__name__)
 DB_FILE = "redshark.db"
 OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
-ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e289533bd33b93c22349a6eb14544a100"
+ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a6eb14544a100"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -156,7 +156,7 @@ def threat_engine():
             logging.info(f"Saved {len(all_iocs)} IOCs")
         else:
             logging.info("No IOCs fetched")
-        time.sleep(600)  # fetch every 10 minutes
+        time.sleep(600)  # every 10 minutes
 
 threading.Thread(target=threat_engine, daemon=True).start()
 
@@ -176,8 +176,11 @@ body{background:#020617;color:white;font-family:Arial;margin:0;padding:0}
 h1{text-align:center;color:#38bdf8;margin:20px 0;}
 .highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red;font-weight:bold;}
 .ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;overflow-x:auto;white-space:nowrap;}
-#map{height:450px;margin:20px;border-radius:10px;}
-canvas{background:#111827;padding:10px;border-radius:10px;}
+#dashboard-container{max-width:1200px;margin:0 auto;}
+#map{height:450px;width:100%;border-radius:10px;}
+#charts{display:flex;justify-content:space-around;flex-wrap:nowrap;margin:20px 0;width:100%;}
+.chart-container{flex:1;margin:0 10px;height:300px;}
+canvas{width:100% !important;height:100% !important;background:#111827;padding:10px;border-radius:10px;}
 .low{color:#22c55e;}
 .medium{color:#facc15;}
 .high{color:crimson;}
@@ -185,39 +188,26 @@ canvas{background:#111827;padding:10px;border-radius:10px;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
-#charts{display:flex;justify-content:space-around;flex-wrap:nowrap;margin:20px;}
-.chart-container{flex:1;margin:0 10px;height:300px;}
-canvas{width:100% !important;height:100% !important;}
+#cti{width:100% !important;}
 </style>
 </head>
 <body>
 <h1>RedShark Cyber Threat Intelligence Platform</h1>
+<div id="dashboard-container">
 <div class="highlight" id="highlight">Latest Malaysia Security Highlight (GMT+8): {{time}}</div>
-<div class="ticker" id="ticker">
-{% for r in rows[:10] %}
-🚨 <span class="{{r['severity']|lower}}">{{r['severity']}}</span> {{r['indicator']}} via {{r['source']}} &nbsp;&nbsp;
-{% endfor %}
-</div>
+<div class="ticker" id="ticker"></div>
 <div id="map"></div>
 <div id="charts">
   <div class="chart-container"><canvas id="mitre"></canvas></div>
   <div class="chart-container"><canvas id="severity"></canvas></div>
   <div class="chart-container"><canvas id="timeline"></canvas></div>
 </div>
-<table id="cti" class="display" style="width:95%;margin:20px auto;">
+<table id="cti" class="display">
 <thead>
 <tr><th>Indicator</th><th>Type</th><th>Source</th><th>Severity</th>
 <th>MITRE</th><th>Score</th><th>Country</th><th>Last Seen</th></tr>
 </thead>
-<tbody>
-{% for r in rows %}
-<tr>
-<td>{{r['indicator']}}</td><td>{{r['type']}}</td><td>{{r['source']}}</td>
-<td class="{{r['severity']|lower}}">{{r['severity']}}</td><td>{{r['mitre']}}</td><td>{{r['score']}}</td>
-<td>{{r['country']}}</td><td>{{r['last_seen']}}</td>
-</tr>
-{% endfor %}
-</tbody>
+<tbody></tbody>
 </table>
 <div style="text-align:center;margin:20px;">
 <button onclick="window.location='/export/json'">JSON</button>
@@ -228,28 +218,47 @@ canvas{width:100% !important;height:100% !important;}
 <div style="text-align:center;margin:10px;font-size:12px;color:#888;">
 Developed and analysed by darkgrid@redshark.my using publicly available sources
 </div>
+
 <script>
 var map=L.map('map').setView([4.5,102],6);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
 var markers=[],mitreChart,severityChart,timelineChart;
 
-function initCharts(points){
-    var mitreLabels=points.map(p=>p.mitre);
-    var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
-    mitreChart=new Chart(document.getElementById('mitre'),{type:'bar',data:{labels:Object.keys(mitreCounts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}});
-    
-    var sev={"Low":0,"Medium":0,"High":0,"Critical":0}; points.forEach(p=>sev[p.severity]++);
-    severityChart=new Chart(document.getElementById('severity'),{type:'doughnut',data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","crimson","red"]}]}});
+function fetchData(){
+    $.getJSON("/api/data", function(points){
+        renderTicker(points);
+        renderTable(points);
+        renderMap(points);
+        renderCharts(points);
+    });
+}
 
-    var timeline={}; points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
-    timelineChart=new Chart(document.getElementById('timeline'),{type:'line',data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}})
+function renderTicker(points){
+    var html="";
+    points.slice(0,10).forEach(p=>{
+        html+=`🚨 <span class="${p.severity.toLowerCase()}">${p.severity}</span> ${p.indicator} via ${p.source} &nbsp;&nbsp;`;
+    });
+    $("#ticker").html(html);
+}
+
+function renderTable(points){
+    var table=$("#cti").DataTable();
+    table.clear();
+    points.forEach(p=>{
+        table.row.add([
+            p.indicator,p.type,p.source,
+            p.severity,p.mitre,p.score,p.country,p.last_seen
+        ]);
+    });
+    table.draw();
 }
 
 function renderMap(points){
-    markers.forEach(m=>map.removeLayer(m)); markers=[];
-    points.forEach(function(p){
-        var color, radius, pulse=false;
-        if(p.severity=="Critical"){color="red";radius=10;pulse=false;}
+    markers.forEach(m=>map.removeLayer(m));
+    markers=[];
+    points.forEach(p=>{
+        var color,radius,pulse=false;
+        if(p.severity=="Critical"){color="red";radius=10;}
         else if(p.severity=="High"){color="crimson";radius=8;pulse=true;}
         else if(p.severity=="Medium"){color="orange";radius=6;}
         else{color="green";radius=5;}
@@ -260,29 +269,47 @@ function renderMap(points){
     });
 }
 
+function renderCharts(points){
+    var mitreLabels=points.map(p=>p.mitre);
+    var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
+    if(mitreChart) mitreChart.destroy();
+    mitreChart=new Chart(document.getElementById('mitre'),{type:'bar',data:{labels:Object.keys(mitreCounts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}});
+    
+    var sev={"Low":0,"Medium":0,"High":0,"Critical":0};
+    points.forEach(p=>sev[p.severity]++);
+    if(severityChart) severityChart.destroy();
+    severityChart=new Chart(document.getElementById('severity'),{type:'doughnut',data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","crimson","red"]}]}});
+
+    var timeline={}; points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
+    if(timelineChart) timelineChart.destroy();
+    timelineChart=new Chart(document.getElementById('timeline'),{type:'line',data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}})
+}
+
 $(document).ready(function(){
     $('#cti').DataTable({pageLength:50});
-    var initialPoints = {{rows|tojson}};
-    renderMap(initialPoints); initCharts(initialPoints);
+    fetchData();
+    setInterval(fetchData,60000); // refresh every 60s
 });
 </script>
 </body></html>
 """
 
+# ---------------- API DATA ---------------- #
+@app.route("/api/data")
+def api_data():
+    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
+        rows = [dict(r) for r in c.fetchall()]
+    return jsonify(rows)
+
 @app.route("/")
 def dashboard():
-    try:
-        with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-            c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
-            rows = [dict(r) for r in c.fetchall()]
-        malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-        return render_template_string(DASHBOARD_HTML, rows=rows, time=malaysia_time)
-    except Exception as e:
-        logging.error(f"Dashboard error: {e}")
-        return f"Error loading dashboard: {e}",500
+    malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    return render_template_string(DASHBOARD_HTML, time=malaysia_time)
 
+# ---------------- EXPORTS ---------------- #
 @app.route("/export/json")
 def export_json():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
@@ -338,5 +365,6 @@ def export_ids():
 def refresh():
     return "Feed fetching is handled in background thread. Refresh automatically every 10 minutes."
 
+# ---------------- RUN ---------------- #
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
