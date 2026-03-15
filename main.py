@@ -96,11 +96,9 @@ def detect_type(indicator):
 
     if ip_pattern.match(indicator):
         return "IP"
-    if hash_pattern.match(indicator):
+    elif hash_pattern.match(indicator):
         return "Hash"
-    if url_pattern.match(indicator):
-        return "Domain"
-    if domain_pattern.match(indicator):
+    elif url_pattern.match(indicator) or domain_pattern.match(indicator):
         return "Domain"
     return "Unknown"
 
@@ -114,8 +112,8 @@ def fetch_otx_iocs():
             for pulse in r.json().get("results", []):
                 for ind in pulse.get("indicators", []):
                     typ = detect_type(ind["indicator"])
-                    severity = "Critical" if typ=="IP" else "High"  # Correctly mark IP
                     loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
+                    severity = "Critical" if typ=="IP" else "High"
                     iocs.append({
                         "indicator": ind["indicator"],
                         "type": typ,
@@ -195,11 +193,11 @@ h1{text-align:center;color:#38bdf8;margin:20px 0;}
 canvas{width:100% !important;height:100% !important;background:#111827;padding:10px;border-radius:10px;}
 .low{color:#22c55e;}
 .medium{color:#facc15;}
-.high{color:crimson;}
+.high{color:orange;}
 .critical{color:red;}
-.heat-critical{animation:blink 1.5s infinite;filter:drop-shadow(0 0 20px red);}
-.heat-high{animation:blink 2s infinite;filter:drop-shadow(0 0 20px orange);}
-@keyframes blink{0%{opacity:0.5}50%{opacity:1}100%{opacity:0.5}}
+.heat-critical{animation:blink 2s infinite;}
+.heat-high{animation:blink 2s infinite;}
+@keyframes blink{0%{opacity:0.6;}50%{opacity:1;}100%{opacity:0.6;}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
 #cti{width:100% !important;}
@@ -230,6 +228,7 @@ button:hover{background:#0ea5e9;color:#fff;}
 <div style="text-align:center;margin:10px;font-size:12px;color:#888;">
 Developed and analysed by darkgrid@redshark.my using publicly available sources
 </div>
+
 <script>
 var map=L.map('map').setView([4.5,102],6);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
@@ -256,12 +255,12 @@ function renderTable(points){
     var table=$("#cti").DataTable();
     table.clear();
     points.forEach(p=>{
-        var sev_class=p.severity.toLowerCase();
+        var sev_color=(p.severity=="High")?"orange":(p.severity=="Critical")?"red":(p.severity=="Medium")?"#facc15":"#22c55e";
         table.row.add([
             p.indicator,
             p.type,
             p.source,
-            `<span class="${sev_class}">${p.severity}</span>`,
+            `<span style="color:${sev_color};font-weight:bold">${p.severity}</span>`,
             p.mitre,
             p.score,
             p.country,
@@ -275,12 +274,10 @@ function renderMap(points){
     markers.forEach(m=>map.removeLayer(m));
     markers=[];
     points.forEach(p=>{
-        var options={radius:8,color:"green",fillOpacity:0.6};
+        var options={radius:6,color:"green",fillOpacity:0.6};
         var cls="";
-        if(p.severity=="Critical"){options.color="red";options.radius=12;cls="heat-critical";}
-        else if(p.severity=="High"){options.color="orange";options.radius=10;cls="heat-high";}
-        else if(p.severity=="Medium"){options.color="orange";options.radius=8;}
-        else{options.color="green";options.radius=8;}
+        if(p.severity=="Critical"){options.color="red";options.radius=8;cls="heat-critical";}
+        else if(p.severity=="High"){options.color="orange";options.radius=7;cls="heat-high";}
         var marker=L.circleMarker([p.lat,p.lon],options).addTo(map);
         if(cls && marker._path){marker._path.classList.add(cls);}
         marker.bindPopup(p.indicator+"<br>"+p.type+" — "+p.severity);
@@ -304,7 +301,7 @@ function renderCharts(points){
     points.forEach(p=>sevCounts[p.severity]++);
     var ctx_s=document.getElementById('severity').getContext('2d');
     if(severityChart) severityChart.destroy();
-    var colors={"Low":"green","Medium":"orange","High":"crimson","Critical":"red"};
+    var colors={"Low":"green","Medium":"#facc15","High":"orange","Critical":"red"};
     var gradients=[];
     Object.keys(sevCounts).forEach((sev,i)=>{
         var grad=ctx_s.createLinearGradient(0,0,0,300);
@@ -369,7 +366,7 @@ def export_csv():
 def export_pdf():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
-        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators 100")
+        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators LIMIT 100")
         rows = c.fetchall()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
@@ -405,4 +402,5 @@ def export_ids():
     return send_file(zip_buffer, as_attachment=True, download_name="redshark_ids.zip")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000) 
+    # Use threaded=True to handle multiple requests and avoid crashes
+    app.run(host="0.0.0.0", port=5000, threaded=True)
