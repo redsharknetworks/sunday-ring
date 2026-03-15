@@ -58,14 +58,6 @@ def init_db():
         timestamp TEXT
     )
     """)
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS geo_cache(
-        ip TEXT PRIMARY KEY,
-        country TEXT,
-        lat REAL,
-        lon REAL
-    )
-    """)
     conn.commit()
     conn.close()
 
@@ -100,7 +92,6 @@ insert_real_ioc_dummy()
 def get_dashboard_data():
     events = get_events()
     heat_data=[]
-    lines=[]
     markers=[]
     severity_counts={"High":0,"Medium":0,"Low":0}
     timeline={}
@@ -110,24 +101,24 @@ def get_dashboard_data():
         hour = e[9][:13]
         timeline[hour] = timeline.get(hour,0)+1
         table_rows.append({
-            "ip": e[1],"source":e[2],"severity":e[3],
-            "country":e[4],"rule":e[5],"description":e[6],
-            "timestamp":e[9]
+            "ip": e[1],"source": e[2],"severity": e[3],
+            "country": e[4],"rule": e[5],"description": e[6],
+            "timestamp": e[9]
         })
-        # Heatmap only for High severity
+        # Only High for heatmap
         if e[3]=="High":
             heat_data.append([e[7], e[8], 3])
-        markers.append({"lat":e[7],"lon":e[8],"popup":f"IP: {e[1]}<br>Severity: {e[3]}<br>Rule:{e[5]}"})
+        markers.append({"lat": e[7], "lon": e[8], "popup": f"IP: {e[1]}<br>Severity: {e[3]}<br>Rule:{e[5]}"})
     return jsonify({
-        "heat_data":heat_data,
-        "markers":markers,
-        "severity_counts":severity_counts,
-        "timeline":timeline,
-        "table_rows":table_rows
+        "heat_data": heat_data,
+        "markers": markers,
+        "severity_counts": severity_counts,
+        "timeline": timeline,
+        "table_rows": table_rows
     })
 
 # -------------------------------
-# Downloads
+# Downloads: CSV, JSON, PDF, IDS rules
 @app.route("/download/csv")
 def download_csv():
     events = get_events()
@@ -135,24 +126,24 @@ def download_csv():
     cw = csv.writer(si)
     cw.writerow(["IP","Source","Severity","Country","Rule","Description","Lat","Lon","Timestamp"])
     for e in events:
-        cw.writerow([e[1],e[2],e[3],e[4],e[5],e[6],e[7],e[8],e[9]])
+        cw.writerow([e[1], e[2], e[3], e[4], e[5], e[6], e[7], e[8], e[9]])
     return send_file(io.BytesIO(si.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name="cti_report.csv")
 
 @app.route("/download/json")
 def download_json():
     import json
     events = get_events()
-    data = [{"ip":e[1],"source":e[2],"severity":e[3],"country":e[4],"rule":e[5],"description":e[6],"lat":e[7],"lon":e[8],"timestamp":e[9]} for e in events]
-    return send_file(io.BytesIO(json.dumps(data,indent=2).encode()), mimetype="application/json", as_attachment=True, download_name="cti_report.json")
+    data = [{"ip": e[1], "source": e[2], "severity": e[3], "country": e[4], "rule": e[5], "description": e[6], "lat": e[7], "lon": e[8], "timestamp": e[9]} for e in events]
+    return send_file(io.BytesIO(json.dumps(data, indent=2).encode()), mimetype="application/json", as_attachment=True, download_name="cti_report.json")
 
 @app.route("/download/pdf")
 def download_pdf():
     events = get_events()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
-    data=[["IP","Source","Severity","Country","Rule","Description","Lat","Lon","Timestamp"]]
+    data = [["IP","Source","Severity","Country","Rule","Description","Lat","Lon","Timestamp"]]
     for e in events:
-        data.append([e[1],e[2],e[3],e[4],e[5],e[6],e[7],e[8],e[9]])
+        data.append([e[1], e[2], e[3], e[4], e[5], e[6], e[7], e[8], e[9]])
     table = Table(data)
     doc.build([table])
     buffer.seek(0)
@@ -164,7 +155,6 @@ def download_ids():
     si = io.StringIO()
     for e in events:
         if e[3]=="High":
-            # Simple Snort/Suricata style rule
             rule = f'alert ip any any -> {e[1]} any (msg:"CTI High Severity {e[5]}"; sid:{random.randint(1000000,9999999)}; rev:1;)'
             si.write(rule+"\n")
     return send_file(io.BytesIO(si.getvalue().encode()), mimetype="text/plain", as_attachment=True, download_name="cti_ids.rules")
@@ -182,10 +172,16 @@ def dashboard():
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster/dist/leaflet.markercluster.js"></script>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
 body{margin:0;padding:0;font-family:Arial;background:#0f1720;color:#e5e7eb;}
-#map{height:500px;} .header{font-size:28px;padding:15px;background:#111827;}
+#map{height:400px;} .chart{flex:1 1 45%;margin:10px;background:#111827;padding:10px;border-radius:8px;}
+.header{font-size:28px;padding:15px;background:#111827;}
 .footer{text-align:center;font-size:12px;color:#9ca3af;margin-top:20px;}
+#charts{display:flex;flex-wrap:wrap;}
+table{width:100%; border-collapse: collapse; background:#111827; color:#e5e7eb;}
+th, td{padding:6px; border:1px solid #1f2937;} thead{background:#1f2937;}
+#table_container{max-height:300px; overflow:auto; margin:10px;}
 .button-group{margin:10px;}
 .button-group a{margin-right:10px;padding:6px 10px;background:#1f2937;color:#e5e7eb;border-radius:5px;text-decoration:none;}
 </style>
@@ -193,13 +189,22 @@ body{margin:0;padding:0;font-family:Arial;background:#0f1720;color:#e5e7eb;}
 <body>
 <div class="header">RedShark Cyber Threat Intelligence Platform</div>
 
-<div id="map"></div>
 <div class="button-group">
 <a href="/download/csv">Download CSV</a>
 <a href="/download/json">Download JSON</a>
 <a href="/download/pdf">Download PDF</a>
 <a href="/download/ids">Download IDS Rules</a>
 </div>
+
+<div id="map"></div>
+<div id="charts">
+<div class="chart" id="severity_chart"></div>
+<div class="chart" id="timeline_chart"></div>
+</div>
+
+<div id="table_container"><table><thead><tr>
+<th>IP</th><th>Source</th><th>Severity</th><th>Country</th><th>Rule</th><th>Description</th><th>Timestamp</th>
+</tr></thead><tbody id="table_body"></tbody></table></div>
 
 <div class="footer">
 Developed by darkgrid@redshark.my using publicly available sources
@@ -213,7 +218,6 @@ var markers = L.markerClusterGroup(); map.addLayer(markers);
 
 function fetchData(){
     fetch("/data").then(r=>r.json()).then(d=>{
-        // Heatmap High severity only
         heat.setLatLngs(d.heat_data);
         markers.clearLayers();
         d.markers.forEach(function(m){
@@ -222,6 +226,12 @@ function fetchData(){
                 icon.bindPopup(m.popup); markers.addLayer(icon);
             }
         });
+        // Charts
+        Plotly.newPlot('severity_chart',[{x:Object.keys(d.severity_counts),y:Object.values(d.severity_counts),type:'bar',marker:{color:['red','orange','cyan']}}], {title:'Severity Distribution',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
+        Plotly.newPlot('timeline_chart',[{x:Object.keys(d.timeline),y:Object.values(d.timeline),type:'scatter'}], {title:'Threat Timeline',paper_bgcolor:'#111827',plot_bgcolor:'#111827',font:{color:'#e5e7eb'}});
+        // Table
+        var tbody = document.getElementById("table_body"); tbody.innerHTML="";
+        d.table_rows.forEach(function(r){tbody.innerHTML+=`<tr><td>${r.ip}</td><td>${r.source}</td><td>${r.severity}</td><td>${r.country}</td><td>${r.rule}</td><td>${r.description}</td><td>${r.timestamp}</td></tr>`;});
     });
 }
 fetchData(); setInterval(fetchData,60000);
