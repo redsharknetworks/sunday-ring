@@ -1,4 +1,3 @@
-import os
 import io
 import csv
 import json
@@ -153,10 +152,13 @@ def fetch_abuseipdb():
 # ---------------- THREAT ENGINE ---------------- #
 def threat_engine():
     while True:
-        all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
-        save_iocs(all_iocs)
-        cleanup_db()
-        logging.info(f"Saved {len(all_iocs)} IOCs")
+        try:
+            all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
+            save_iocs(all_iocs)
+            cleanup_db()
+            logging.info(f"Saved {len(all_iocs)} IOCs")
+        except Exception as e:
+            logging.error(f"Threat engine error: {e}")
         time.sleep(60)
 
 threading.Thread(target=threat_engine, daemon=True).start()
@@ -195,7 +197,7 @@ button:hover{background:#0ea5e9;color:#fff;}
 <div class="highlight" id="highlight">Latest Malaysia Security Highlight (GMT+8): {{time}}</div>
 <div class="ticker" id="ticker">
 {% for r in rows[:10] %}
-🚨 <span class="{{r[3]|lower}}">{{r[3]}}</span> {{r[0]}} via {{r[2]}} &nbsp;&nbsp;
+🚨 <span class="{{r['severity']|lower}}">{{r['severity']}}</span> {{r['indicator']}} via {{r['source']}} &nbsp;&nbsp;
 {% endfor %}
 </div>
 <div id="map"></div>
@@ -212,9 +214,9 @@ button:hover{background:#0ea5e9;color:#fff;}
 <tbody>
 {% for r in rows %}
 <tr>
-<td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td>
-<td class="{{r[3]|lower}}">{{r[3]}}</td><td>{{r[4]}}</td><td>{{r[5]}}</td>
-<td>{{r[6]}}</td><td>{{r[9]}}</td>
+<td>{{r['indicator']}}</td><td>{{r['type']}}</td><td>{{r['source']}}</td>
+<td class="{{r['severity']|lower}}">{{r['severity']}}</td><td>{{r['mitre']}}</td><td>{{r['score']}}</td>
+<td>{{r['country']}}</td><td>{{r['last_seen']}}</td>
 </tr>
 {% endfor %}
 </tbody>
@@ -235,25 +237,25 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').add
 var markers = [], mitreChart, severityChart, timelineChart;
 
 function initCharts(points){
-    var mitreLabels = points.map(p=>p[4]);
+    var mitreLabels = points.map(p=>p.mitre);
     var mitreCounts={};
     mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
     mitreChart = new Chart(document.getElementById('mitre'),{type:'bar',data:{labels:Object.keys(mitreCounts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}});
     var sev={"Low":0,"Medium":0,"High":0,"Critical":0};
-    points.forEach(p=>sev[p[3]]++);
+    points.forEach(p=>sev[p.severity]++);
     severityChart = new Chart(document.getElementById('severity'),{type:'doughnut',data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","red","darkred"]}]}});
 
     var timeline={};
-    points.forEach(p=>{var t=p[9].substring(0,13); timeline[t]=(timeline[t]||0)+1;});
+    points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
     timelineChart = new Chart(document.getElementById('timeline'),{type:'line',data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}})
 }
 
 function renderMap(points){
     markers.forEach(m=>map.removeLayer(m)); markers=[];
     points.forEach(function(p){
-        var marker=L.circleMarker([p[7],p[8]],{radius:p[3]=="Critical"?10:7,color:p[3]=="Critical"?"red":"blue",fillOpacity:p[3]=="Critical"?0.8:0.5}).addTo(map);
-        marker.bindPopup(p[0]+"<br>"+p[3]);
-        if(p[3]=="Critical" && marker._icon) marker._icon.classList.add("critical-marker");
+        var marker=L.circleMarker([p.lat,p.lon],{radius:p.severity=="Critical"?10:7,color:p.severity=="Critical"?"red":"blue",fillOpacity:p.severity=="Critical"?0.8:0.5}).addTo(map);
+        marker.bindPopup(p.indicator+"<br>"+p.severity);
+        if(p.severity=="Critical" && marker._icon) marker._icon.classList.add("critical-marker");
         markers.push(marker);
     });
 }
@@ -288,23 +290,34 @@ $(document).ready(function(){
 # ---------------- DASHBOARD ROUTE ---------------- #
 @app.route("/")
 def dashboard():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
-        rows = c.fetchall()
-    malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-    return render_template_string(DASHBOARD_HTML, rows=rows, time=malaysia_time)
+    try:
+        with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("""
+            SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen
+            FROM indicators ORDER BY last_seen DESC LIMIT 500
+            """)
+            rows = [dict(r) for r in c.fetchall()]
+        malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+        return render_template_string(DASHBOARD_HTML, rows=rows, time=malaysia_time)
+    except Exception as e:
+        logging.error(f"Dashboard error: {e}")
+        return f"Error loading dashboard: {e}", 500
 
 # ---------------- LIVE API ---------------- #
 @app.route("/api/latest")
 def api_latest():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
-        rows = [dict(r) for r in c.fetchall()]
-    return jsonify(rows)
+    try:
+        with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
+            rows = [dict(r) for r in c.fetchall()]
+        return jsonify(rows)
+    except Exception as e:
+        logging.error(f"API latest error: {e}")
+        return jsonify([])
 
 # ---------------- EXPORTS ---------------- #
 @app.route("/export/json")
@@ -347,12 +360,4 @@ def export_ids():
         c = conn.cursor()
         c.execute("SELECT indicator FROM indicators WHERE type='IP'")
         rows = c.fetchall()
-    sid = 100000
-    mem = io.BytesIO()
-    with zipfile.ZipFile(mem,'w',zipfile.ZIP_DEFLATED) as z:
-        rules = "\n".join([f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid+i}; rev:1;)' for i,r in enumerate(rows)])
-        z.writestr("redshark_ids.rules", rules)
-    mem.seek(0)
-    return send_file(mem, as_attachment=True, download_name="redshark_ids_rules.zip")
-
-# ---------------- MANUAL REFRESH ----------------
+    sid =
