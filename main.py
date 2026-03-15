@@ -99,7 +99,6 @@ def fetch_otx_iocs():
             for pulse in pulses:
                 for ind in pulse.get("indicators",[]):
                     itype = ind.get("type","IPv4")
-                    # FIXED: Proper IP detection
                     typ = "IP" if "ipv4" in itype.lower() or "ip" in itype.lower() else "Domain" if "domain" in itype.lower() else "Hash"
                     loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
                     severity = "Critical" if typ=="IP" else "High"
@@ -186,8 +185,9 @@ canvas{background:#111827;padding:10px;border-radius:10px;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
-.chart-container{flex:1 1 400px; max-width:400px; height:300px; margin:10px;}
-#charts{display:flex;flex-wrap:wrap;justify-content:space-around;}
+#charts{display:flex;justify-content:space-around;flex-wrap:nowrap;margin:20px;}
+.chart-container{flex:1;margin:0 10px;height:300px;}
+canvas{width:100% !important;height:100% !important;}
 </style>
 </head>
 <body>
