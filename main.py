@@ -162,10 +162,127 @@ def threat_engine():
 threading.Thread(target=threat_engine, daemon=True).start()
 
 # ---------------- DASHBOARD HTML ---------------- #
-DASHBOARD_HTML = """<html>
-<!-- Use the full live dashboard HTML from previous step (AJAX + charts + map) -->
-{{dynamic_dashboard_html}}
-</html>
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<title>RedShark CTI Dashboard</title>
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body{background:#020617;color:white;font-family:'Arial',sans-serif;margin:0;padding:0;}
+h1{text-align:center;color:#38bdf8;margin:20px 0;}
+.highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red;font-weight:bold;}
+.ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;font-size:14px;overflow-x:auto;white-space:nowrap;}
+#map{height:450px;margin:20px 20px 0 20px;border-radius:10px;}
+canvas{margin:20px;border-radius:10px;background:#111827;padding:10px;}
+.low{color:#22c55e;}
+.medium{color:#facc15;}
+.high{color:#f87171;}
+.critical-marker{color:#f43f5e;font-weight:bold;animation:pulse 1s infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0}}
+button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
+button:hover{background:#0ea5e9;color:#fff;}
+#charts{display:flex;flex-wrap:wrap;justify-content:space-around;}
+.chart-container{flex:1 1 300px;max-width:500px;}
+</style>
+</head>
+<body>
+<h1>RedShark Cyber Threat Intelligence Platform</h1>
+<div class="highlight" id="highlight">Latest Malaysia Security Highlight (GMT+8): {{time}}</div>
+<div class="ticker" id="ticker">
+{% for r in rows[:10] %}
+🚨 <span class="{{r[3]|lower}}">{{r[3]}}</span> {{r[0]}} via {{r[2]}} &nbsp;&nbsp;
+{% endfor %}
+</div>
+<div id="map"></div>
+<div id="charts">
+  <div class="chart-container"><canvas id="mitre" height="250"></canvas></div>
+  <div class="chart-container"><canvas id="severity" height="250"></canvas></div>
+  <div class="chart-container"><canvas id="timeline" height="250"></canvas></div>
+</div>
+<table id="cti" class="display" style="width:95%;margin:20px auto;">
+<thead>
+<tr><th>Indicator</th><th>Type</th><th>Source</th><th>Severity</th>
+<th>MITRE</th><th>Score</th><th>Country</th><th>Last Seen</th></tr>
+</thead>
+<tbody>
+{% for r in rows %}
+<tr>
+<td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td>
+<td class="{{r[3]|lower}}">{{r[3]}}</td><td>{{r[4]}}</td><td>{{r[5]}}</td>
+<td>{{r[6]}}</td><td>{{r[9]}}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+<div style="text-align:center;margin:20px;">
+<button onclick="window.location='/export/json'">JSON</button>
+<button onclick="window.location='/export/csv'">CSV</button>
+<button onclick="window.location='/export/pdf'">PDF</button>
+<button onclick="window.location='/export/ids'">IDS RULES</button>
+<button onclick="window.location='/refresh'">Refresh</button>
+</div>
+<div style="text-align:center;margin:10px;font-size:12px;color:#888;">
+Developed and analysed by darkgrid@redshark.my using publicly available sources
+</div>
+<script>
+var map = L.map('map').setView([4.5,102],6);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
+var markers = [], mitreChart, severityChart, timelineChart;
+
+function initCharts(points){
+    var mitreLabels = points.map(p=>p[4]);
+    var mitreCounts={};
+    mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
+    mitreChart = new Chart(document.getElementById('mitre'),{type:'bar',data:{labels:Object.keys(mitreCounts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}});
+    var sev={"Low":0,"Medium":0,"High":0,"Critical":0};
+    points.forEach(p=>sev[p[3]]++);
+    severityChart = new Chart(document.getElementById('severity'),{type:'doughnut',data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","red","darkred"]}]}});
+
+    var timeline={};
+    points.forEach(p=>{var t=p[9].substring(0,13); timeline[t]=(timeline[t]||0)+1;});
+    timelineChart = new Chart(document.getElementById('timeline'),{type:'line',data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}})
+}
+
+function renderMap(points){
+    markers.forEach(m=>map.removeLayer(m)); markers=[];
+    points.forEach(function(p){
+        var marker=L.circleMarker([p[7],p[8]],{radius:p[3]=="Critical"?10:7,color:p[3]=="Critical"?"red":"blue",fillOpacity:p[3]=="Critical"?0.8:0.5}).addTo(map);
+        marker.bindPopup(p[0]+"<br>"+p[3]);
+        if(p[3]=="Critical" && marker._icon) marker._icon.classList.add("critical-marker");
+        markers.push(marker);
+    });
+}
+
+function updateDashboard(){
+    $.getJSON("/api/latest", function(points){
+        var tickerHtml=""; points.slice(0,10).forEach(function(r){ tickerHtml += `🚨 <span class="${r.severity.toLowerCase()}">${r.severity}</span> ${r.indicator} via ${r.source} &nbsp;&nbsp;`; });
+        $("#ticker").html(tickerHtml);
+
+        var table=$('#cti').DataTable(); table.clear();
+        points.forEach(function(r){ table.row.add([r.indicator,r.type,r.source,`<span class="${r.severity.toLowerCase()}">${r.severity}</span>`,r.mitre,r.score,r.country,r.last_seen]); });
+        table.draw();
+
+        renderMap(points);
+        if(mitreChart) mitreChart.destroy();
+        if(severityChart) severityChart.destroy();
+        if(timelineChart) timelineChart.destroy();
+        initCharts(points);
+    });
+}
+
+$(document).ready(function(){
+    $('#cti').DataTable({pageLength:50});
+    var initialPoints = {{rows|tojson}};
+    renderMap(initialPoints); initCharts(initialPoints);
+    setInterval(updateDashboard,30000);
+});
+</script>
+</body></html>
 """
 
 # ---------------- DASHBOARD ROUTE ---------------- #
@@ -177,7 +294,7 @@ def dashboard():
         c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
         rows = c.fetchall()
     malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-    return render_template_string(DASHBOARD_HTML, rows=rows, time=malaysia_time, dynamic_dashboard_html=DASHBOARD_HTML)
+    return render_template_string(DASHBOARD_HTML, rows=rows, time=malaysia_time)
 
 # ---------------- LIVE API ---------------- #
 @app.route("/api/latest")
@@ -233,20 +350,9 @@ def export_ids():
     sid = 100000
     mem = io.BytesIO()
     with zipfile.ZipFile(mem,'w',zipfile.ZIP_DEFLATED) as z:
-        rules = "\n".join([f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid+i}; rev:1;)' 
-                           for i,r in enumerate(rows)])
+        rules = "\n".join([f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid+i}; rev:1;)' for i,r in enumerate(rows)])
         z.writestr("redshark_ids.rules", rules)
     mem.seek(0)
     return send_file(mem, as_attachment=True, download_name="redshark_ids_rules.zip")
 
-# ---------------- MANUAL REFRESH ---------------- #
-@app.route("/refresh")
-def refresh():
-    all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
-    save_iocs(all_iocs)
-    logging.info(f"Manually refreshed {len(all_iocs)} IOCs")
-    return "Threat feed refreshed"
-
-# ---------------- RUN ---------------- #
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+# ---------------- MANUAL REFRESH ----------------
