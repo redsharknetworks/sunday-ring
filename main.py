@@ -161,6 +161,7 @@ def threat_engine():
 threading.Thread(target=threat_engine, daemon=True).start()
 
 # ---------------- DASHBOARD HTML ---------------- #
+# v18 enhanced: cleaner ticker, blinking critical, responsive charts
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html>
 <head>
@@ -178,8 +179,8 @@ h1{text-align:center;color:#38bdf8;margin:20px 0;}
 .ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;overflow-x:auto;white-space:nowrap;}
 #dashboard-container{max-width:1200px;margin:0 auto;}
 #map{height:450px;width:100%;border-radius:10px;}
-#charts{display:flex;justify-content:space-around;flex-wrap:nowrap;margin:20px 0;width:100%;}
-.chart-container{flex:1;margin:0 10px;height:300px;}
+#charts{display:flex;justify-content:space-around;flex-wrap:wrap;margin:20px 0;width:100%;}
+.chart-container{flex:1;margin:10px;height:300px;}
 canvas{width:100% !important;height:100% !important;background:#111827;padding:10px;border-radius:10px;}
 .low{color:#22c55e;}
 .medium{color:#facc15;}
@@ -258,7 +259,7 @@ function renderMap(points){
     markers=[];
     points.forEach(p=>{
         var color,radius,pulse=false;
-        if(p.severity=="Critical"){color="red";radius=10;}
+        if(p.severity=="Critical"){color="red";radius=10;pulse=true;}
         else if(p.severity=="High"){color="crimson";radius=8;pulse=true;}
         else if(p.severity=="Medium"){color="orange";radius=6;}
         else{color="green";radius=5;}
@@ -288,7 +289,7 @@ function renderCharts(points){
 $(document).ready(function(){
     $('#cti').DataTable({pageLength:50});
     fetchData();
-    setInterval(fetchData,60000); // refresh every 60s
+    setInterval(fetchData,60000);
 });
 </script>
 </body></html>
