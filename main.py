@@ -99,7 +99,8 @@ def fetch_otx_iocs():
             for pulse in pulses:
                 for ind in pulse.get("indicators",[]):
                     itype = ind.get("type","IPv4")
-                    typ = "IP" if itype=="IPv4" else "Domain" if "domain" in itype.lower() else "Hash"
+                    # FIXED: Proper IP detection
+                    typ = "IP" if "ipv4" in itype.lower() or "ip" in itype.lower() else "Domain" if "domain" in itype.lower() else "Hash"
                     loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
                     severity = "Critical" if typ=="IP" else "High"
                     iocs.append({
@@ -181,8 +182,8 @@ h1{text-align:center;color:#38bdf8;margin:20px 0;}
 canvas{margin:20px;border-radius:10px;background:#111827;padding:10px;}
 .low{color:#22c55e;}
 .medium{color:#facc15;}
-.high{color:#f87171;}
-.critical-marker{color:#f43f5e;font-weight:bold;animation:pulse 1s infinite;}
+.high{color:crimson;}
+.critical-marker{color:red;font-weight:bold;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
@@ -239,7 +240,7 @@ function initCharts(points){
     mitreChart=new Chart(document.getElementById('mitre'),{type:'bar',data:{labels:Object.keys(mitreCounts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:'rgba(56,189,248,0.7)'}]},options:{plugins:{legend:{display:false}}}});
     
     var sev={"Low":0,"Medium":0,"High":0,"Critical":0}; points.forEach(p=>sev[p.severity]++);
-    severityChart=new Chart(document.getElementById('severity'),{type:'doughnut',data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","red","darkred"]}]}});
+    severityChart=new Chart(document.getElementById('severity'),{type:'doughnut',data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","crimson","red"]}]}});
 
     var timeline={}; points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
     timelineChart=new Chart(document.getElementById('timeline'),{type:'line',data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}})
@@ -248,9 +249,14 @@ function initCharts(points){
 function renderMap(points){
     markers.forEach(m=>map.removeLayer(m)); markers=[];
     points.forEach(function(p){
-        var marker=L.circleMarker([p.lat,p.lon],{radius:p.severity=="Critical"?10:7,color:p.severity=="Critical"?"red":"blue",fillOpacity:p.severity=="Critical"?0.8:0.5}).addTo(map);
+        var color, radius, pulse=false;
+        if(p.severity=="Critical"){color="red";radius=10;pulse=false;}
+        else if(p.severity=="High"){color="crimson";radius=8;pulse=true;}
+        else if(p.severity=="Medium"){color="orange";radius=6;}
+        else{color="green";radius=5;}
+        var marker=L.circleMarker([p.lat,p.lon],{radius:radius,color:color,fillOpacity:0.8}).addTo(map);
         marker.bindPopup(p.indicator+"<br>"+p.severity);
-        if(p.severity=="Critical" && marker._icon) marker._icon.classList.add("critical-marker");
+        if(pulse && marker._icon) marker._icon.classList.add("critical-marker");
         markers.push(marker);
     });
 }
