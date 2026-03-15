@@ -9,13 +9,12 @@ import zipfile
 import random
 import requests
 from datetime import datetime, timedelta
-from flask import Flask, render_template_string, jsonify, send_file
-
+from flask import Flask, render_template_string, jsonify, send_file, request
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
 app = Flask(__name__)
-DB_FILE = "redshark_safe.db"
+DB_FILE = "redshark_cti.db"
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -56,143 +55,110 @@ def cleanup_db():
     conn.commit()
     conn.close()
 
-# ---------------- MALAYSIA LOCATIONS ---------------- #
+# ---------------- MALAYSIA IBU NEGERI ---------------- #
 locations = [
-    ("Kangar",6.4414,100.1986),
-    ("Alor Setar",6.1248,100.3678),
-    ("George Town",5.4141,100.3288),
-    ("Ipoh",4.5975,101.0901),
-    ("Shah Alam",3.0738,101.5183),
-    ("Kuala Lumpur",3.1390,101.6869),
-    ("Seremban",2.7297,101.9381),
-    ("Melaka",2.1896,102.2501),
-    ("Johor Bahru",1.4927,103.7414),
-    ("Kuantan",3.8168,103.3317),
-    ("Kuala Terengganu",5.3302,103.1408),
-    ("Kota Bharu",6.1254,102.2386),
-    ("Kuching",1.5533,110.3592),
-    ("Kota Kinabalu",5.9804,116.0735),
+    ("Kangar",6.4414,100.1986),("Alor Setar",6.1248,100.3678),
+    ("George Town",5.4141,100.3288),("Ipoh",4.5975,101.0901),
+    ("Shah Alam",3.0738,101.5183),("Kuala Lumpur",3.1390,101.6869),
+    ("Seremban",2.7297,101.9381),("Melaka",2.1896,102.2501),
+    ("Johor Bahru",1.4927,103.7414),("Kuantan",3.8168,103.3317),
+    ("Kuala Terengganu",5.3302,103.1408),("Kota Bharu",6.1254,102.2386),
+    ("Kuching",1.5533,110.3592),("Kota Kinabalu",5.9804,116.0735),
     ("Putrajaya",2.9264,101.6964)
 ]
 
 # ---------------- MITRE ATT&CK ---------------- #
 mitre_map = [
-    "T1046 Network Discovery",
-    "T1059 Command Execution",
-    "T1566 Phishing",
-    "T1071 C2 Communication",
-    "T1105 Data Exfiltration",
-    "T1190 Exploit Public Facing App"
+    "T1046 Network Discovery","T1059 Command Execution",
+    "T1566 Phishing","T1071 C2 Communication",
+    "T1105 Data Exfiltration","T1190 Exploit Public Facing App"
 ]
 
 # ---------------- THREAT SCORE ---------------- #
 def threat_score(sev):
-    return {"Low": 10, "Medium": 50, "High": 75, "Critical": 95}.get(sev, 50)
+    return {"Low": 10, "Medium": 50, "High": 75, "Critical": 95}.get(sev,50)
 
 # ---------------- DUMMY IOC ---------------- #
 def random_ip(): return f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
 def random_domain(): return f"malicious{random.randint(100,999)}.net"
 def random_hash(): return os.urandom(16).hex()
-
 def generate_dummy_feed():
-    data = []
-    for _ in range(random.randint(15,30)):
-        typ = random.choice(["IP","Domain","Hash"])
-        indicator = random_ip() if typ=="IP" else (random_domain() if typ=="Domain" else random_hash())
-        loc = random.choice(locations)
-        sev = random.choices(["Low","Medium","High","Critical"], weights=[40,30,20,10])[0]
+    data=[]
+    for _ in range(random.randint(20,35)):
+        typ=random.choice(["IP","Domain","Hash"])
+        indicator=random_ip() if typ=="IP" else (random_domain() if typ=="Domain" else random_hash())
+        loc=random.choice(locations)
+        sev=random.choices(["Low","Medium","High","Critical"], weights=[40,30,20,10])[0]
         data.append({
-            "indicator": indicator,
-            "type": typ,
-            "source": "Dummy",
-            "severity": sev,
-            "mitre": random.choice(mitre_map),
+            "indicator": indicator,"type": typ,"source":"Dummy",
+            "severity": sev,"mitre": random.choice(mitre_map),
             "score": threat_score(sev),
-            "country": loc[0],
-            "lat": loc[1],
-            "lon": loc[2],
+            "country": loc[0],"lat": loc[1],"lon": loc[2],
             "first_seen": datetime.utcnow().isoformat(),
             "last_seen": datetime.utcnow().isoformat()
         })
     return data
 
-# ---------------- REAL FEEDS ---------------- #
+# ---------------- SAFE REAL FEEDS ---------------- #
 def fetch_otx():
-    """Safe OTX fetch"""
-    key = os.environ.get("OTX_KEY")
-    if not key:
-        return []
+    key=os.environ.get("OTX_KEY")
+    if not key: return []
     try:
-        headers = {"X-OTX-API-KEY": key}
-        r = requests.get("https://otx.alienvault.com/api/v1/indicators/pulses/subscribed", headers=headers, timeout=10)
+        headers={"X-OTX-API-KEY":key}
+        r=requests.get("https://otx.alienvault.com/api/v1/indicators/pulses/subscribed",
+                       headers=headers,timeout=10)
         r.raise_for_status()
-        results = r.json().get("results", [])[:20]
+        results=r.json().get("results",[])[:20]
         iocs=[]
         for pulse in results:
-            for ind in pulse.get("indicators", []):
-                typ_map = {"IPv4":"IP","domain":"Domain","hash":"Hash"}
+            for ind in pulse.get("indicators",[]):
+                typ_map={"IPv4":"IP","domain":"Domain","hash":"Hash"}
                 if ind["type"] not in typ_map: continue
-                typ = typ_map[ind["type"]]
-                loc = random.choice(locations)
-                sev = "High" if typ=="IP" else "Medium"
+                typ=typ_map[ind["type"]]
+                loc=random.choice(locations)
+                sev="High" if typ=="IP" else "Medium"
                 iocs.append({
-                    "indicator": ind["indicator"],
-                    "type": typ,
-                    "source": "OTX",
-                    "severity": sev,
-                    "mitre": random.choice(mitre_map),
-                    "score": threat_score(sev),
-                    "country": loc[0],
-                    "lat": loc[1],
-                    "lon": loc[2],
-                    "first_seen": ind.get("created", datetime.utcnow().isoformat()),
-                    "last_seen": ind.get("modified", datetime.utcnow().isoformat())
+                    "indicator":ind["indicator"],"type":typ,"source":"OTX",
+                    "severity":sev,"mitre":random.choice(mitre_map),
+                    "score":threat_score(sev),
+                    "country":loc[0],"lat":loc[1],"lon":loc[2],
+                    "first_seen":ind.get("created",datetime.utcnow().isoformat()),
+                    "last_seen":ind.get("modified",datetime.utcnow().isoformat())
                 })
         return iocs
-    except Exception as e:
-        print("OTX fetch failed:", e)
-        return []
+    except: return []
 
 def fetch_abuseipdb():
-    """Safe AbuseIPDB fetch"""
-    key = os.environ.get("ABUSEIPDB_KEY")
-    if not key:
-        return []
+    key=os.environ.get("ABUSEIPDB_KEY")
+    if not key: return []
     try:
-        headers = {"Key": key, "Accept": "application/json"}
-        r = requests.get("https://api.abuseipdb.com/api/v2/blacklist", headers=headers, timeout=10)
+        headers={"Key":key,"Accept":"application/json"}
+        r=requests.get("https://api.abuseipdb.com/api/v2/blacklist",headers=headers,timeout=10)
         r.raise_for_status()
-        data = r.json().get("data", [])[:20]
+        data=r.json().get("data",[])[:20]
         iocs=[]
         for ip in data:
-            loc = random.choice(locations)
+            loc=random.choice(locations)
             iocs.append({
-                "indicator": ip["ipAddress"],
-                "type": "IP",
-                "source": "AbuseIPDB",
-                "severity": "Critical",
-                "mitre": random.choice(mitre_map),
-                "score": threat_score("Critical"),
-                "country": loc[0],
-                "lat": loc[1],
-                "lon": loc[2],
-                "first_seen": ip.get("lastReportedAt", datetime.utcnow().isoformat()),
-                "last_seen": ip.get("lastReportedAt", datetime.utcnow().isoformat())
+                "indicator":ip["ipAddress"],"type":"IP","source":"AbuseIPDB",
+                "severity":"Critical","mitre":random.choice(mitre_map),
+                "score":threat_score("Critical"),
+                "country":loc[0],"lat":loc[1],"lon":loc[2],
+                "first_seen":ip.get("lastReportedAt",datetime.utcnow().isoformat()),
+                "last_seen":ip.get("lastReportedAt",datetime.utcnow().isoformat())
             })
         return iocs
-    except:
-        return []
+    except: return []
 
 def fetch_feeds_safe():
-    iocs = fetch_otx() + fetch_abuseipdb()
-    if not iocs:  # fallback to dummy
-        iocs = generate_dummy_feed()
+    iocs=fetch_otx()+fetch_abuseipdb()
+    if not iocs: iocs=generate_dummy_feed()
     return iocs
 
-# ---------------- SAVE ---------------- #
+# ---------------- SAVE TO DB ---------------- #
 def save_iocs(feed):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+    conn=sqlite3.connect(DB_FILE)
+    c=conn.cursor()
     for f in feed:
         try:
             c.execute("""
@@ -200,36 +166,131 @@ def save_iocs(feed):
             (indicator,type,source,severity,mitre,score,country,lat,lon,first_seen,last_seen)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)
             """,(f["indicator"],f["type"],f["source"],f["severity"],f["mitre"],
-                 f["score"],f["country"],f["lat"],f["lon"],f["first_seen"],f["last_seen"]))
-        except Exception as e:
-            print("DB insert error:", e)
-    conn.commit()
-    conn.close()
+                f["score"],f["country"],f["lat"],f["lon"],f["first_seen"],f["last_seen"]))
+        except: pass
+    conn.commit(); conn.close()
 
 # ---------------- BACKGROUND FEED ENGINE ---------------- #
 def threat_engine():
     while True:
-        feed = fetch_feeds_safe()
+        feed=fetch_feeds_safe()
         save_iocs(feed)
         cleanup_db()
-        time.sleep(300)  # fetch every 5 minutes
+        time.sleep(300)
 
 threading.Thread(target=threat_engine,daemon=True).start()
 
 # ---------------- DASHBOARD HTML ---------------- #
-DASHBOARD_HTML = """<your existing DASHBOARD_HTML here>"""
-# (reuse your heatmap, charts, table, export buttons)
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<title>RedShark Cyber Threat Intelligence Platform</title>
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body{background:#020617;color:white;font-family:Arial}
+h1{text-align:center;color:#38bdf8}
+.highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red}
+.ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155}
+#map{height:450px;margin:20px}
+canvas{margin:20px}
+.low{color:green}
+.medium{color:orange}
+.high{color:red}
+.critical{color:red;font-weight:bold;animation:blink 1s infinite}
+@keyframes blink{50%{opacity:0}}
+</style>
+</head>
+<body>
+<h1>RedShark Cyber Threat Intelligence Platform</h1>
+<div class="highlight"><b>Latest Malaysia Security Highlight (GMT+8)</b><br>{{time}}</div>
+<div class="ticker">
+{% for r in rows[:10] %}
+🚨 {{r[3]}} {{r[0]}} via {{r[2]}} &nbsp;&nbsp;
+{% endfor %}
+</div>
+<div id="map"></div>
+<canvas id="mitre" height="250"></canvas>
+<canvas id="severity" height="250"></canvas>
+<canvas id="timeline" height="250"></canvas>
+<table id="cti" class="display">
+<thead><tr><th>Indicator</th><th>Type</th><th>Source</th><th>Severity</th>
+<th>MITRE</th><th>Score</th><th>Country</th><th>Last Seen</th></tr></thead>
+<tbody>
+{% for r in rows %}
+<tr>
+<td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td>
+<td class="{{r[3]|lower}}">{{r[3]}}</td>
+<td>{{r[4]}}</td><td>{{r[5]}}</td><td>{{r[6]}}</td><td>{{r[9]}}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+<div style="text-align:center;margin:20px">
+<button onclick="window.location='/export/json'">JSON</button>
+<button onclick="window.location='/export/csv'">CSV</button>
+<button onclick="window.location='/export/pdf'">PDF</button>
+<button onclick="window.location='/export/ids'">IDS</button>
+<button onclick="window.location='/export/zip'">IOC ZIP</button>
+<button onclick="window.location='/refresh'">Refresh</button>
+</div>
+<div style="text-align:center;margin:10px;font-size:12px;color:#888">
+Developed and analysed by darkgrid@redshark.my using publicly available sources
+</div>
+<script>
+$(document).ready(function(){ $('#cti').DataTable({pageLength:50}) })
+var map=L.map('map').setView([4.5,102],6)
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map)
+var points={{rows|tojson}}
+var heat=[]
+points.forEach(function(p){ if(p[3]=="Critical") heat.push([p[7],p[8],1]) })
+L.heatLayer(heat,{radius:25,blur:15}).addTo(map)
 
+// MITRE chart
+var mitre_labels = points.map(p=>p[4])
+var mitre_counts = {}
+mitre_labels.forEach(m=>mitre_counts[m]=(mitre_counts[m]||0)+1)
+new Chart(document.getElementById('mitre'),{
+type:'bar',
+data:{labels:Object.keys(mitre_counts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitre_counts),backgroundColor:'rgba(56,189,248,0.7)'}]},
+options:{plugins:{legend:{display:false}}}
+})
+
+// Severity chart
+var sev={"Low":0,"Medium":0,"High":0,"Critical":0}
+points.forEach(p=>sev[p[3]]++)
+new Chart(document.getElementById('severity'),{
+type:'doughnut',
+data:{labels:Object.keys(sev),datasets:[{data:Object.values(sev),backgroundColor:["green","orange","red","darkred"]}]}
+})
+
+// Timeline chart
+var timeline={}
+points.forEach(p=>{ var t=p[9].substring(0,13); timeline[t]=(timeline[t]||0)+1 })
+new Chart(document.getElementById('timeline'),{
+type:'line',
+data:{labels:Object.keys(timeline),datasets:[{label:"Threat Events",data:Object.values(timeline),borderColor:"#38bdf8",fill:false}]}
+})
+</script>
+</body>
+</html>"""
+
+# ---------------- DASHBOARD ROUTE ---------------- #
 @app.route("/")
 def dashboard():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+    conn=sqlite3.connect(DB_FILE)
+    c=conn.cursor()
     c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
-    rows = c.fetchall(); conn.close()
-    malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    rows=c.fetchall(); conn.close()
+    malaysia_time=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     return render_template_string(DASHBOARD_HTML, rows=rows, time=malaysia_time)
 
-# ---------------- EXPORT ROUTES ---------------- #
+# ---------------- EXPORTS ---------------- #
 @app.route("/export/json")
 def export_json():
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
@@ -245,7 +306,36 @@ def export_csv():
     writer.writerows(rows)
     return send_file(io.BytesIO(output.getvalue().encode()),as_attachment=True,download_name="redshark_cti.csv")
 
-# Keep /export/pdf, /export/ids, /export/zip, /refresh same as before
+@app.route("/export/pdf")
+def export_pdf():
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("SELECT indicator,type,source,severity,mitre FROM indicators LIMIT 100"); rows=c.fetchall(); conn.close()
+    buffer=io.BytesIO(); doc=SimpleDocTemplate(buffer,pagesize=letter)
+    table=Table(rows); doc.build([table]); buffer.seek(0)
+    return send_file(buffer,as_attachment=True,download_name="redshark_report.pdf")
+
+@app.route("/export/ids")
+def export_ids():
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("SELECT indicator FROM indicators WHERE type='IP'"); rows=c.fetchall(); conn.close()
+    sid=100000; rules=""
+    for r in rows: rules+=f'alert ip {r[0]} any -> any any (msg:"RedShark IOC"; sid:{sid}; rev:1;)\n'; sid+=1
+    return send_file(io.BytesIO(rules.encode()),as_attachment=True,download_name="redshark.rules")
+
+@app.route("/export/zip")
+def export_zip():
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("SELECT indicator FROM indicators"); rows=c.fetchall(); conn.close()
+    mem=io.BytesIO()
+    with zipfile.ZipFile(mem,'w',zipfile.ZIP_DEFLATED) as z: z.writestr("ioc_list.txt","\n".join([r[0] for r in rows]))
+    mem.seek(0)
+    return send_file(mem,as_attachment=True,download_name="redshark_iocs.zip")
+
+@app.route("/refresh")
+def refresh():
+    feed=fetch_feeds_safe()
+    save_iocs(feed)
+    return "Threat feed refreshed"
 
 # ---------------- RUN ---------------- #
 if __name__=="__main__":
