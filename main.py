@@ -134,7 +134,7 @@ def fetch_otx_iocs():
     return iocs
 
 def fetch_abuseipdb():
-    url = "https://api.abuseipdb.com/api/v2/blacklist?confidenceMinimum=70&limit=100"
+    url = "https://api.abuseipdb.com/api/v2/blacklist?confidenceMinimum=70&limit=50"
     headers = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
     iocs = []
     try:
@@ -197,9 +197,9 @@ canvas{width:100% !important;height:100% !important;background:#111827;padding:1
 .medium{color:#facc15;}
 .high{color:crimson;}
 .critical{color:red;}
-.heat-critical{filter:drop-shadow(0 0 20px red);}
-.heat-high{filter:drop-shadow(0 0 20px orange);}
-@keyframes glow{0%{opacity:0.6;}50%{opacity:1;}100%{opacity:0.6;}}
+.heat-critical{animation:blink 1.5s infinite;}
+.heat-high{animation:blink 2s infinite;}
+@keyframes blink{0%,100%{opacity:0.4;}50%{opacity:1;}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
 #cti{width:100% !important;}
@@ -281,7 +281,7 @@ function renderMap(points){
         if(p.severity=="Critical"){options.color="red";options.radius=12;cls="heat-critical";}
         else if(p.severity=="High"){options.color="orange";options.radius=10;cls="heat-high";}
         var marker=L.circleMarker([p.lat,p.lon],options).addTo(map);
-        if(cls && marker._path){marker._path.classList.add(cls);marker._path.style.animation="glow 2s infinite";}
+        if(cls && marker._path){marker._path.classList.add(cls);}
         marker.bindPopup(p.indicator+"<br>"+p.type+" — "+p.severity);
         markers.push(marker);
     });
@@ -327,6 +327,7 @@ $(document).ready(function(){
 </script>
 </body></html>
 """
+
 # ---------------- API ---------------- #
 @app.route("/api/data")
 def api_data():
