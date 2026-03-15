@@ -114,8 +114,8 @@ def fetch_otx_iocs():
             for pulse in r.json().get("results", []):
                 for ind in pulse.get("indicators", []):
                     typ = detect_type(ind["indicator"])
+                    severity = "Critical" if typ=="IP" else "High"  # Correctly mark IP
                     loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
-                    severity = "Critical" if typ=="IP" else "High"
                     iocs.append({
                         "indicator": ind["indicator"],
                         "type": typ,
@@ -134,7 +134,7 @@ def fetch_otx_iocs():
     return iocs
 
 def fetch_abuseipdb():
-    url = "https://api.abuseipdb.com/api/v2/blacklist?confidenceMinimum=70&limit=50"
+    url = "https://api.abuseipdb.com/api/v2/blacklist?confidenceMinimum=70&limit=100"
     headers = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
     iocs = []
     try:
@@ -197,9 +197,9 @@ canvas{width:100% !important;height:100% !important;background:#111827;padding:1
 .medium{color:#facc15;}
 .high{color:crimson;}
 .critical{color:red;}
-.heat-critical{animation:blink 1.5s infinite;}
-.heat-high{animation:blink 2s infinite;}
-@keyframes blink{0%,100%{opacity:0.4;}50%{opacity:1;}}
+.heat-critical{animation:blink 1.5s infinite;filter:drop-shadow(0 0 20px red);}
+.heat-high{animation:blink 2s infinite;filter:drop-shadow(0 0 20px orange);}
+@keyframes blink{0%{opacity:0.5}50%{opacity:1}100%{opacity:0.5}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
 #cti{width:100% !important;}
@@ -230,7 +230,6 @@ button:hover{background:#0ea5e9;color:#fff;}
 <div style="text-align:center;margin:10px;font-size:12px;color:#888;">
 Developed and analysed by darkgrid@redshark.my using publicly available sources
 </div>
-
 <script>
 var map=L.map('map').setView([4.5,102],6);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
@@ -280,6 +279,8 @@ function renderMap(points){
         var cls="";
         if(p.severity=="Critical"){options.color="red";options.radius=12;cls="heat-critical";}
         else if(p.severity=="High"){options.color="orange";options.radius=10;cls="heat-high";}
+        else if(p.severity=="Medium"){options.color="orange";options.radius=8;}
+        else{options.color="green";options.radius=8;}
         var marker=L.circleMarker([p.lat,p.lon],options).addTo(map);
         if(cls && marker._path){marker._path.classList.add(cls);}
         marker.bindPopup(p.indicator+"<br>"+p.type+" — "+p.severity);
@@ -368,7 +369,7 @@ def export_csv():
 def export_pdf():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
-        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators LIMIT 100")
+        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators 100")
         rows = c.fetchall()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
@@ -380,6 +381,7 @@ def export_pdf():
 
 @app.route("/export/ids")
 def export_ids():
+    # Generate Snort/Suricata style rules
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute("SELECT indicator,type,severity FROM indicators")
@@ -403,4 +405,4 @@ def export_ids():
     return send_file(zip_buffer, as_attachment=True, download_name="redshark_ids.zip")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000) 
