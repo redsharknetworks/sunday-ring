@@ -1,15 +1,24 @@
-import io, csv, json, zipfile, time, threading, logging, re, os
+import io
+import csv
+import json
+import zipfile
+import time
+import threading
+import logging
+import re
 from datetime import datetime, timedelta
-import sqlite3, requests
+
+import sqlite3
+import requests
 from flask import Flask, render_template_string, jsonify, send_file
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
 # ---------------- CONFIG ---------------- #
 app = Flask(__name__)
-DB_FILE = "/tmp/redshark.db"  # Render writable folder
-OTX_KEY = os.getenv("OTX_KEY", "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b")
-ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY", "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a6eb14544a100")
+DB_FILE = "redshark.db"
+OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
+ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a6eb14544a100"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -84,9 +93,13 @@ def detect_type(indicator):
     hash_pattern = re.compile(r"^[a-fA-F0-9]{32,128}$")
     domain_pattern = re.compile(r"^(?!\d+$)([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
     url_pattern = re.compile(r"^https?://")
-    if ip_pattern.match(indicator): return "IP"
-    elif hash_pattern.match(indicator): return "Hash"
-    elif url_pattern.match(indicator) or domain_pattern.match(indicator): return "Domain"
+
+    if ip_pattern.match(indicator):
+        return "IP"
+    elif hash_pattern.match(indicator):
+        return "Hash"
+    elif url_pattern.match(indicator) or domain_pattern.match(indicator):
+        return "Domain"
     return "Unknown"
 
 def fetch_otx_iocs():
@@ -156,9 +169,7 @@ def threat_engine():
             logging.info("No IOCs fetched")
         time.sleep(600)
 
-@app.before_first_request
-def start_background():
-    threading.Thread(target=threat_engine, daemon=True).start()
+threading.Thread(target=threat_engine, daemon=True).start()
 
 # ---------------- DASHBOARD HTML ---------------- #
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -276,14 +287,19 @@ function renderMap(points){
 }
 
 function renderCharts(points){
+    // MITRE chart
     var mitreLabels=points.map(p=>p.mitre);
     var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
     if(mitreChart) mitreChart.destroy();
     var ctx_m=document.getElementById('mitre').getContext('2d');
     var mitre_grad=ctx_m.createLinearGradient(0,0,0,300);
     mitre_grad.addColorStop(0,'#38bdf8'); mitre_grad.addColorStop(1,'rgba(0,0,0,0.2)');
-    mitreChart=new Chart(ctx_m,{type:'bar',data:{labels:Object.keys(mitreCounts),datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:mitre_grad}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}}}});
+    mitreChart=new Chart(ctx_m,{type:'bar',data:{
+        labels:Object.keys(mitreCounts),
+        datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:mitre_grad}]
+    },options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}}}});
 
+    // Severity chart
     var sevCounts={"Low":0,"Medium":0,"High":0,"Critical":0};
     points.forEach(p=>sevCounts[p.severity]++);
     var ctx_s=document.getElementById('severity').getContext('2d');
@@ -298,6 +314,7 @@ function renderCharts(points){
     });
     severityChart=new Chart(ctx_s,{type:'bar',data:{labels:Object.keys(sevCounts),datasets:[{label:'Severity Count',data:Object.values(sevCounts),backgroundColor:gradients,borderColor:Object.values(colors),borderWidth:1}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},responsive:true,maintainAspectRatio:false}});
 
+    // Timeline chart
     var timeline={};
     points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
     if(timelineChart) timelineChart.destroy();
@@ -336,6 +353,7 @@ def export_json():
         c = conn.cursor()
         c.execute("SELECT * FROM indicators")
         rows = [dict(r) for r in c.fetchall()]
+    # Return zipped JSON
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
         zf.writestr("redshark_cti.json", json.dumps(rows, indent=2))
@@ -377,12 +395,14 @@ def export_pdf():
 
 @app.route("/export/ids")
 def export_ids():
+    # Generate Snort/Suricata style rules
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute("SELECT indicator,type,severity FROM indicators")
         rows = c.fetchall()
+
     zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer,'w') as zf:
+    with zipfile.ZipFile(zip_buffer, 'w') as zf:
         rules = ""
         sid_counter = 1000000
         for ind, typ, sev in rows:
@@ -390,7 +410,7 @@ def export_ids():
                 rule = f'alert ip any any -> {ind} any (msg:"RedShark {sev} threat"; sid:{sid_counter}; rev:1;)\n'
             elif typ == "Domain":
                 rule = f'alert tcp any any -> any 80 (msg:"RedShark {sev} Domain {ind}"; content:"{ind}"; sid:{sid_counter}; rev:1;)\n'
-            else:
+            else:  # Hash
                 rule = f'# Hash {ind} severity {sev} (sid:{sid_counter})\n'
             rules += rule
             sid_counter += 1
@@ -400,6 +420,5 @@ def export_ids():
 
 # ---------------- RUN SERVER ---------------- #
 if __name__ == "__main__":
-    # On Render, use port from env
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    # Use threaded=True for multiple simultaneous requests
+    app.run(host="0.0.0.0", port=5000, threaded=True)
