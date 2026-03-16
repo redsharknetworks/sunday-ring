@@ -1,9 +1,8 @@
 import io
+import os
 import csv
 import json
 import zipfile
-import time
-import threading
 import logging
 import re
 from datetime import datetime, timedelta
@@ -13,12 +12,13 @@ import requests
 from flask import Flask, render_template_string, jsonify, send_file
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # ---------------- CONFIG ---------------- #
 app = Flask(__name__)
-DB_FILE = "redshark.db"
-OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
-ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a6eb14544a100"
+DB_FILE = os.environ.get("DB_FILE", "/tmp/redshark.db")  # Safe for Render
+OTX_KEY = os.environ.get("OTX_KEY", "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b")
+ABUSEIPDB_KEY = os.environ.get("ABUSEIPDB_KEY", "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a6eb14544a100")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -108,26 +108,26 @@ def fetch_otx_iocs():
     iocs = []
     try:
         r = requests.get(url, headers=headers, timeout=15)
-        if r.status_code == 200:
-            for pulse in r.json().get("results", []):
-                for ind in pulse.get("indicators", []):
-                    typ = detect_type(ind["indicator"])
-                    loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
-                    severity = "Critical" if typ=="IP" else "High"
-                    iocs.append({
-                        "indicator": ind["indicator"],
-                        "type": typ,
-                        "source": "OTX",
-                        "severity": severity,
-                        "mitre": MITRE_MAP[int(datetime.utcnow().timestamp()) % len(MITRE_MAP)],
-                        "score": 95 if severity=="Critical" else 80,
-                        "country": loc[0],
-                        "lat": loc[1],
-                        "lon": loc[2],
-                        "first_seen": datetime.utcnow().isoformat(),
-                        "last_seen": datetime.utcnow().isoformat()
-                    })
-    except Exception as e:
+        r.raise_for_status()
+        for pulse in r.json().get("results", []):
+            for ind in pulse.get("indicators", []):
+                typ = detect_type(ind["indicator"])
+                loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
+                severity = "Critical" if typ=="IP" else "High"
+                iocs.append({
+                    "indicator": ind["indicator"],
+                    "type": typ,
+                    "source": "OTX",
+                    "severity": severity,
+                    "mitre": MITRE_MAP[int(datetime.utcnow().timestamp()) % len(MITRE_MAP)],
+                    "score": 95 if severity=="Critical" else 80,
+                    "country": loc[0],
+                    "lat": loc[1],
+                    "lon": loc[2],
+                    "first_seen": datetime.utcnow().isoformat(),
+                    "last_seen": datetime.utcnow().isoformat()
+                })
+    except requests.RequestException as e:
         logging.error(f"OTX fetch error: {e}")
     return iocs
 
@@ -137,39 +137,40 @@ def fetch_abuseipdb():
     iocs = []
     try:
         r = requests.get(url, headers=headers, timeout=15)
-        if r.status_code == 200:
-            for item in r.json().get("data", []):
-                loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
-                iocs.append({
-                    "indicator": item["ipAddress"],
-                    "type": "IP",
-                    "source": "AbuseIPDB",
-                    "severity": "Critical",
-                    "mitre": MITRE_MAP[int(datetime.utcnow().timestamp()) % len(MITRE_MAP)],
-                    "score": 95,
-                    "country": loc[0],
-                    "lat": loc[1],
-                    "lon": loc[2],
-                    "first_seen": datetime.utcnow().isoformat(),
-                    "last_seen": datetime.utcnow().isoformat()
-                })
-    except Exception as e:
+        r.raise_for_status()
+        for item in r.json().get("data", []):
+            loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
+            iocs.append({
+                "indicator": item["ipAddress"],
+                "type": "IP",
+                "source": "AbuseIPDB",
+                "severity": "Critical",
+                "mitre": MITRE_MAP[int(datetime.utcnow().timestamp()) % len(MITRE_MAP)],
+                "score": 95,
+                "country": loc[0],
+                "lat": loc[1],
+                "lon": loc[2],
+                "first_seen": datetime.utcnow().isoformat(),
+                "last_seen": datetime.utcnow().isoformat()
+            })
+    except requests.RequestException as e:
         logging.error(f"AbuseIPDB fetch error: {e}")
     return iocs
 
 def threat_engine():
-    while True:
-        logging.info("Fetching threat feeds...")
-        all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
-        if all_iocs:
-            save_iocs(all_iocs)
-            cleanup_db()
-            logging.info(f"Saved {len(all_iocs)} IOCs")
-        else:
-            logging.info("No IOCs fetched")
-        time.sleep(600)
+    logging.info("Fetching threat feeds...")
+    all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
+    if all_iocs:
+        save_iocs(all_iocs)
+        cleanup_db()
+        logging.info(f"Saved {len(all_iocs)} IOCs")
+    else:
+        logging.info("No IOCs fetched")
 
-threading.Thread(target=threat_engine, daemon=True).start()
+# ---------------- SCHEDULER ---------------- #
+scheduler = BackgroundScheduler()
+scheduler.add_job(threat_engine, 'interval', minutes=10)
+scheduler.start()
 
 # ---------------- DASHBOARD HTML ---------------- #
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -287,7 +288,6 @@ function renderMap(points){
 }
 
 function renderCharts(points){
-    // MITRE chart
     var mitreLabels=points.map(p=>p.mitre);
     var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
     if(mitreChart) mitreChart.destroy();
@@ -299,7 +299,6 @@ function renderCharts(points){
         datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:mitre_grad}]
     },options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}}}});
 
-    // Severity chart
     var sevCounts={"Low":0,"Medium":0,"High":0,"Critical":0};
     points.forEach(p=>sevCounts[p.severity]++);
     var ctx_s=document.getElementById('severity').getContext('2d');
@@ -314,7 +313,6 @@ function renderCharts(points){
     });
     severityChart=new Chart(ctx_s,{type:'bar',data:{labels:Object.keys(sevCounts),datasets:[{label:'Severity Count',data:Object.values(sevCounts),backgroundColor:gradients,borderColor:Object.values(colors),borderWidth:1}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},responsive:true,maintainAspectRatio:false}});
 
-    // Timeline chart
     var timeline={};
     points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
     if(timelineChart) timelineChart.destroy();
@@ -353,7 +351,6 @@ def export_json():
         c = conn.cursor()
         c.execute("SELECT * FROM indicators")
         rows = [dict(r) for r in c.fetchall()]
-    # Return zipped JSON
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
         zf.writestr("redshark_cti.json", json.dumps(rows, indent=2))
@@ -370,6 +367,8 @@ def export_csv():
     writer=csv.writer(output)
     writer.writerow(["id","indicator","type","source","severity","mitre","score","country","lat","lon","first_seen","last_seen"])
     writer.writerows(rows)
+    
+# Continue from previous export CSV
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer,'w') as zf:
         zf.writestr("redshark_cti.csv", output.getvalue())
@@ -395,30 +394,21 @@ def export_pdf():
 
 @app.route("/export/ids")
 def export_ids():
-    # Generate Snort/Suricata style rules
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute("SELECT indicator,type,severity FROM indicators")
         rows = c.fetchall()
-
+    ids_text = ""
+    for r in rows:
+        ids_text += f"alert tcp any any -> any any (msg:\"{r[1]} {r[0]} {r[2]}\"; sid:{100000 + r[0]}; rev:1;)\n"
     zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w') as zf:
-        rules = ""
-        sid_counter = 1000000
-        for ind, typ, sev in rows:
-            if typ == "IP":
-                rule = f'alert ip any any -> {ind} any (msg:"RedShark {sev} threat"; sid:{sid_counter}; rev:1;)\n'
-            elif typ == "Domain":
-                rule = f'alert tcp any any -> any 80 (msg:"RedShark {sev} Domain {ind}"; content:"{ind}"; sid:{sid_counter}; rev:1;)\n'
-            else:  # Hash
-                rule = f'# Hash {ind} severity {sev} (sid:{sid_counter})\n'
-            rules += rule
-            sid_counter += 1
-        zf.writestr("redshark_ids.rules", rules)
+    with zipfile.ZipFile(zip_buffer,'w') as zf:
+        zf.writestr("redshark_ids.rules", ids_text)
     zip_buffer.seek(0)
     return send_file(zip_buffer, as_attachment=True, download_name="redshark_ids.zip")
 
-# ---------------- RUN SERVER ---------------- #
+# ---------------- RUN APP ---------------- #
 if __name__ == "__main__":
-    # Use threaded=True for multiple simultaneous requests
-    app.run(host="0.0.0.0", port=5000, threaded=True)
+    port = int(os.environ.get("PORT", 5000))
+    threat_engine()  # initial fetch
+    app.run(host="0.0.0.0", port=port, debug=False)
