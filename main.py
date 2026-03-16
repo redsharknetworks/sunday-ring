@@ -194,10 +194,10 @@ canvas{width:100% !important;height:100% !important;background:#111827;padding:1
 .low{color:#22c55e;}
 .medium{color:#facc15;}
 .high{color:orange;}
-.critical{color:red;animation:blink 1.5s infinite;}
-.heat-critical{animation:blink 1.5s infinite;}
-.heat-high{}
-@keyframes blink{0%{opacity:0.5;}50%{opacity:1;}100%{opacity:0.5;}}
+.critical{color:red;}
+.heat-critical{animation:blink 2s infinite;}
+.heat-high{animation:blink 2s infinite;}
+@keyframes blink{0%{opacity:0.6;}50%{opacity:1;}100%{opacity:0.6;}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
 #cti{width:100% !important;}
@@ -220,10 +220,10 @@ button:hover{background:#0ea5e9;color:#fff;}
 <tbody></tbody>
 </table>
 <div style="text-align:center;margin:20px;">
-<button onclick="window.location='/export/jsonzip'">JSON</button>
-<button onclick="window.location='/export/csvzip'">CSV</button>
-<button onclick="window.location='/export/pdfzip'">PDF</button>
-<button onclick="window.location='/export/idszip'">IDS RULES</button>
+<button onclick="window.location='/export/json'">JSON</button>
+<button onclick="window.location='/export/csv'">CSV</button>
+<button onclick="window.location='/export/pdf'">PDF</button>
+<button onclick="window.location='/export/ids'">IDS RULES</button>
 </div>
 <div style="text-align:center;margin:10px;font-size:12px;color:#888;">
 Developed and analysed by darkgrid@redshark.my using publicly available sources
@@ -256,12 +256,11 @@ function renderTable(points){
     table.clear();
     points.forEach(p=>{
         var sev_color=(p.severity=="High")?"orange":(p.severity=="Critical")?"red":(p.severity=="Medium")?"#facc15":"#22c55e";
-        var sev_class=(p.severity=="Critical")?"critical":"";
         table.row.add([
             p.indicator,
             p.type,
             p.source,
-            `<span style="color:${sev_color};font-weight:bold" class="${sev_class}">${p.severity}</span>`,
+            `<span style="color:${sev_color};font-weight:bold">${p.severity}</span>`,
             p.mitre,
             p.score,
             p.country,
@@ -342,44 +341,32 @@ def dashboard():
     malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     return render_template_string(DASHBOARD_HTML, time=malaysia_time)
 
-# ---------------- EXPORT ZIP ---------------- #
-def export_file_zip(filename, file_bytes, zip_name):
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(filename, file_bytes.getvalue())
-    buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name=zip_name)
-
-@app.route("/export/jsonzip")
-def export_json_zip():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM indicators")
-        rows = [dict(r) for r in c.fetchall()]
-    output = io.BytesIO()
-    output.write(json.dumps(rows, indent=2).encode())
-    output.seek(0)
-    return export_file_zip("redshark_cti.json", output, "redshark_cti_json.zip")
-
-@app.route("/export/csvzip")
-def export_csv_zip():
+# ---------------- EXPORTS ---------------- #
+@app.route("/export/json")
+def export_json():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute("SELECT * FROM indicators")
         rows = c.fetchall()
+    return jsonify(rows)
 
-output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["id","indicator","type","source","severity","mitre","score","country","lat","lon","first_seen","last_seen"])
-    writer.writerows(rows)
-    csv_bytes = io.BytesIO(output.getvalue().encode())
-    return export_file_zip("redshark_cti.csv", csv_bytes, "redshark_cti_csv.zip")
-
-@app.route("/export/pdfzip")
-def export_pdf_zip():
+@app.route("/export/csv")
+def export_csv():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
-        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators LIMIT 500")
+        c.execute("SELECT * FROM indicators")
+        rows = c.fetchall()
+    output=io.StringIO()
+    writer=csv.writer(output)
+    writer.writerow(["id","indicator","type","source","severity","mitre","score","country","lat","lon","first_seen","last_seen"])
+    writer.writerows(rows)
+    return send_file(io.BytesIO(output.getvalue().encode()), as_attachment=True, download_name="redshark_cti.csv")
+
+@app.route("/export/pdf")
+def export_pdf():
+    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+        c = conn.cursor()
+        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators LIMIT 100")
         rows = c.fetchall()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
@@ -387,14 +374,16 @@ def export_pdf_zip():
     table = Table(table_data)
     doc.build([table])
     buffer.seek(0)
-    return export_file_zip("redshark_cti.pdf", buffer, "redshark_cti_pdf.zip")
+    return send_file(buffer, as_attachment=True, download_name="redshark_cti.pdf")
 
-@app.route("/export/idszip")
-def export_ids_zip():
+@app.route("/export/ids")
+def export_ids():
+    # Generate Snort/Suricata style rules
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute("SELECT indicator,type,severity FROM indicators")
         rows = c.fetchall()
+
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
         rules = ""
@@ -413,5 +402,5 @@ def export_ids_zip():
     return send_file(zip_buffer, as_attachment=True, download_name="redshark_ids.zip")
 
 if __name__ == "__main__":
-    # Threaded=True to support multiple users and avoid crashes
+    # Use threaded=True to handle multiple requests and avoid crashes
     app.run(host="0.0.0.0", port=5000, threaded=True)
