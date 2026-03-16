@@ -175,7 +175,7 @@ threading.Thread(target=threat_engine, daemon=True).start()
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html>
 <head>
-<title>RedShark CTI Dashboard</title>
+<title>RedShark SOC Dashboard</title>
 <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
@@ -204,7 +204,7 @@ button:hover{background:#0ea5e9;color:#fff;}
 </style>
 </head>
 <body>
-<h1>RedShark Cyber Threat Intelligence Platform</h1>
+<h1>RedShark Cyber SOC Dashboard</h1>
 <div id="dashboard-container">
 <div class="highlight" id="highlight">Latest Malaysia Security Highlight (GMT+8): {{time}}</div>
 <div class="ticker" id="ticker"></div>
@@ -256,11 +256,12 @@ function renderTable(points){
     table.clear();
     points.forEach(p=>{
         var sev_color=(p.severity=="High")?"orange":(p.severity=="Critical")?"red":(p.severity=="Medium")?"#facc15":"#22c55e";
+        var cls=(p.severity=="Critical")?"heat-critical":(p.severity=="High")?"heat-high":"";
         table.row.add([
             p.indicator,
             p.type,
             p.source,
-            `<span style="color:${sev_color};font-weight:bold">${p.severity}</span>`,
+            `<span style="color:${sev_color};font-weight:bold" class="${cls}">${p.severity}</span>`,
             p.mitre,
             p.score,
             p.country,
@@ -286,6 +287,7 @@ function renderMap(points){
 }
 
 function renderCharts(points){
+    // MITRE chart
     var mitreLabels=points.map(p=>p.mitre);
     var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
     if(mitreChart) mitreChart.destroy();
@@ -297,6 +299,7 @@ function renderCharts(points){
         datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:mitre_grad}]
     },options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}}}});
 
+    // Severity chart
     var sevCounts={"Low":0,"Medium":0,"High":0,"Critical":0};
     points.forEach(p=>sevCounts[p.severity]++);
     var ctx_s=document.getElementById('severity').getContext('2d');
@@ -311,6 +314,7 @@ function renderCharts(points){
     });
     severityChart=new Chart(ctx_s,{type:'bar',data:{labels:Object.keys(sevCounts),datasets:[{label:'Severity Count',data:Object.values(sevCounts),backgroundColor:gradients,borderColor:Object.values(colors),borderWidth:1}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},responsive:true,maintainAspectRatio:false}});
 
+    // Timeline chart
     var timeline={};
     points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
     if(timelineChart) timelineChart.destroy();
@@ -345,10 +349,16 @@ def dashboard():
 @app.route("/export/json")
 def export_json():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+        conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT * FROM indicators")
-        rows = c.fetchall()
-    return jsonify(rows)
+        rows = [dict(r) for r in c.fetchall()]
+    # Return zipped JSON
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w') as zf:
+        zf.writestr("redshark_cti.json", json.dumps(rows, indent=2))
+    zip_buffer.seek(0)
+    return send_file(zip_buffer, as_attachment=True, download_name="redshark_cti_json.zip")
 
 @app.route("/export/csv")
 def export_csv():
@@ -360,7 +370,11 @@ def export_csv():
     writer=csv.writer(output)
     writer.writerow(["id","indicator","type","source","severity","mitre","score","country","lat","lon","first_seen","last_seen"])
     writer.writerows(rows)
-    return send_file(io.BytesIO(output.getvalue().encode()), as_attachment=True, download_name="redshark_cti.csv")
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer,'w') as zf:
+        zf.writestr("redshark_cti.csv", output.getvalue())
+    zip_buffer.seek(0)
+    return send_file(zip_buffer, as_attachment=True, download_name="redshark_cti_csv.zip")
 
 @app.route("/export/pdf")
 def export_pdf():
@@ -373,8 +387,11 @@ def export_pdf():
     table_data = [["Indicator","Type","Source","Severity","MITRE","Score","Country","Lat","Lon","Last Seen"]] + list(rows)
     table = Table(table_data)
     doc.build([table])
-    buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="redshark_cti.pdf")
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer,'w') as zf:
+        zf.writestr("redshark_cti.pdf", buffer.getvalue())
+    zip_buffer.seek(0)
+    return send_file(zip_buffer, as_attachment=True, download_name="redshark_cti_pdf.zip")
 
 @app.route("/export/ids")
 def export_ids():
@@ -401,6 +418,7 @@ def export_ids():
     zip_buffer.seek(0)
     return send_file(zip_buffer, as_attachment=True, download_name="redshark_ids.zip")
 
+# ---------------- RUN SERVER ---------------- #
 if __name__ == "__main__":
-    # Use threaded=True to handle multiple requests and avoid crashes
+    # Use threaded=True for multiple simultaneous requests
     app.run(host="0.0.0.0", port=5000, threaded=True)
