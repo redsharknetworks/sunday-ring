@@ -1,4 +1,3 @@
-import os
 import io
 import csv
 import json
@@ -7,6 +6,7 @@ import time
 import threading
 import logging
 import re
+import os
 from datetime import datetime, timedelta
 
 import sqlite3
@@ -17,12 +17,11 @@ from reportlab.lib.pagesizes import letter
 
 # ---------------- CONFIG ---------------- #
 app = Flask(__name__)
-DB_FILE = "/tmp/redshark.db"  # Render temp DB
-
-# ---------------- HARDCODED KEYS ---------------- #
+DB_FILE = "/tmp/redshark.db"  # Render ephemeral filesystem
 OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
 ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a6eb14544a100"
 
+os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 LOCATIONS = [
@@ -58,6 +57,7 @@ def init_db():
             last_seen TEXT
         )""")
         conn.commit()
+
 init_db()
 
 def save_iocs(iocs):
@@ -96,7 +96,6 @@ def detect_type(indicator):
     hash_pattern = re.compile(r"^[a-fA-F0-9]{32,128}$")
     domain_pattern = re.compile(r"^(?!\d+$)([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
     url_pattern = re.compile(r"^https?://")
-
     if ip_pattern.match(indicator):
         return "IP"
     elif hash_pattern.match(indicator):
@@ -110,7 +109,7 @@ def fetch_otx_iocs():
     headers = {"X-OTX-API-KEY": OTX_KEY}
     iocs = []
     try:
-        r = requests.get(url, headers=headers, timeout=15)
+        r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
             for pulse in r.json().get("results", []):
                 for ind in pulse.get("indicators", []):
@@ -139,7 +138,7 @@ def fetch_abuseipdb():
     headers = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
     iocs = []
     try:
-        r = requests.get(url, headers=headers, timeout=15)
+        r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
             for item in r.json().get("data", []):
                 loc = LOCATIONS[int(datetime.utcnow().timestamp()) % len(LOCATIONS)]
@@ -172,10 +171,70 @@ def threat_engine():
             logging.info("No IOCs fetched")
         time.sleep(600)
 
-threading.Thread(target=threat_engine, daemon=True).start()
-
 # ---------------- DASHBOARD HTML ---------------- #
-DASHBOARD_HTML = """[PUT ALL YOUR HTML FROM ORIGINAL DASHBOARD HERE]"""
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<title>RedShark SOC Dashboard</title>
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body{background:#020617;color:white;font-family:Arial;margin:0;padding:0}
+h1{text-align:center;color:#38bdf8;margin:20px 0;}
+.highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red;font-weight:bold;}
+.ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;overflow-x:auto;white-space:nowrap;}
+#dashboard-container{max-width:1200px;margin:0 auto;}
+#map{height:450px;width:100%;border-radius:10px;margin-bottom:20px;}
+.chart-container{width:100%;margin-bottom:20px;height:300px;}
+canvas{width:100% !important;height:100% !important;background:#111827;padding:10px;border-radius:10px;}
+.low{color:#22c55e;}
+.medium{color:#facc15;}
+.high{color:orange;}
+.critical{color:red;}
+.heat-critical{animation:blink 2s infinite;}
+.heat-high{animation:blink 2s infinite;}
+@keyframes blink{0%{opacity:0.6;}50%{opacity:1;}100%{opacity:0.6;}}
+button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
+button:hover{background:#0ea5e9;color:#fff;}
+#cti{width:100% !important;}
+</style>
+</head>
+<body>
+<h1>RedShark Cyber SOC Dashboard</h1>
+<div id="dashboard-container">
+<div class="highlight" id="highlight">Latest Malaysia Security Highlight (GMT+8): {{time}}</div>
+<div class="ticker" id="ticker"></div>
+<div id="map"></div>
+<div class="chart-container"><canvas id="mitre"></canvas></div>
+<div class="chart-container"><canvas id="severity"></canvas></div>
+<div class="chart-container"><canvas id="timeline"></canvas></div>
+<table id="cti" class="display">
+<thead>
+<tr><th>Indicator</th><th>Type</th><th>Source</th><th>Severity</th>
+<th>MITRE</th><th>Score</th><th>Country</th><th>Last Seen</th></tr>
+</thead>
+<tbody></tbody>
+</table>
+<div style="text-align:center;margin:20px;">
+<button onclick="window.location='/export/json'">JSON</button>
+<button onclick="window.location='/export/csv'">CSV</button>
+<button onclick="window.location='/export/pdf'">PDF</button>
+<button onclick="window.location='/export/ids'">IDS RULES</button>
+</div>
+<div style="text-align:center;margin:10px;font-size:12px;color:#888;">
+Developed and analysed by darkgrid@redshark.my using publicly available sources
+</div>
+
+<script>
+// Map, charts, ticker, table logic
+// ... Keep your full JS from v22 here ...
+</script>
+</body></html>
+"""
 
 # ---------------- API ---------------- #
 @app.route("/api/data")
@@ -245,7 +304,6 @@ def export_ids():
         c = conn.cursor()
         c.execute("SELECT indicator,type,severity FROM indicators")
         rows = c.fetchall()
-
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
         rules = ""
@@ -265,5 +323,6 @@ def export_ids():
 
 # ---------------- RUN SERVER ---------------- #
 if __name__ == "__main__":
+    threading.Thread(target=threat_engine, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, threaded=True)
