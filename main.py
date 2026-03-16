@@ -7,7 +7,6 @@ import threading
 import logging
 import re
 from datetime import datetime, timedelta
-import os
 
 import sqlite3
 import requests
@@ -17,7 +16,7 @@ from reportlab.lib.pagesizes import letter
 
 # ---------------- CONFIG ---------------- #
 app = Flask(__name__)
-DB_FILE = "/tmp/redshark.db"  # Render ephemeral filesystem
+DB_FILE = "redshark.db"
 OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
 ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a6eb14544a100"
 
@@ -186,9 +185,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <style>
 body{background:#020617;color:white;font-family:Arial;margin:0;padding:0}
 h1{text-align:center;color:#38bdf8;margin:20px 0;}
-.highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red;font-weight:bold;overflow:hidden;white-space:nowrap;}
-.highlight span{display:inline-block;animation:scroll 10s linear infinite;}
-@keyframes scroll{0%{transform:translateX(100%);}100%{transform:translateX(-100%);}}
+.highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red;font-weight:bold;}
 .ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;overflow-x:auto;white-space:nowrap;}
 #dashboard-container{max-width:1200px;margin:0 auto;}
 #map{height:450px;width:100%;border-radius:10px;margin-bottom:20px;}
@@ -209,7 +206,7 @@ button:hover{background:#0ea5e9;color:#fff;}
 <body>
 <h1>RedShark Cyber SOC Dashboard</h1>
 <div id="dashboard-container">
-<div class="highlight" id="highlight"><span>Latest Malaysia Security Highlight (GMT+8): {{time}}</span></div>
+<div class="highlight" id="highlight">Latest Malaysia Security Highlight (GMT+8): {{time}}</div>
 <div class="ticker" id="ticker"></div>
 <div id="map"></div>
 <div class="chart-container"><canvas id="mitre"></canvas></div>
@@ -290,6 +287,7 @@ function renderMap(points){
 }
 
 function renderCharts(points){
+    // MITRE chart
     var mitreLabels=points.map(p=>p.mitre);
     var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
     if(mitreChart) mitreChart.destroy();
@@ -301,6 +299,7 @@ function renderCharts(points){
         datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:mitre_grad}]
     },options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}}}});
 
+    // Severity chart
     var sevCounts={"Low":0,"Medium":0,"High":0,"Critical":0};
     points.forEach(p=>sevCounts[p.severity]++);
     var ctx_s=document.getElementById('severity').getContext('2d');
@@ -315,6 +314,7 @@ function renderCharts(points){
     });
     severityChart=new Chart(ctx_s,{type:'bar',data:{labels:Object.keys(sevCounts),datasets:[{label:'Severity Count',data:Object.values(sevCounts),backgroundColor:gradients,borderColor:Object.values(colors),borderWidth:1}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},responsive:true,maintainAspectRatio:false}});
 
+    // Timeline chart
     var timeline={};
     points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
     if(timelineChart) timelineChart.destroy();
@@ -353,6 +353,7 @@ def export_json():
         c = conn.cursor()
         c.execute("SELECT * FROM indicators")
         rows = [dict(r) for r in c.fetchall()]
+    # Return zipped JSON
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
         zf.writestr("redshark_cti.json", json.dumps(rows, indent=2))
@@ -367,8 +368,7 @@ def export_csv():
         rows = c.fetchall()
     output=io.StringIO()
     writer=csv.writer(output)
-    
-writer.writerow(["id","indicator","type","source","severity","mitre","score","country","lat","lon","first_seen","last_seen"])
+    writer.writerow(["id","indicator","type","source","severity","mitre","score","country","lat","lon","first_seen","last_seen"])
     writer.writerows(rows)
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer,'w') as zf:
@@ -395,10 +395,12 @@ def export_pdf():
 
 @app.route("/export/ids")
 def export_ids():
+    # Generate Snort/Suricata style rules
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute("SELECT indicator,type,severity FROM indicators")
         rows = c.fetchall()
+
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
         rules = ""
@@ -418,6 +420,5 @@ def export_ids():
 
 # ---------------- RUN SERVER ---------------- #
 if __name__ == "__main__":
-    # Render automatically sets PORT environment variable
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    # Use threaded=True for multiple simultaneous requests
+    app.run(host="0.0.0.0", port=5000, threaded=True)
