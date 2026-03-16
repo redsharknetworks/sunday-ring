@@ -7,10 +7,12 @@ import threading
 import logging
 import re
 from datetime import datetime, timedelta
+from queue import Queue
 
 import sqlite3
 import requests
-from flask import Flask, render_template_string, jsonify, send_file
+from flask import Flask, render_template_string, jsonify, send_file, Response
+
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
@@ -18,7 +20,7 @@ from reportlab.lib.pagesizes import letter
 app = Flask(__name__)
 DB_FILE = "redshark.db"
 OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
-ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a6eb14544a100"
+ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a100"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -34,6 +36,8 @@ MITRE_MAP = [
     "T1046 Network Discovery","T1059 Command Execution","T1566 Phishing",
     "T1071 C2 Communication","T1105 Data Exfiltration","T1190 Exploit Public Facing App"
 ]
+
+alerts_queue = Queue()  # SSE live alerts queue
 
 # ---------------- DATABASE ---------------- #
 def init_db():
@@ -58,6 +62,7 @@ def init_db():
 init_db()
 
 def save_iocs(iocs):
+    new_critical = []
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
         for i in iocs:
@@ -70,9 +75,13 @@ def save_iocs(iocs):
                     i["indicator"],i["type"],i["source"],i["severity"],i["mitre"],
                     i["score"],i["country"],i["lat"],i["lon"],i["first_seen"],i["last_seen"]
                 ))
+                if i["severity"]=="Critical":
+                    new_critical.append(i)
             except Exception as e:
                 logging.error(f"DB insert error: {e}")
         conn.commit()
+    for c_ioc in new_critical:
+        alerts_queue.put(c_ioc)
 
 def cleanup_db(limit=5000):
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
@@ -171,7 +180,26 @@ def threat_engine():
 
 threading.Thread(target=threat_engine, daemon=True).start()
 
-# ---------------- DASHBOARD HTML ---------------- #
+# ---------------- SSE ---------------- #
+@app.route('/stream')
+def stream():
+    def event_stream():
+        while True:
+            alert = alerts_queue.get()
+            yield f"data: {json.dumps(alert)}\n\n"
+    return Response(event_stream(), mimetype="text/event-stream")
+
+# ---------------- API ---------------- #
+@app.route("/api/data")
+def api_data():
+    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
+        rows = [dict(r) for r in c.fetchall()]
+    return jsonify(rows)
+
+# ---------------- DASHBOARD HTML (SOC Analyst Panel) ---------------- #
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html>
 <head>
@@ -204,7 +232,7 @@ button:hover{background:#0ea5e9;color:#fff;}
 </style>
 </head>
 <body>
-<h1>RedShark Cyber SOC Dashboard</h1>
+<h1>RedShark SOC Analyst Dashboard</h1>
 <div id="dashboard-container">
 <div class="highlight" id="highlight">Latest Malaysia Security Highlight (GMT+8): {{time}}</div>
 <div class="ticker" id="ticker"></div>
@@ -256,12 +284,11 @@ function renderTable(points){
     table.clear();
     points.forEach(p=>{
         var sev_color=(p.severity=="High")?"orange":(p.severity=="Critical")?"red":(p.severity=="Medium")?"#facc15":"#22c55e";
-        var cls=(p.severity=="Critical")?"heat-critical":(p.severity=="High")?"heat-high":"";
         table.row.add([
             p.indicator,
             p.type,
             p.source,
-            `<span style="color:${sev_color};font-weight:bold" class="${cls}">${p.severity}</span>`,
+            `<span style="color:${sev_color};font-weight:bold">${p.severity}</span>`,
             p.mitre,
             p.score,
             p.country,
@@ -287,7 +314,6 @@ function renderMap(points){
 }
 
 function renderCharts(points){
-    // MITRE chart
     var mitreLabels=points.map(p=>p.mitre);
     var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
     if(mitreChart) mitreChart.destroy();
@@ -299,7 +325,6 @@ function renderCharts(points){
         datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:mitre_grad}]
     },options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}}}});
 
-    // Severity chart
     var sevCounts={"Low":0,"Medium":0,"High":0,"Critical":0};
     points.forEach(p=>sevCounts[p.severity]++);
     var ctx_s=document.getElementById('severity').getContext('2d');
@@ -314,7 +339,6 @@ function renderCharts(points){
     });
     severityChart=new Chart(ctx_s,{type:'bar',data:{labels:Object.keys(sevCounts),datasets:[{label:'Severity Count',data:Object.values(sevCounts),backgroundColor:gradients,borderColor:Object.values(colors),borderWidth:1}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},responsive:true,maintainAspectRatio:false}});
 
-    // Timeline chart
     var timeline={};
     points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
     if(timelineChart) timelineChart.destroy();
@@ -325,100 +349,27 @@ $(document).ready(function(){
     $('#cti').DataTable({pageLength:50});
     fetchData();
     setInterval(fetchData,60000);
+
+    // SSE for live Critical alerts
+    var evtSource = new EventSource("/stream");
+    evtSource.onmessage = function(e){
+        var alert=JSON.parse(e.data);
+        fetchData(); // refresh dashboard
+        alert("Critical IOC detected: "+alert.indicator); // simple popup alert
+    };
 });
 </script>
 </body></html>
 """
 
-# ---------------- API ---------------- #
-@app.route("/api/data")
-def api_data():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
-        rows = [dict(r) for r in c.fetchall()]
-    return jsonify(rows)
-
+# ---------------- DASHBOARD ROUTE ---------------- #
 @app.route("/")
 def dashboard():
     malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     return render_template_string(DASHBOARD_HTML, time=malaysia_time)
 
-# ---------------- EXPORTS ---------------- #
-@app.route("/export/json")
-def export_json():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT * FROM indicators")
-        rows = [dict(r) for r in c.fetchall()]
-    # Return zipped JSON
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w') as zf:
-        zf.writestr("redshark_cti.json", json.dumps(rows, indent=2))
-    zip_buffer.seek(0)
-    return send_file(zip_buffer, as_attachment=True, download_name="redshark_cti_json.zip")
-
-@app.route("/export/csv")
-def export_csv():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM indicators")
-        rows = c.fetchall()
-    output=io.StringIO()
-    writer=csv.writer(output)
-    writer.writerow(["id","indicator","type","source","severity","mitre","score","country","lat","lon","first_seen","last_seen"])
-    writer.writerows(rows)
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer,'w') as zf:
-        zf.writestr("redshark_cti.csv", output.getvalue())
-    zip_buffer.seek(0)
-    return send_file(zip_buffer, as_attachment=True, download_name="redshark_cti_csv.zip")
-
-@app.route("/export/pdf")
-def export_pdf():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        c = conn.cursor()
-        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators LIMIT 100")
-        rows = c.fetchall()
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter)
-    table_data = [["Indicator","Type","Source","Severity","MITRE","Score","Country","Lat","Lon","Last Seen"]] + list(rows)
-    table = Table(table_data)
-    doc.build([table])
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer,'w') as zf:
-        zf.writestr("redshark_cti.pdf", buffer.getvalue())
-    zip_buffer.seek(0)
-    return send_file(zip_buffer, as_attachment=True, download_name="redshark_cti_pdf.zip")
-
-@app.route("/export/ids")
-def export_ids():
-    # Generate Snort/Suricata style rules
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        c = conn.cursor()
-        c.execute("SELECT indicator,type,severity FROM indicators")
-        rows = c.fetchall()
-
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w') as zf:
-        rules = ""
-        sid_counter = 1000000
-        for ind, typ, sev in rows:
-            if typ == "IP":
-                rule = f'alert ip any any -> {ind} any (msg:"RedShark {sev} threat"; sid:{sid_counter}; rev:1;)\n'
-            elif typ == "Domain":
-                rule = f'alert tcp any any -> any 80 (msg:"RedShark {sev} Domain {ind}"; content:"{ind}"; sid:{sid_counter}; rev:1;)\n'
-            else:  # Hash
-                rule = f'# Hash {ind} severity {sev} (sid:{sid_counter})\n'
-            rules += rule
-            sid_counter += 1
-        zf.writestr("redshark_ids.rules", rules)
-    zip_buffer.seek(0)
-    return send_file(zip_buffer, as_attachment=True, download_name="redshark_ids.zip")
-
 # ---------------- RUN SERVER ---------------- #
 if __name__ == "__main__":
-    # Use threaded=True for multiple simultaneous requests
-    app.run(host="0.0.0.0", port=5000, threaded=True)
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, threaded=True)
