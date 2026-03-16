@@ -10,7 +10,8 @@ from datetime import datetime, timedelta
 
 import sqlite3
 import requests
-from flask import Flask, render_template_string, jsonify, send_file
+from flask import Flask, render_template_string, jsonify, send_file, Response
+
 from reportlab.platypus import SimpleDocTemplate, Table
 from reportlab.lib.pagesizes import letter
 
@@ -157,6 +158,7 @@ def fetch_abuseipdb():
         logging.error(f"AbuseIPDB fetch error: {e}")
     return iocs
 
+# ---------------- THREAT ENGINE ---------------- #
 def threat_engine():
     while True:
         logging.info("Fetching threat feeds...")
@@ -165,13 +167,31 @@ def threat_engine():
             save_iocs(all_iocs)
             cleanup_db()
             logging.info(f"Saved {len(all_iocs)} IOCs")
-        else:
-            logging.info("No IOCs fetched")
         time.sleep(600)
 
 threading.Thread(target=threat_engine, daemon=True).start()
 
-# ---------------- DASHBOARD HTML ---------------- #
+# ---------------- SERVER-SENT EVENTS FOR SOC PANEL ---------------- #
+@app.route("/stream")
+def stream():
+    def event_stream():
+        last_ids = set()
+        while True:
+            with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+                conn.row_factory = sqlite3.Row
+                c = conn.cursor()
+                c.execute("SELECT id,indicator,type,severity,last_seen FROM indicators WHERE severity IN ('Critical','High') ORDER BY last_seen DESC LIMIT 10")
+                rows = c.fetchall()
+            new_ids = set(r['id'] for r in rows)
+            added = new_ids - last_ids
+            if added:
+                data = [dict(r) for r in rows if r['id'] in added]
+                yield f"data: {json.dumps(data)}\n\n"
+                last_ids = new_ids
+            time.sleep(5)
+    return Response(event_stream(), mimetype="text/event-stream")
+
+# ---------------- DASHBOARD HTML (SOC PANEL included) ---------------- #
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html>
 <head>
@@ -201,6 +221,8 @@ canvas{width:100% !important;height:100% !important;background:#111827;padding:1
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
 #cti{width:100% !important;}
+#soc-panel{position:fixed;top:70px;right:20px;width:350px;background:#111827;padding:10px;border-radius:10px;max-height:70%;overflow-y:auto;box-shadow:0 0 10px #000;}
+.soc-alert{padding:5px;margin:5px;border-left:4px solid red;font-weight:bold;animation:blink 2s infinite;}
 </style>
 </head>
 <body>
@@ -225,6 +247,7 @@ button:hover{background:#0ea5e9;color:#fff;}
 <button onclick="window.location='/export/pdf'">PDF</button>
 <button onclick="window.location='/export/ids'">IDS RULES</button>
 </div>
+<div id="soc-panel"><h3>SOC Analyst Panel</h3><div id="soc-alerts"></div></div>
 <div style="text-align:center;margin:10px;font-size:12px;color:#888;">
 Developed and analysed by darkgrid@redshark.my using publicly available sources
 </div>
@@ -242,6 +265,17 @@ function fetchData(){
         renderCharts(points);
     });
 }
+
+// SOC Panel SSE
+var evtSource = new EventSource("/stream");
+evtSource.onmessage = function(e){
+    var alerts = JSON.parse(e.data);
+    var html="";
+    alerts.forEach(a=>{
+        html+=`<div class="soc-alert">🚨 ${a.severity} ${a.type}: ${a.indicator}</div>`;
+    });
+    $("#soc-alerts").html(html);
+};
 
 function renderTicker(points){
     var html="";
@@ -324,10 +358,11 @@ function renderCharts(points){
 $(document).ready(function(){
     $('#cti').DataTable({pageLength:50});
     fetchData();
-    setInterval(fetchData,60000);
+    setInterval(fetchData,60000); // refresh table & charts every 60s
 });
 </script>
-</body></html>
+</body>
+</html>
 """
 
 # ---------------- API ---------------- #
@@ -336,13 +371,16 @@ def api_data():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
+        c.execute("""
+        SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen 
+        FROM indicators ORDER BY last_seen DESC LIMIT 500
+        """)
         rows = [dict(r) for r in c.fetchall()]
     return jsonify(rows)
 
 @app.route("/")
 def dashboard():
-    malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    malaysia_time = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     return render_template_string(DASHBOARD_HTML, time=malaysia_time)
 
 # ---------------- EXPORTS ---------------- #
@@ -353,7 +391,6 @@ def export_json():
         c = conn.cursor()
         c.execute("SELECT * FROM indicators")
         rows = [dict(r) for r in c.fetchall()]
-    # Return zipped JSON
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
         zf.writestr("redshark_cti.json", json.dumps(rows, indent=2))
@@ -366,8 +403,8 @@ def export_csv():
         c = conn.cursor()
         c.execute("SELECT * FROM indicators")
         rows = c.fetchall()
-    output=io.StringIO()
-    writer=csv.writer(output)
+    output = io.StringIO()
+    writer = csv.writer(output)
     writer.writerow(["id","indicator","type","source","severity","mitre","score","country","lat","lon","first_seen","last_seen"])
     writer.writerows(rows)
     zip_buffer = io.BytesIO()
@@ -395,12 +432,10 @@ def export_pdf():
 
 @app.route("/export/ids")
 def export_ids():
-    # Generate Snort/Suricata style rules
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute("SELECT indicator,type,severity FROM indicators")
         rows = c.fetchall()
-
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
         rules = ""
@@ -410,7 +445,7 @@ def export_ids():
                 rule = f'alert ip any any -> {ind} any (msg:"RedShark {sev} threat"; sid:{sid_counter}; rev:1;)\n'
             elif typ == "Domain":
                 rule = f'alert tcp any any -> any 80 (msg:"RedShark {sev} Domain {ind}"; content:"{ind}"; sid:{sid_counter}; rev:1;)\n'
-            else:  # Hash
+            else:
                 rule = f'# Hash {ind} severity {sev} (sid:{sid_counter})\n'
             rules += rule
             sid_counter += 1
@@ -420,5 +455,4 @@ def export_ids():
 
 # ---------------- RUN SERVER ---------------- #
 if __name__ == "__main__":
-    # Use threaded=True for multiple simultaneous requests
     app.run(host="0.0.0.0", port=5000, threaded=True)
