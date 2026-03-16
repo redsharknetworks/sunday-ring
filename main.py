@@ -7,7 +7,6 @@ import threading
 import logging
 import re
 from datetime import datetime, timedelta
-import os
 
 import sqlite3
 import requests
@@ -17,7 +16,7 @@ from reportlab.lib.pagesizes import letter
 
 # ---------------- CONFIG ---------------- #
 app = Flask(__name__)
-DB_FILE = "/tmp/redshark.db"  # Use /tmp for Render and Railway compatibility
+DB_FILE = "redshark.db"
 OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
 ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a6eb14544a100"
 
@@ -38,7 +37,6 @@ MITRE_MAP = [
 
 # ---------------- DATABASE ---------------- #
 def init_db():
-    os.makedirs("/tmp", exist_ok=True)
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
         c.execute("""
@@ -187,10 +185,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <style>
 body{background:#020617;color:white;font-family:Arial;margin:0;padding:0}
 h1{text-align:center;color:#38bdf8;margin:20px 0;}
-.highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red;font-weight:bold;overflow:hidden;white-space:nowrap;}
-.ticker-text{display:inline-block;padding-left:100%;animation:scroll 20s linear infinite;}
-@keyframes scroll{0%{transform:translateX(0%);}100%{transform:translateX(-100%);}}
-.ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;overflow:hidden;white-space:nowrap;}
+.highlight{background:#1e293b;padding:15px;margin:20px;border-left:5px solid red;font-weight:bold;}
+.ticker{padding:10px;border-top:1px solid #334155;border-bottom:1px solid #334155;overflow-x:auto;white-space:nowrap;}
 #dashboard-container{max-width:1200px;margin:0 auto;}
 #map{height:450px;width:100%;border-radius:10px;margin-bottom:20px;}
 .chart-container{width:100%;margin-bottom:20px;height:300px;}
@@ -199,8 +195,8 @@ canvas{width:100% !important;height:100% !important;background:#111827;padding:1
 .medium{color:#facc15;}
 .high{color:orange;}
 .critical{color:red;}
-.heat-critical{animation:blink 3s infinite;}
-.heat-high{animation:blink 3s infinite;}
+.heat-critical{animation:blink 2s infinite;}
+.heat-high{animation:blink 2s infinite;}
 @keyframes blink{0%{opacity:0.6;}50%{opacity:1;}100%{opacity:0.6;}}
 button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
 button:hover{background:#0ea5e9;color:#fff;}
@@ -210,7 +206,7 @@ button:hover{background:#0ea5e9;color:#fff;}
 <body>
 <h1>RedShark Cyber SOC Dashboard</h1>
 <div id="dashboard-container">
-<div class="highlight"><span class="ticker-text" id="highlight">Latest Malaysia Security Highlight (GMT+8): {{time}}</span></div>
+<div class="highlight" id="highlight">Latest Malaysia Security Highlight (GMT+8): {{time}}</div>
 <div class="ticker" id="ticker"></div>
 <div id="map"></div>
 <div class="chart-container"><canvas id="mitre"></canvas></div>
@@ -230,7 +226,7 @@ button:hover{background:#0ea5e9;color:#fff;}
 <button onclick="window.location='/export/ids'">IDS RULES</button>
 </div>
 <div style="text-align:center;margin:10px;font-size:12px;color:#888;">
-Developed and analyzed by darkgrid@redshark.my using publicly available threat intelligence sources.
+Developed and analysed by darkgrid@redshark.my using publicly available sources
 </div>
 
 <script>
@@ -252,7 +248,7 @@ function renderTicker(points){
     points.slice(0,10).forEach(p=>{
         html+=`🚨 <span class="${p.severity.toLowerCase()}">${p.severity}</span> ${p.indicator} via ${p.source} &nbsp;&nbsp;`;
     });
-    $("#highlight").html(html);
+    $("#ticker").html(html);
 }
 
 function renderTable(points){
@@ -291,6 +287,7 @@ function renderMap(points){
 }
 
 function renderCharts(points){
+    // MITRE chart
     var mitreLabels=points.map(p=>p.mitre);
     var mitreCounts={}; mitreLabels.forEach(m=>mitreCounts[m]=(mitreCounts[m]||0)+1);
     if(mitreChart) mitreChart.destroy();
@@ -302,6 +299,7 @@ function renderCharts(points){
         datasets:[{label:'MITRE ATT&CK Count',data:Object.values(mitreCounts),backgroundColor:mitre_grad}]
     },options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}}}});
 
+    // Severity chart
     var sevCounts={"Low":0,"Medium":0,"High":0,"Critical":0};
     points.forEach(p=>sevCounts[p.severity]++);
     var ctx_s=document.getElementById('severity').getContext('2d');
@@ -316,6 +314,7 @@ function renderCharts(points){
     });
     severityChart=new Chart(ctx_s,{type:'bar',data:{labels:Object.keys(sevCounts),datasets:[{label:'Severity Count',data:Object.values(sevCounts),backgroundColor:gradients,borderColor:Object.values(colors),borderWidth:1}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{color:'white'}},x:{ticks:{color:'white'}}},responsive:true,maintainAspectRatio:false}});
 
+    // Timeline chart
     var timeline={};
     points.forEach(p=>{var t=p.last_seen.substring(0,13); timeline[t]=(timeline[t]||0)+1;});
     if(timelineChart) timelineChart.destroy();
@@ -354,6 +353,7 @@ def export_json():
         c = conn.cursor()
         c.execute("SELECT * FROM indicators")
         rows = [dict(r) for r in c.fetchall()]
+    # Return zipped JSON
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
         zf.writestr("redshark_cti.json", json.dumps(rows, indent=2))
@@ -364,9 +364,10 @@ def export_json():
 def export_csv():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         c = conn.cursor()
-        c.execute("SELECT * rows = c.fetchall()
-    output = io.StringIO()
-    writer = csv.writer(output)
+        c.execute("SELECT * FROM indicators")
+        rows = c.fetchall()
+    output=io.StringIO()
+    writer=csv.writer(output)
     writer.writerow(["id","indicator","type","source","severity","mitre","score","country","lat","lon","first_seen","last_seen"])
     writer.writerows(rows)
     zip_buffer = io.BytesIO()
