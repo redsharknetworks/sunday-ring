@@ -134,10 +134,68 @@ def schedule_threat_fetch(interval=600):
         except Exception as e: logging.error(f"Fetch error: {e}")
         threading.Timer(interval, task).start()
     task()
-
 schedule_threat_fetch()
 
-# ---------------- API & DASHBOARD ---------------- #
+# ---------------- DASHBOARD HTML ---------------- #
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html><head><title>RedShark SOC</title>
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body{background:#020617;color:white;font-family:Arial;margin:0;padding:0}
+h1{text-align:center;color:#38bdf8;margin:20px 0;}
+#map{height:450px;width:100%;border-radius:10px;margin-bottom:20px;}
+canvas{width:100% !important;height:100% !important;background:#111827;padding:10px;border-radius:10px;}
+.low{color:#22c55e;}.medium{color:#facc15;}.high{color:orange;}.critical{color:red;}
+.heat-critical{animation:blink 2s infinite;}.heat-high{animation:blink 2s infinite;}
+@keyframes blink{0%{opacity:0.6;}50%{opacity:1;}100%{opacity:0.6;}}
+button{margin:5px;padding:10px 15px;background:#38bdf8;color:#000;border:none;border-radius:5px;cursor:pointer;font-weight:bold;}
+button:hover{background:#0ea5e9;color:#fff;}
+</style></head><body>
+<h1>RedShark SOC Dashboard</h1>
+<div style="text-align:center;margin:10px;font-size:12px;color:#888;">
+Developed by darkgrid@redshark.my using public sources
+</div>
+<div id="map"></div>
+<div style="text-align:center;margin:20px;">
+<button onclick="window.location='/export/json'">JSON</button>
+<button onclick="window.location='/export/csv'">CSV</button>
+<button onclick="window.location='/export/pdf'">PDF</button>
+<button onclick="window.location='/export/ids'">IDS RULES</button>
+</div>
+<script>
+var map=L.map('map').setView([4.5,102],6);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
+var markers=[];
+
+function fetchData(){
+    $.getJSON("/api/data", function(points){
+        markers.forEach(m=>map.removeLayer(m));
+        markers=[];
+        points.forEach(p=>{
+            var opt={radius:6,color:"green",fillOpacity:0.6},cls="";
+            if(p.severity=="Critical"){opt.color="red";opt.radius=8;cls="heat-critical";}
+            else if(p.severity=="High"){opt.color="orange";opt.radius=7;cls="heat-high";}
+            var m=L.circleMarker([p.lat,p.lon],opt).addTo(map);
+            if(cls && m._path)m._path.classList.add(cls);
+            m.bindPopup(p.indicator+"<br>"+p.type+" — "+p.severity);
+            markers.push(m);
+        });
+    });
+}
+fetchData(); setInterval(fetchData,60000);
+</script></body></html>
+"""
+
+@app.route("/")
+def dashboard():
+    return render_template_string(DASHBOARD_HTML)
+
+# ---------------- API & EXPORTS ---------------- #
 @app.route("/api/data")
 def api_data():
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
@@ -146,41 +204,27 @@ def api_data():
         c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
         return jsonify([dict(r) for r in c.fetchall()])
 
-@app.route("/")
-def dashboard():
-    malaysia_time=(datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-    return render_template_string("<h1>RedShark SOC Dashboard - {{time}}</h1>", time=malaysia_time)
-
-# ---------------- EXPORT HELPER ---------------- #
 def export_data(fmt="json", limit=500):
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         conn.row_factory=sqlite3.Row
         c=conn.cursor()
-        if fmt=="ids": c.execute("SELECT id,indicator,type FROM indicators ORDER BY last_seen DESC LIMIT ?",(limit,)); rows=c.fetchall()
-        else: c.execute("SELECT * FROM indicators ORDER BY last_seen DESC LIMIT ?",(limit,)); rows=[dict(r) for r in c.fetchall()]
-
+        if fmt=="ids": c.execute("SELECT id,indicator,type FROM indicators ORDER BY last_seen DESC LIMIT ?",(limit,))
+        else: c.execute("SELECT * FROM indicators ORDER BY last_seen DESC LIMIT ?",(limit,))
+        rows = c.fetchall() if fmt=="ids" else [dict(r) for r in c.fetchall()]
     buf=io.BytesIO()
     with zipfile.ZipFile(buf,'w') as zf:
-        if fmt=="json":
-            for r in rows: r.update({k:"" for k,v in r.items() if v is None})
-            zf.writestr("redshark_cti.json", json.dumps(rows, indent=2))
+        if fmt=="json": zf.writestr("redshark_cti.json", json.dumps(rows, indent=2))
         elif fmt=="csv":
-            out=io.StringIO()
-            hdr=rows[0].keys() if rows else []
-            w=csv.writer(out)
-            w.writerow(hdr)
-            for r in rows: w.writerow([str(r[h]) if r[h] is not None else "" for h in hdr])
-            zf.writestr("redshark_cti.csv", out.getvalue())
+            out=io.StringIO(); hdr=rows[0].keys() if rows else []; w=csv.writer(out); w.writerow(hdr)
+            for r in rows: w.writerow([r[h] for h in hdr]); zf.writestr("redshark_cti.csv", out.getvalue())
         elif fmt=="pdf":
-            hdr=rows[0].keys() if rows else []
-            table=[[str(r[h]) if r[h] is not None else "" for h in hdr] for r in rows]
+            hdr=rows[0].keys() if rows else []; table=[[str(r[h]) for h in hdr] for r in rows]
             docbuf=io.BytesIO(); doc=SimpleDocTemplate(docbuf,pagesize=letter); doc.build([Table([list(hdr)]+table)]); docbuf.seek(0)
             zf.writestr("redshark_cti.pdf", docbuf.getvalue())
         elif fmt=="ids":
-            rules=""
+            rules=""; 
             for r in rows:
-                sid,ind,typ=r
-                typ=typ.lower() if typ else ""
+                sid,ind,typ=r; typ=typ.lower() if typ else ""
                 if typ=="ip": rules+=f'alert ip any any -> {ind} any (msg:"Malicious IP {ind}"; sid:{sid}; rev:1;)\n'
                 elif typ=="domain": rules+=f'alert tcp any any -> any 80 (msg:"Malicious Domain {ind}"; content:"{ind}"; sid:{sid}; rev:1;)\n'
                 elif typ=="hash": rules+=f'alert tcp any any -> any any (msg:"Malicious Hash {ind}"; content:"{ind}"; sid:{sid}; rev:1;)\n'
@@ -189,7 +233,6 @@ def export_data(fmt="json", limit=500):
     files={"json":"redshark_cti_json.zip","csv":"redshark_cti_csv.zip","pdf":"redshark_cti.pdf.zip","ids":"redshark_ids.zip"}
     return send_file(buf, as_attachment=True, download_name=files.get(fmt,"redshark_cti.zip"))
 
-# ---------------- EXPORT ROUTES ---------------- #
 @app.route("/export/json"); def export_json(): return export_data("json")
 @app.route("/export/csv"); def export_csv(): return export_data("csv")
 @app.route("/export/pdf"); def export_pdf(): return export_data("pdf")
