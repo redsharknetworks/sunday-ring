@@ -230,7 +230,6 @@ button:hover{background:#0ea5e9;color:#fff;}
 <div style="text-align:center;margin:10px;font-size:12px;color:#888;">
 Developed and analysed by darkgrid@redshark.my using publicly available sources
 </div>
-
 <script>
 var map=L.map('map').setView([4.5,102],6);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
@@ -344,78 +343,78 @@ def dashboard():
     malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     return render_template_string(DASHBOARD_HTML, time=malaysia_time)
 
-# ---------------- EXPORTS ---------------- #
-@app.route("/export/json")
-def export_json():
+# ---------------- EXPORT HELPER ---------------- #
+def export_data(format="json", limit=500):
     with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        c.execute("SELECT * FROM indicators ORDER BY last_seen DESC LIMIT 500")
-        rows = [dict(r) for r in c.fetchall()]
+        if format == "ids":
+            c.execute("SELECT id, indicator, type FROM indicators ORDER BY last_seen DESC LIMIT ?", (limit,))
+            rows = c.fetchall()
+        else:
+            c.execute("SELECT * FROM indicators ORDER BY last_seen DESC LIMIT ?", (limit,))
+            rows = [dict(r) for r in c.fetchall()]
+
     zip_buffer = io.BytesIO()
+
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
-        zf.writestr("redshark_cti.json", json.dumps(rows, indent=2))
+        if format == "json":
+            for r in rows:
+                for k, v in r.items():
+                    if v is None: r[k] = ""
+            zf.writestr("redshark_cti.json", json.dumps(rows, indent=2))
+        elif format == "csv":
+            output = io.StringIO()
+            headers = rows[0].keys() if rows else []
+            writer = csv.writer(output)
+            writer.writerow(headers)
+            for r in rows:
+                writer.writerow([str(r[h]) if r[h] is not None else "" for h in headers])
+            zf.writestr("redshark_cti.csv", output.getvalue())
+        elif format == "pdf":
+            headers = rows[0].keys() if rows else []
+            table_data = [list(headers)] + [[str(r[h]) if r[h] is not None else "" for h in headers] for r in rows]
+            buffer = io.BytesIO()
+            doc = SimpleDocTemplate(buffer, pagesize=letter)
+            table = Table(table_data)
+            doc.build([table])
+            buffer.seek(0)
+            zf.writestr("redshark_cti.pdf", buffer.getvalue())
+        elif format == "ids":
+            rules = ""
+            for r in rows:
+                sid, indicator, typ = r
+                typ = typ.lower() if typ else ""
+                if typ == "ip":
+                    rules += f'alert ip any any -> {indicator} any (msg:"Malicious IP {indicator}"; sid:{sid}; rev:1;)\n'
+                elif typ == "domain":
+                    rules += f'alert tcp any any -> any 80 (msg:"Malicious Domain {indicator}"; content:"{indicator}"; sid:{sid}; rev:1;)\n'
+                elif typ == "hash":
+                    rules += f'alert tcp any any -> any any (msg:"Malicious Hash {indicator}"; content:"{indicator}"; sid:{sid}; rev:1;)\n'
+            zf.writestr("redshark_ids.rules", rules)
+
     zip_buffer.seek(0)
-    return send_file(zip_buffer, as_attachment=True, download_name="redshark_cti_json.zip")
+    filenames = {"json":"redshark_cti_json.zip","csv":"redshark_cti_csv.zip",
+                 "pdf":"redshark_cti.pdf.zip","ids":"redshark_ids.zip"}
+    return send_file(zip_buffer, as_attachment=True, download_name=filenames.get(format,"redshark_cti.zip"))
+
+# ---------------- EXPORT ROUTES ---------------- #
+@app.route("/export/json")
+def export_json():
+    return export_data("json")
 
 @app.route("/export/csv")
 def export_csv():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM indicators ORDER BY last_seen DESC LIMIT 500")
-        rows = c.fetchall()
-    output=io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow([desc[0] for desc in c.description])  # headers
-    writer.writerows(rows)
-
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w') as zf:
-        zf.writestr("redshark_cti.csv", output.getvalue())
-    zip_buffer.seek(0)
-    return send_file(zip_buffer, as_attachment=True, download_name="redshark_cti_csv.zip")
+    return export_data("csv")
 
 @app.route("/export/pdf")
 def export_pdf():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM indicators ORDER BY last_seen DESC LIMIT 500")
-        rows = c.fetchall()
-        headers = [desc[0] for desc in c.description]
-
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter)
-    table_data = [headers] + [list(r) for r in rows]
-    table = Table(table_data)
-    doc.build([table])
-    buffer.seek(0)
-    return send_file(buffer, as_attachment=True, download_name="redshark_cti.pdf")
+    return export_data("pdf")
 
 @app.route("/export/ids")
 def export_ids():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM indicators ORDER BY last_seen DESC LIMIT 500")
-        rows = c.fetchall()
-    
-    rules = ""
-    for r in rows:
-        typ = r[2].lower()  # type
-        indicator = r[1]    # indicator
-        sid = r[0]          # id
-        if typ == "ip":
-            rules += f'alert ip any any -> {indicator} any (msg:"Malicious IP {indicator}"; sid:{sid}; rev:1;)\n'
-        elif typ == "domain":
-            rules += f'alert tcp any any -> any 80 (msg:"Malicious Domain {indicator}"; content:"{indicator}"; sid:{sid}; rev:1;)\n'
-        elif typ == "hash":
-            rules += f'alert tcp any any -> any any (msg:"Malicious Hash {indicator}"; content:"{indicator}"; sid:{sid}; rev:1;)\n'
+    return export_data("ids")
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w') as zf:
-        zf.writestr("redshark_ids.rules", rules)
-    zip_buffer.seek(0)
-    return send_file(zip_buffer, as_attachment=True, download_name="redshark_ids.zip")
-
-# ---------------- RUN APP ---------------- #
+# ---------------- MAIN ---------------- #
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
