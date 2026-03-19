@@ -1,26 +1,19 @@
+import os
 import io
 import csv
 import json
 import zipfile
-import time
-import threading
 import logging
 import re
 from datetime import datetime, timedelta
-
 import sqlite3
 import requests
 from flask import Flask, render_template_string, jsonify, send_file
-from flask_socketio import SocketIO
-from reportlab.platypus import SimpleDocTemplate, Table
-from reportlab.lib.pagesizes import letter
 
-# ---------------- CONFIG ---------------- #
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")  # real-time updates
 DB_FILE = "redshark.db"
 
-# ⚠️ Hardcoded API keys (for Render test)
+# Hardcoded API keys
 OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
 ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a6eb14544a100"
 
@@ -39,9 +32,9 @@ MITRE_MAP = [
     "T1071 C2 Communication","T1105 Data Exfiltration","T1190 Exploit Public Facing App"
 ]
 
-# ---------------- DATABASE ---------------- #
+# --------------- DATABASE ---------------- #
 def init_db():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+    with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
         c.execute("""
         CREATE TABLE IF NOT EXISTS indicators(
@@ -62,7 +55,7 @@ def init_db():
 init_db()
 
 def save_iocs(iocs):
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+    with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
         for i in iocs:
             try:
@@ -77,11 +70,9 @@ def save_iocs(iocs):
             except Exception as e:
                 logging.error(f"DB insert error: {e}")
         conn.commit()
-        # push to frontend
-        socketio.emit("update", iocs)
 
 def cleanup_db(limit=5000):
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+    with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
         c.execute(f"""
         DELETE FROM indicators
@@ -163,25 +154,21 @@ def fetch_abuseipdb():
         logging.error(f"AbuseIPDB fetch error: {e}")
     return iocs
 
-# ---------------- THREAT ENGINE ---------------- #
-def threat_engine():
-    while True:
-        logging.info("Fetching threat feeds...")
-        all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
-        if all_iocs:
-            save_iocs(all_iocs)
-            cleanup_db()
-            logging.info(f"Saved {len(all_iocs)} IOCs")
-        else:
-            logging.info("No IOCs fetched")
-        time.sleep(600)
-
-threading.Thread(target=threat_engine, daemon=True).start()
+# ---------------- SCHEDULED FEED UPDATE ---------------- #
+@app.route("/update_feeds")
+def update_feeds():
+    """Fetch and save latest IOCs (call manually or via Render cron job)"""
+    all_iocs = fetch_otx_iocs() + fetch_abuseipdb()
+    if all_iocs:
+        save_iocs(all_iocs)
+        cleanup_db()
+        return jsonify({"status": "success", "count": len(all_iocs)})
+    return jsonify({"status": "no_iocs"})
 
 # ---------------- API & DASHBOARD ---------------- #
 @app.route("/api/data")
 def api_data():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+    with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen FROM indicators ORDER BY last_seen DESC LIMIT 500")
@@ -191,40 +178,33 @@ def api_data():
 @app.route("/")
 def dashboard():
     malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-    return render_template_string("""
+    return render_template_string(f"""
 <html>
-<head>
-<title>RedShark SOC Enterprise</title>
-<script src="https://cdn.jsdelivr.net/npm/socket.io-client@4/dist/socket.io.min.js"></script>
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-</head>
+<head><title>RedShark Enterprise SOC</title></head>
 <body>
-<h1>RedShark Enterprise SOC Dashboard</h1>
-<div id="updates">Realtime updates will appear here.</div>
-<script>
-var socket = io();
-socket.on("update", function(data){
-    $("#updates").html(JSON.stringify(data.slice(0,5), null, 2));
-});
-</script>
+<h1>RedShark SOC Enterprise</h1>
+<p>Latest update: {malaysia_time}</p>
+<p>Use <a href="/update_feeds">/update_feeds</a> to fetch latest IOCs.</p>
+<p>Use <a href="/api/data">/api/data</a> to view JSON data.</p>
 </body>
 </html>
-""", time=malaysia_time)
+""")
 
-# ---------------- EXPORTS ---------------- #
+# ---------------- EXPORT JSON ---------------- #
 @app.route("/export/json")
 def export_json():
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+    with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT * FROM indicators")
         rows = [dict(r) for r in c.fetchall()]
     zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w') as zf:
+    with zipfile.ZipFile(zip_buffer,'w') as zf:
         zf.writestr("redshark_cti.json", json.dumps(rows, indent=2))
     zip_buffer.seek(0)
     return send_file(zip_buffer, as_attachment=True, download_name="redshark_cti_json.zip")
 
 # ---------------- RUN SERVER ---------------- #
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
