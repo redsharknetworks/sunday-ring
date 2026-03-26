@@ -17,32 +17,26 @@ from reportlab.lib.pagesizes import letter
 
 # ---------------- CONFIG ---------------- #
 app = Flask(__name__)
-DB_FILE = "/tmp/redshark.db"  # FIXED for Render
+DB_FILE = "/tmp/redshark.db"
 
-OTX_KEY = os.environ.get("OTX_KEY", "YOUR_OTX_KEY")
-ABUSEIPDB_KEY = os.environ.get("ABUSEIPDB_KEY", "YOUR_ABUSEIPDB_KEY")
+# ⚠️ API KEYS (testing only)
+OTX_KEY = "aa94a69a780ed789016bb72d51d9b58b823eb1e6173f6fffc34530693dacb03b"
+ABUSEIPDB_KEY = "08cf00dc25d22cbd0f45ec5ebb87cb61e93c22349a6eb14544a100"
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.INFO)
 
-# ---------------- STATIC DATA ---------------- #
+# ---------------- STATIC ---------------- #
 LOCATIONS = [
-    ("Kangar",6.4414,100.1986),("Alor Setar",6.1248,100.3678),("George Town",5.4141,100.3288),
-    ("Ipoh",4.5975,101.0901),("Shah Alam",3.0738,101.5183),("Kuala Lumpur",3.1390,101.6869),
-    ("Seremban",2.7297,101.9381),("Melaka",2.1896,102.2501),("Johor Bahru",1.4927,103.7414),
-    ("Kuantan",3.8168,103.3317),("Kuala Terengganu",5.3302,103.1408),("Kota Bharu",6.1254,102.2386),
-    ("Kuching",1.5533,110.3592),("Kota Kinabalu",5.9804,116.0735),("Putrajaya",2.9264,101.6964)
+    ("Kangar",6.44,100.19),("Alor Setar",6.12,100.36),("George Town",5.41,100.32),
+    ("Ipoh",4.59,101.09),("KL",3.13,101.68),("JB",1.49,103.74)
 ]
 
-MITRE_MAP = [
-    "T1046 Network Discovery","T1059 Command Execution","T1566 Phishing",
-    "T1071 C2 Communication","T1105 Data Exfiltration","T1190 Exploit Public Facing App"
-]
+MITRE_MAP = ["T1046","T1059","T1566","T1071","T1105","T1190"]
 
 # ---------------- DATABASE ---------------- #
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:
-        c = conn.cursor()
-        c.execute("""
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS indicators(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             indicator TEXT UNIQUE,
@@ -56,15 +50,14 @@ def init_db():
             lon REAL,
             first_seen TEXT,
             last_seen TEXT
-        )""")
-        conn.commit()
+        )
+        """)
 
-def save_iocs(iocs):
+def save_iocs(data):
     with sqlite3.connect(DB_FILE) as conn:
-        c = conn.cursor()
-        for i in iocs:
+        for i in data:
             try:
-                c.execute("""
+                conn.execute("""
                 INSERT OR IGNORE INTO indicators
                 (indicator,type,source,severity,mitre,score,country,lat,lon,first_seen,last_seen)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?)
@@ -73,59 +66,34 @@ def save_iocs(iocs):
                     i["score"],i["country"],i["lat"],i["lon"],i["first_seen"],i["last_seen"]
                 ))
             except Exception as e:
-                logging.error(f"DB insert error: {e}")
-        conn.commit()
-
-def cleanup_db(limit=5000):
-    with sqlite3.connect(DB_FILE) as conn:
-        c = conn.cursor()
-        c.execute(f"""
-        DELETE FROM indicators
-        WHERE id NOT IN (
-            SELECT id FROM indicators
-            ORDER BY last_seen DESC
-            LIMIT {limit}
-        )
-        """)
-        conn.commit()
+                logging.error(e)
 
 # ---------------- HELPERS ---------------- #
-def detect_type(indicator):
-    ip_pattern = re.compile(r"^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$")
-    hash_pattern = re.compile(r"^[a-fA-F0-9]{32,128}$")
-    domain_pattern = re.compile(r"^(?!\d+$)([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$")
-    url_pattern = re.compile(r"^https?://")
-
-    if ip_pattern.match(indicator):
+def detect_type(val):
+    if re.match(r"^\d+\.\d+\.\d+\.\d+$", val):
         return "IP"
-    elif hash_pattern.match(indicator):
-        return "Hash"
-    elif url_pattern.match(indicator) or domain_pattern.match(indicator):
+    if val.startswith("http"):
         return "Domain"
-    return "Unknown"
+    return "Hash"
 
 # ---------------- FEEDS ---------------- #
-def fetch_otx_iocs():
+def fetch_otx():
     url = "https://otx.alienvault.com/api/v1/pulses/subscribed"
     headers = {"X-OTX-API-KEY": OTX_KEY}
-    iocs = []
-
+    data = []
     try:
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
             for pulse in r.json().get("results", []):
                 for ind in pulse.get("indicators", []):
-                    typ = detect_type(ind["indicator"])
                     loc = LOCATIONS[int(time.time()) % len(LOCATIONS)]
-                    severity = "Critical" if typ == "IP" else "High"
-
-                    iocs.append({
+                    data.append({
                         "indicator": ind["indicator"],
-                        "type": typ,
+                        "type": detect_type(ind["indicator"]),
                         "source": "OTX",
-                        "severity": severity,
+                        "severity": "High",
                         "mitre": MITRE_MAP[int(time.time()) % len(MITRE_MAP)],
-                        "score": 95 if severity=="Critical" else 80,
+                        "score": 80,
                         "country": loc[0],
                         "lat": loc[1],
                         "lon": loc[2],
@@ -133,21 +101,19 @@ def fetch_otx_iocs():
                         "last_seen": datetime.utcnow().isoformat()
                     })
     except Exception as e:
-        logging.error(f"OTX error: {e}")
+        logging.error(e)
+    return data
 
-    return iocs
-
-def fetch_abuseipdb():
-    url = "https://api.abuseipdb.com/api/v2/blacklist?confidenceMinimum=70&limit=100"
+def fetch_abuse():
+    url = "https://api.abuseipdb.com/api/v2/blacklist"
     headers = {"Key": ABUSEIPDB_KEY, "Accept": "application/json"}
-    iocs = []
-
+    data = []
     try:
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
             for item in r.json().get("data", []):
                 loc = LOCATIONS[int(time.time()) % len(LOCATIONS)]
-                iocs.append({
+                data.append({
                     "indicator": item["ipAddress"],
                     "type": "IP",
                     "source": "AbuseIPDB",
@@ -161,65 +127,99 @@ def fetch_abuseipdb():
                     "last_seen": datetime.utcnow().isoformat()
                 })
     except Exception as e:
-        logging.error(f"AbuseIPDB error: {e}")
+        logging.error(e)
+    return data
 
-    return iocs
-
-# ---------------- BACKGROUND WORKER ---------------- #
-def threat_engine():
+# ---------------- BACKGROUND ---------------- #
+def worker():
     while True:
         logging.info("Fetching feeds...")
-        data = fetch_otx_iocs() + fetch_abuseipdb()
-
+        data = fetch_otx() + fetch_abuse()
         if data:
             save_iocs(data)
-            cleanup_db()
-            logging.info(f"Saved {len(data)} IOCs")
-
         time.sleep(600)
 
-def start_background():
-    thread = threading.Thread(target=threat_engine, daemon=True)
-    thread.start()
+def start_worker():
+    threading.Thread(target=worker, daemon=True).start()
 
 @app.before_first_request
-def init():
+def startup():
     init_db()
-    start_background()
+    start_worker()
+
+# ---------------- HTML DASHBOARD ---------------- #
+DASHBOARD_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<title>RedShark SOC Dashboard</title>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body{background:#020617;color:white;font-family:Arial}
+h1{text-align:center;color:#38bdf8;}
+table{width:100%;border-collapse:collapse;}
+th,td{border:1px solid #334155;padding:8px;}
+.critical{color:red;font-weight:bold;}
+.high{color:orange;}
+</style>
+</head>
+<body>
+
+<h1>RedShark Cyber SOC Dashboard</h1>
+<p style="text-align:center;">Time: {{time}}</p>
+
+<table>
+<thead>
+<tr>
+<th>Indicator</th><th>Type</th><th>Source</th>
+<th>Severity</th><th>Country</th><th>Last Seen</th>
+</tr>
+</thead>
+<tbody id="data"></tbody>
+</table>
+
+<script>
+function loadData(){
+    $.getJSON("/api/data", function(res){
+        let html="";
+        res.forEach(r=>{
+            html+=`<tr>
+                <td>${r.indicator}</td>
+                <td>${r.type}</td>
+                <td>${r.source}</td>
+                <td class="${r.severity.toLowerCase()}">${r.severity}</td>
+                <td>${r.country}</td>
+                <td>${r.last_seen}</td>
+            </tr>`;
+        });
+        $("#data").html(html);
+    });
+}
+setInterval(loadData,5000);
+loadData();
+</script>
+
+</body>
+</html>
+"""
 
 # ---------------- ROUTES ---------------- #
-@app.route("/api/data")
-def api_data():
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("""
-        SELECT indicator,type,source,severity,mitre,score,country,lat,lon,last_seen
-        FROM indicators ORDER BY last_seen DESC LIMIT 500
-        """).fetchall()
-    return jsonify([dict(r) for r in rows])
-
 @app.route("/")
 def dashboard():
     malaysia_time = (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-    return f"<h1>RedShark SOC Running ✅</h1><p>Time: {malaysia_time}</p>"
+    return render_template_string(DASHBOARD_HTML, time=malaysia_time)
 
-# ---------------- EXPORTS ---------------- #
-@app.route("/export/json")
-def export_json():
+@app.route("/api/data")
+def api():
     with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
-        rows = [dict(r) for r in conn.execute("SELECT * FROM indicators")]
-
-    mem = io.BytesIO()
-    with zipfile.ZipFile(mem, "w") as z:
-        z.writestr("data.json", json.dumps(rows))
-    mem.seek(0)
-    return send_file(mem, as_attachment=True, download_name="export_json.zip")
+        rows = conn.execute("SELECT * FROM indicators ORDER BY id DESC LIMIT 100").fetchall()
+    return jsonify([dict(r) for r in rows])
 
 # ---------------- RUN ---------------- #
 if __name__ == "__main__":
     init_db()
-    start_background()
-
+    start_worker()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
