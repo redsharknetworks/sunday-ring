@@ -16,11 +16,10 @@ gunicorn
 apscheduler
 folium
 reportlab
-psycopg2
 fastapi
 uvicorn
 pydantic
 eventlet
 plotly
 eventlet
-psycopg2-binary 
+ 
