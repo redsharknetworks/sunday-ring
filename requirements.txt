@@ -22,4 +22,6 @@ pydantic
 eventlet
 plotly
 eventlet
+psycopg2-binary 
+psycopg2 
  
